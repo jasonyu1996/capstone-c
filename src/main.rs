@@ -269,13 +269,8 @@ fn generate_code(trans_unit: &TranslationUnit) {
 }
 
 fn main() {
-    if std::env::args().len() < 2 {
-        eprintln!("Missing source file name!");
-        std::process::exit(0xff);
-    }
-
     let config = Config::default();
-    match parse(&config, "hello.c") {
+    match parse(&config, std::env::args().nth(1).expect("Missing source file name!")) {
         Ok(parser_result)  => {
             generate_code(&parser_result.unit);
         }
