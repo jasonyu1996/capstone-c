@@ -11,5 +11,5 @@ int main(){
         }
     }
     print(a);
-    return 0;
+    exit();
 }

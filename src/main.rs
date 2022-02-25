@@ -19,7 +19,7 @@ const TEECAP_STACK_REG: TeecapReg = TeecapReg::Gpr(0); // r0 is used for storing
 type TeecapInt = u64;
 
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum TeecapReg {
     Pc, Id, Epc, Ret, Gpr(u8)
 }
@@ -46,7 +46,7 @@ impl Display for TeecapReg {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum TeecapImm {
     Tag(TeecapTag),
     Const(TeecapInt)
@@ -62,7 +62,8 @@ enum TeecapInsn {
     Jnz(TeecapReg, TeecapReg),
     Jz(TeecapReg, TeecapReg),
     Jmp(TeecapReg),
-    Out(TeecapReg)
+    Out(TeecapReg),
+    Halt
 }
 
 impl Display for TeecapImm {
@@ -108,6 +109,9 @@ impl Display for TeecapInsn {
             TeecapInsn::Out(r) => {
                 write!(f, "out {}", r)
             }
+            TeecapInsn::Halt => {
+                write!(f, "halt")
+            }
             _ => {
                 write!(f, "<und>")
             }
@@ -115,7 +119,7 @@ impl Display for TeecapInsn {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct TeecapTag(u32);
 
 enum TeecapAssemblyUnit {
@@ -125,7 +129,7 @@ enum TeecapAssemblyUnit {
 
 impl Display for TeecapTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tag<{}>", self.0)
+        write!(f, ":<{}>", self.0)
     }
 }
 
@@ -173,6 +177,7 @@ impl TeecapFunction {
 
 type TeecapScope = HashMap<String, u32>;
 
+#[derive(Debug)]
 enum TeecapEvalResult {
     Const(TeecapInt),
     Register(TeecapReg),
@@ -301,8 +306,8 @@ impl CodeGenContext {
     }
 
     fn gen_li(&mut self, reg: &TeecapReg, val: TeecapImm) {
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Li(reg.clone(),
-            val)));
+        self.push_insn(TeecapInsn::Li(reg.clone(),
+            val));
     }
 
     fn gen_li_alloc(&mut self, val: TeecapImm) -> TeecapReg {
@@ -313,7 +318,7 @@ impl CodeGenContext {
 
     fn gen_ld(&mut self, reg: &TeecapReg, var_name: &str) {
         let cap_reg = self.gen_load_cap(var_name).expect("Failed to obtain capability for ld!");
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Ld(*reg, cap_reg)));
+        self.push_insn(TeecapInsn::Ld(*reg, cap_reg));
         self.release_register(&cap_reg); // TODO: we should not reuse cap registers like this
         // it is necessary to write them back if the capability is linear
     }
@@ -333,7 +338,7 @@ impl CodeGenContext {
         let offset = self.find_var_in_scope(var_name)?;
         let offset_reg = self.gen_li_alloc(TeecapImm::Const(offset as u64));
         let cap_reg = TEECAP_STACK_REG; // let's pretend that it's always in the current inner-most scope
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Scc(cap_reg, offset_reg)));
+        self.push_insn(TeecapInsn::Scc(cap_reg, offset_reg));
         self.release_register(&offset_reg);
         Some(cap_reg)
     }
@@ -341,7 +346,7 @@ impl CodeGenContext {
     fn gen_store(&mut self, var_name: &str, val: &TeecapEvalResult) -> TeecapReg {
         let reg = val.to_register(self);
         let cap_reg = self.gen_load_cap(var_name).expect("Unable to access variable through capabilities!");
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Sd(cap_reg, reg)));
+        self.push_insn(TeecapInsn::Sd(cap_reg, reg));
         self.release_register(&cap_reg);
         reg
     }
@@ -357,7 +362,7 @@ impl CodeGenContext {
                 TeecapEvalResult::Register(self.gen_store(var_name, rhs))
             }
             _ => {
-                eprintln!("Unsupported lvalue for assignment!");
+                eprintln!("Unsupported lvalue for assignment: {:?}", lhs);
                 TeecapEvalResult::Const(0)
             }
         }
@@ -366,7 +371,7 @@ impl CodeGenContext {
     fn gen_plus(&mut self, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
         let rd = lhs.to_register(self);
         let rs = rhs.to_register(self);
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Add(rd, rs)));
+        self.push_insn(TeecapInsn::Add(rd, rs));
         TeecapEvalResult::Register(rd)
     }
 
@@ -399,7 +404,7 @@ impl CodeGenContext {
     
     fn gen_jmp_tag(&mut self, tag: TeecapTag) {
         let target_reg = self.gen_li_alloc(TeecapImm::Tag(tag));
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Jmp(target_reg)));
+        self.push_insn(TeecapInsn::Jmp(target_reg));
         self.release_register(&target_reg);
     }
 
@@ -417,6 +422,14 @@ impl CodeGenContext {
         } else{
             eprintln!("No continue tag found!");
         }
+    }
+
+    fn push_insn(&mut self, insn: TeecapInsn) {
+        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(insn));
+    }
+
+    fn push_tag(&mut self, tag: TeecapTag) {
+        self.push_asm_unit(TeecapAssemblyUnit::TeecapTag(tag));
     }
 }
 
@@ -470,17 +483,24 @@ impl TeecapEvaluator for CallExpression {
         let args: Vec<TeecapReg> = self.arguments.iter().map(|x| x.teecap_evaluate(ctx).to_register(ctx)).collect();
         let res = match &callee {
             TeecapEvalResult::Variable(var_name) => {
-                if var_name == "print" {
-                    ctx.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Out(args.first()
-                        .expect("Missing argument for print!").clone())));
-                    TeecapEvalResult::Const(0)
-                } else{
-                    eprintln!("Function call not supported yet!");
-                    TeecapEvalResult::Const(0)
+                match var_name.as_str() {
+                    "print" => {
+                        ctx.push_insn(TeecapInsn::Out(args.first()
+                            .expect("Missing argument for print!").clone()));
+                        TeecapEvalResult::Const(0)
+                    }
+                    "exit" => {
+                        ctx.push_insn(TeecapInsn::Halt);
+                        TeecapEvalResult::Const(0)
+                    }
+                    _ => {
+                        eprintln!("Function call not supported yet: {}", var_name);
+                        TeecapEvalResult::Const(0)
+                    }
                 }
             }
             _ => {
-                eprintln!("Function pointer not supported!");
+                eprintln!("Function pointer not supported: {:?}", self.callee);
                 TeecapEvalResult::Const(0)
             }
         };
@@ -547,13 +567,12 @@ impl TeecapEmitter for InitDeclarator {
                         exp.teecap_evaluate(ctx)
                     }
                     _ => {
-                        eprintln!("Literal format unsupported!");
+                        eprintln!("Literal format unsupported: {:?}", self.initializer);
                         TeecapEvalResult::Const(0)
                     }
                 }
             }
             None => {
-                eprintln!("Literal format unsupported!");
                 TeecapEvalResult::Const(0)
             }
         };
@@ -592,7 +611,7 @@ impl TeecapEmitter for IfStatement {
         let reg_cond = self.condition.teecap_evaluate(ctx).to_register(ctx);
 
         let reg_else = ctx.gen_li_alloc(TeecapImm::Tag(tag_else));
-        ctx.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Jz(reg_else, reg_cond)));
+        ctx.push_insn(TeecapInsn::Jz(reg_else, reg_cond));
         ctx.release_register(&reg_cond);
         ctx.release_register(&reg_else);
         
@@ -601,24 +620,24 @@ impl TeecapEmitter for IfStatement {
         self.then_statement.teecap_emit_code(ctx);
         ctx.pop_scope();
 
-        ctx.push_asm_unit(TeecapAssemblyUnit::TeecapTag(tag_else));
+        ctx.push_tag(tag_else);
 
         if let Some(else_stmt) = &self.else_statement {
             // continuation of then clause: skip the else clause
             let tag_end = ctx.alloc_tag();
             let reg_end = ctx.gen_li_alloc(TeecapImm::Tag(tag_end));
-            ctx.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Jmp(reg_end)));
+            ctx.push_insn(TeecapInsn::Jmp(reg_end));
             ctx.release_register(&reg_end);
 
             // else clause
-            ctx.push_asm_unit(TeecapAssemblyUnit::TeecapTag(tag_else));
+            ctx.push_tag(tag_else);
 
             ctx.push_scope();
             else_stmt.teecap_emit_code(ctx);
             ctx.pop_scope();
             
             // end
-            ctx.push_asm_unit(TeecapAssemblyUnit::TeecapTag(tag_end));
+            ctx.push_tag(tag_end);
         }
     }
 }
@@ -628,10 +647,10 @@ impl TeecapEmitter for WhileStatement {
         let tag_start = ctx.alloc_tag();
         let tag_end = ctx.alloc_tag();
 
-        ctx.push_asm_unit(TeecapAssemblyUnit::TeecapTag(tag_start));
+        ctx.push_tag(tag_start);
         let reg_cond = self.expression.teecap_evaluate(ctx).to_register(ctx);
         let reg_end = ctx.gen_li_alloc(TeecapImm::Tag(tag_end));
-        ctx.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(TeecapInsn::Jz(reg_end, reg_cond)));
+        ctx.push_insn(TeecapInsn::Jz(reg_end, reg_cond));
         ctx.release_register(&reg_end);
         ctx.release_register(&reg_cond);
 
@@ -644,7 +663,7 @@ impl TeecapEmitter for WhileStatement {
         
         // end
         ctx.gen_jmp_tag(tag_start);
-        ctx.push_asm_unit(TeecapAssemblyUnit::TeecapTag(tag_end));
+        ctx.push_tag(tag_end);
     }
 }
 
@@ -675,7 +694,7 @@ impl TeecapEmitter for Statement {
                 ctx.gen_continue();
             }
             _ => {
-                eprintln!("Unsupported statement!");
+                eprintln!("Unsupported statement: {:?}", self);
             }
         }
     }
