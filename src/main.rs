@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement};
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator};
 use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
@@ -67,6 +67,8 @@ enum TeecapInsn {
     Eq(TeecapReg, TeecapReg, TeecapReg),
     Le(TeecapReg, TeecapReg, TeecapReg),
     Lt(TeecapReg, TeecapReg, TeecapReg),
+    And(TeecapReg, TeecapReg),
+    Or(TeecapReg, TeecapReg),
     Jmp(TeecapReg),
     Out(TeecapReg),
     Halt
@@ -132,6 +134,12 @@ impl Display for TeecapInsn {
             }
             TeecapInsn::Eq(rd, r1, r2) => {
                 write!(f, "eq {} {} {}", rd, r1, r2)
+            }
+            TeecapInsn::And(rd, rs) => {
+                write!(f, "and {} {}", rd, rs)
+            }
+            TeecapInsn::Or(rd, rs) => {
+                write!(f, "or {} {}", rd, rs)
             }
             _ => {
                 write!(f, "<und>")
@@ -277,7 +285,9 @@ enum TeecapOpRAB {
 #[derive(Copy, Clone, Debug)]
 enum TeecapOpAB {
     Plus,
-    Minus
+    Minus,
+    And,
+    Or
 }
 
 
@@ -423,6 +433,12 @@ impl CodeGenContext {
             TeecapOpAB::Minus => {
                 TeecapInsn::Sub(rd, rs)
             }
+            TeecapOpAB::And => {
+                TeecapInsn::And(rd, rs)
+            }
+            TeecapOpAB::Or => {
+                TeecapInsn::Or(rd, rs)
+            }
         });
         self.release_gpr(&rs);
         TeecapEvalResult::Register(rd)
@@ -513,6 +529,10 @@ impl CodeGenContext {
         TeecapEvalResult::Register(res_reg)
     }
 
+    fn gen_not(&mut self, r: &TeecapEvalResult) -> TeecapEvalResult {
+        self.gen_r_a_b(TeecapOpRAB::Eq, r, &TeecapEvalResult::Const(0))
+    }
+
     fn push_insn(&mut self, insn: TeecapInsn) {
         self.push_asm_unit(TeecapAssemblyUnit::Insn(insn));
     }
@@ -556,6 +576,19 @@ impl TeecapEvaluator for BinaryOperatorExpression {
             }
             BinaryOperator::Plus => {
                 ctx.gen_a_b(TeecapOpAB::Plus, &lhs, &rhs)
+            }
+            BinaryOperator::Minus => {
+                ctx.gen_a_b(TeecapOpAB::Minus, &lhs, &rhs)
+            }
+            BinaryOperator::LogicalAnd => {
+                ctx.gen_a_b(TeecapOpAB::And, &lhs, &rhs)
+            }
+            BinaryOperator::LogicalOr => {
+                ctx.gen_a_b(TeecapOpAB::Or, &lhs, &rhs)
+            }
+            BinaryOperator::NotEquals => {
+                let res = ctx.gen_r_a_b(TeecapOpRAB::Eq, &lhs, &rhs);
+                ctx.gen_not(&res)
             }
             BinaryOperator::Equals => {
                 ctx.gen_r_a_b(TeecapOpRAB::Eq, &lhs, &rhs)
@@ -620,12 +653,29 @@ impl TeecapEvaluator for CallExpression {
     }
 }
 
+impl TeecapEvaluator for UnaryOperatorExpression {
+    fn teecap_evaluate(&self, ctx: &mut CodeGenContext) -> TeecapEvalResult {
+        let exp = self.operand.teecap_evaluate(ctx);
+        match self.operator.node {
+            UnaryOperator::Negate => {
+                ctx.gen_not(&exp)
+            }
+            _ => {
+                exp
+            }
+        }
+    }
+}
+
 
 impl TeecapEvaluator for Expression {
     fn teecap_evaluate(&self, ctx: &mut CodeGenContext) -> TeecapEvalResult {
         match &self {
             Expression::Constant(con) => {
                 con.teecap_evaluate(ctx)
+            }
+            Expression::UnaryOperator(op) => {
+                op.teecap_evaluate(ctx)
             }
             Expression::BinaryOperator(op) => {
                 op.teecap_evaluate(ctx)
