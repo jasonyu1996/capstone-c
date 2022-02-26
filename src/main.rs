@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression};
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement};
 use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
@@ -59,8 +59,12 @@ enum TeecapInsn {
     Ld(TeecapReg, TeecapReg),
     Scc(TeecapReg, TeecapReg),
     Add(TeecapReg, TeecapReg),
+    Sub(TeecapReg, TeecapReg),
     Jnz(TeecapReg, TeecapReg),
     Jz(TeecapReg, TeecapReg),
+    Eq(TeecapReg, TeecapReg, TeecapReg),
+    Le(TeecapReg, TeecapReg, TeecapReg),
+    Lt(TeecapReg, TeecapReg, TeecapReg),
     Jmp(TeecapReg),
     Out(TeecapReg),
     Halt
@@ -97,6 +101,9 @@ impl Display for TeecapInsn {
             TeecapInsn::Add(rd, rs) => {
                 write!(f, "add {} {}", rd, rs)
             }
+            TeecapInsn::Sub(rd, rs) => {
+                write!(f, "sub {} {}", rd, rs)
+            }
             TeecapInsn::Jnz(rd, rs) => {
                 write!(f, "jnz {} {}", rd, rs)
             }
@@ -112,6 +119,15 @@ impl Display for TeecapInsn {
             TeecapInsn::Halt => {
                 write!(f, "halt")
             }
+            TeecapInsn::Le(rd, r1, r2) => {
+                write!(f, "le {} {} {}", rd, r1, r2)
+            }
+            TeecapInsn::Lt(rd, r1, r2) => {
+                write!(f, "lt {} {} {}", rd, r1, r2)
+            }
+            TeecapInsn::Eq(rd, r1, r2) => {
+                write!(f, "eq {} {} {}", rd, r1, r2)
+            }
             _ => {
                 write!(f, "<und>")
             }
@@ -123,8 +139,9 @@ impl Display for TeecapInsn {
 struct TeecapTag(u32);
 
 enum TeecapAssemblyUnit {
-    TeecapTag(TeecapTag),
-    TeecapInstruction(TeecapInsn)
+    Tag(TeecapTag),
+    Insn(TeecapInsn),
+    Passthrough(String)
 }
 
 impl Display for TeecapTag {
@@ -136,11 +153,14 @@ impl Display for TeecapTag {
 impl Display for TeecapAssemblyUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            TeecapAssemblyUnit::TeecapTag(tag) => {
+            TeecapAssemblyUnit::Tag(tag) => {
                 tag.fmt(f)
             }
-            TeecapAssemblyUnit::TeecapInstruction(insn) => {
+            TeecapAssemblyUnit::Insn(insn) => {
                 insn.fmt(f)
+            }
+            TeecapAssemblyUnit::Passthrough(s) => {
+                s.fmt(f)
             }
         }
     }
@@ -231,6 +251,21 @@ struct CodeGenContext {
     in_func: bool
 }
 
+#[derive(Copy, Clone, Debug)]
+enum TeecapOpRAB {
+    Le,
+    Lt,
+    Ge,
+    Gt,
+    Eq
+}
+
+#[derive(Copy, Clone, Debug)]
+enum TeecapOpAB {
+    Plus,
+    Minus
+}
+
 
 impl CodeGenContext {
     fn new() -> CodeGenContext {
@@ -285,22 +320,18 @@ impl CodeGenContext {
         self.in_func = false;
     }
 
-    fn grab_gpr(&mut self) -> Option<u8> {
+    fn grab_gpr(&mut self) -> Option<TeecapReg> {
         let some_n = self.gprs.iter().enumerate().find(|&(idx, &b)| !b).map(|x| x.0 as u8);
         if let &Some(n) = &some_n {
             self.gprs[n as usize] = true;
         }
-        some_n
+        some_n.map(|x| TeecapReg::Gpr(x))
     }
 
-    fn release_gpr(&mut self, n: u8) {
-        self.gprs[n as usize] = false;
-    }
-
-    fn release_register(&mut self, reg: &TeecapReg) {
+    fn release_gpr(&mut self, reg: &TeecapReg) {
         if *reg != TEECAP_STACK_REG {
             if let &TeecapReg::Gpr(n) = reg {
-                self.release_gpr(n);
+                self.gprs[n as usize] = false;
             }
         }
     }
@@ -311,7 +342,7 @@ impl CodeGenContext {
     }
 
     fn gen_li_alloc(&mut self, val: TeecapImm) -> TeecapReg {
-        let reg = TeecapReg::Gpr(self.grab_gpr().expect("Gpr allocation failed!"));
+        let reg = self.grab_gpr().expect("Gpr allocation for li failed!");
         self.gen_li(&reg, val);
         reg
     }
@@ -319,12 +350,12 @@ impl CodeGenContext {
     fn gen_ld(&mut self, reg: &TeecapReg, var_name: &str) {
         let cap_reg = self.gen_load_cap(var_name).expect("Failed to obtain capability for ld!");
         self.push_insn(TeecapInsn::Ld(*reg, cap_reg));
-        self.release_register(&cap_reg); // TODO: we should not reuse cap registers like this
+        self.release_gpr(&cap_reg); // TODO: we should not reuse cap registers like this
         // it is necessary to write them back if the capability is linear
     }
 
     fn gen_ld_alloc(&mut self, var_name: &str) -> TeecapReg {
-        let reg = TeecapReg::Gpr(self.grab_gpr().expect("Gpr allocation for ld failed!"));
+        let reg = self.grab_gpr().expect("Gpr allocation for ld failed!");
         self.gen_ld(&reg, var_name);
         reg
     }
@@ -339,7 +370,7 @@ impl CodeGenContext {
         let offset_reg = self.gen_li_alloc(TeecapImm::Const(offset as u64));
         let cap_reg = TEECAP_STACK_REG; // let's pretend that it's always in the current inner-most scope
         self.push_insn(TeecapInsn::Scc(cap_reg, offset_reg));
-        self.release_register(&offset_reg);
+        self.release_gpr(&offset_reg);
         Some(cap_reg)
     }
 
@@ -347,13 +378,13 @@ impl CodeGenContext {
         let reg = val.to_register(self);
         let cap_reg = self.gen_load_cap(var_name).expect("Unable to access variable through capabilities!");
         self.push_insn(TeecapInsn::Sd(cap_reg, reg));
-        self.release_register(&cap_reg);
+        self.release_gpr(&cap_reg);
         reg
     }
 
     fn gen_store_drop_result(&mut self, var_name: &str, val: &TeecapEvalResult) {
         let reg = self.gen_store(var_name, val);
-        self.release_register(&reg);
+        self.release_gpr(&reg);
     }
 
     fn gen_assignment(&mut self, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
@@ -368,10 +399,18 @@ impl CodeGenContext {
         }
     }
 
-    fn gen_plus(&mut self, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
+    fn gen_a_b(&mut self, op: TeecapOpAB, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
         let rd = lhs.to_register(self);
         let rs = rhs.to_register(self);
-        self.push_insn(TeecapInsn::Add(rd, rs));
+        self.push_insn(match op {
+            TeecapOpAB::Plus => {
+                TeecapInsn::Add(rd, rs)
+            }
+            TeecapOpAB::Minus => {
+                TeecapInsn::Sub(rd, rs)
+            }
+        });
+        self.release_gpr(&rs);
         TeecapEvalResult::Register(rd)
     }
 
@@ -384,7 +423,7 @@ impl CodeGenContext {
 
     fn drop_result(&mut self, res: &TeecapEvalResult) {
         if let TeecapEvalResult::Register(reg) = res {
-            self.release_register(&reg);
+            self.release_gpr(&reg);
         }
     }
 
@@ -405,7 +444,7 @@ impl CodeGenContext {
     fn gen_jmp_tag(&mut self, tag: TeecapTag) {
         let target_reg = self.gen_li_alloc(TeecapImm::Tag(tag));
         self.push_insn(TeecapInsn::Jmp(target_reg));
-        self.release_register(&target_reg);
+        self.release_gpr(&target_reg);
     }
 
     fn gen_break(&mut self) {
@@ -424,12 +463,43 @@ impl CodeGenContext {
         }
     }
 
+
+    fn gen_r_a_b(&mut self, op: TeecapOpRAB, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
+        let lhs_reg = lhs.to_register(self);
+        let rhs_reg = rhs.to_register(self);
+        let res_reg = self.grab_gpr().expect("Failed to allocate gpr for eq!");
+        self.push_insn(match op {
+            TeecapOpRAB::Le => {
+                TeecapInsn::Le(res_reg, lhs_reg, rhs_reg)
+            }
+            TeecapOpRAB::Lt => {
+                TeecapInsn::Lt(res_reg, lhs_reg, rhs_reg)
+            }
+            TeecapOpRAB::Ge => {
+                TeecapInsn::Le(res_reg, rhs_reg, lhs_reg)
+            }
+            TeecapOpRAB::Gt => {
+                TeecapInsn::Lt(res_reg, rhs_reg, lhs_reg)
+            }
+            TeecapOpRAB::Eq => {
+                TeecapInsn::Eq(res_reg, lhs_reg, rhs_reg)
+            }
+        });
+        self.release_gpr(&lhs_reg);
+        self.release_gpr(&rhs_reg);
+        TeecapEvalResult::Register(res_reg)
+    }
+
     fn push_insn(&mut self, insn: TeecapInsn) {
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapInstruction(insn));
+        self.push_asm_unit(TeecapAssemblyUnit::Insn(insn));
     }
 
     fn push_tag(&mut self, tag: TeecapTag) {
-        self.push_asm_unit(TeecapAssemblyUnit::TeecapTag(tag));
+        self.push_asm_unit(TeecapAssemblyUnit::Tag(tag));
+    }
+    
+    fn push_passthrough_asm(&mut self, s: String) {
+        self.push_asm_unit(TeecapAssemblyUnit::Passthrough(s));
     }
 }
 
@@ -462,7 +532,16 @@ impl TeecapEvaluator for BinaryOperatorExpression {
                 ctx.gen_assignment(&lhs, &rhs)
             }
             BinaryOperator::Plus => {
-                ctx.gen_plus(&lhs, &rhs)
+                ctx.gen_a_b(TeecapOpAB::Plus, &lhs, &rhs)
+            }
+            BinaryOperator::Equals => {
+                ctx.gen_r_a_b(TeecapOpRAB::Eq, &lhs, &rhs)
+            }
+            BinaryOperator::LessOrEqual => {
+                ctx.gen_r_a_b(TeecapOpRAB::Le, &lhs, &rhs)
+            }
+            BinaryOperator::Less => {
+                ctx.gen_r_a_b(TeecapOpRAB::Lt, &lhs, &rhs)
             }
             _ => {
                 TeecapEvalResult::Const(0)
@@ -506,7 +585,7 @@ impl TeecapEvaluator for CallExpression {
         };
         ctx.drop_result(&callee);
         for arg in args.iter() {
-            ctx.release_register(&arg);
+            ctx.release_gpr(&arg);
         }
         res
     }
@@ -612,8 +691,8 @@ impl TeecapEmitter for IfStatement {
 
         let reg_else = ctx.gen_li_alloc(TeecapImm::Tag(tag_else));
         ctx.push_insn(TeecapInsn::Jz(reg_else, reg_cond));
-        ctx.release_register(&reg_cond);
-        ctx.release_register(&reg_else);
+        ctx.release_gpr(&reg_cond);
+        ctx.release_gpr(&reg_else);
         
         // then clause
         ctx.push_scope();
@@ -627,7 +706,7 @@ impl TeecapEmitter for IfStatement {
             let tag_end = ctx.alloc_tag();
             let reg_end = ctx.gen_li_alloc(TeecapImm::Tag(tag_end));
             ctx.push_insn(TeecapInsn::Jmp(reg_end));
-            ctx.release_register(&reg_end);
+            ctx.release_gpr(&reg_end);
 
             // else clause
             ctx.push_tag(tag_else);
@@ -651,8 +730,8 @@ impl TeecapEmitter for WhileStatement {
         let reg_cond = self.expression.teecap_evaluate(ctx).to_register(ctx);
         let reg_end = ctx.gen_li_alloc(TeecapImm::Tag(tag_end));
         ctx.push_insn(TeecapInsn::Jz(reg_end, reg_cond));
-        ctx.release_register(&reg_end);
-        ctx.release_register(&reg_cond);
+        ctx.release_gpr(&reg_end);
+        ctx.release_gpr(&reg_cond);
 
         // while body
         ctx.push_scope();
@@ -664,6 +743,21 @@ impl TeecapEmitter for WhileStatement {
         // end
         ctx.gen_jmp_tag(tag_start);
         ctx.push_tag(tag_end);
+    }
+}
+
+impl TeecapEmitter for AsmStatement {
+    fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
+        match self {
+            AsmStatement::GnuBasic(basic_asm) => {
+                for asm in basic_asm.node.iter() {
+                    ctx.push_passthrough_asm(asm.trim_matches('\"').to_string());
+                }
+            }
+            _ => {
+                eprintln!("Extended inline asm not supported: {:?}", self);
+            }
+        }
     }
 }
 
@@ -692,6 +786,9 @@ impl TeecapEmitter for Statement {
             }
             Statement::Continue => {
                 ctx.gen_continue();
+            }
+            Statement::Asm(asm_stmt) => {
+                asm_stmt.teecap_emit_code(ctx); 
             }
             _ => {
                 eprintln!("Unsupported statement: {:?}", self);
