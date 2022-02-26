@@ -15,6 +15,7 @@ use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
 const TEECAP_STACK_REG: TeecapReg = TeecapReg::Gpr(0); // r0 is used for storing the stack capability
+const TEECAP_DEFAULT_MEM_SIZE: u32 = 1<<16;
 
 type TeecapInt = u64;
 
@@ -58,6 +59,7 @@ enum TeecapInsn {
     Sd(TeecapReg, TeecapReg),
     Ld(TeecapReg, TeecapReg),
     Scc(TeecapReg, TeecapReg),
+    Scco(TeecapReg, TeecapReg),
     Add(TeecapReg, TeecapReg),
     Sub(TeecapReg, TeecapReg),
     Jnz(TeecapReg, TeecapReg),
@@ -97,6 +99,9 @@ impl Display for TeecapInsn {
             }
             TeecapInsn::Scc(rd, rs) => {
                 write!(f, "scc {} {}", rd, rs)
+            }
+            TeecapInsn::Scco(rd, rs) => {
+                write!(f, "scco {} {}", rd, rs)
             }
             TeecapInsn::Add(rd, rs) => {
                 write!(f, "add {} {}", rd, rs)
@@ -150,29 +155,34 @@ impl Display for TeecapTag {
     }
 }
 
-impl Display for TeecapAssemblyUnit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl TeecapAssemblyUnit {
+    fn print_code(&self, mem_offset: &mut u32) {
         match &self {
             TeecapAssemblyUnit::Tag(tag) => {
-                tag.fmt(f)
+                println!("{}", tag);
             }
             TeecapAssemblyUnit::Insn(insn) => {
-                insn.fmt(f)
+                println!("{}", insn);
+                *mem_offset += 1;
             }
             TeecapAssemblyUnit::Passthrough(s) => {
-                s.fmt(f)
+                println!("{}", s);
+                *mem_offset += 1;
             }
         }
     }
 }
 
+
 struct TeecapFunction {
+    name: String, // name of the function
     code: Vec<TeecapAssemblyUnit>
 }
 
 impl TeecapFunction {
-    fn new() -> TeecapFunction {
+    fn new(name: &str) -> TeecapFunction {
         TeecapFunction {
+            name: name.to_string(),
             code: Vec::new()
         }
     }
@@ -181,10 +191,14 @@ impl TeecapFunction {
         self.code.push(asm_unit);
     }
 
-    fn print_code(&self) {
+    fn print_code(&self, mem_offset: &mut u32) {
+        // TODO: add the segment definition as well
+        println!("{} {}", mem_offset, -1);
+        println!(":<{}>", self.name);
         for asm_unit in self.code.iter() {
-            println!("{}", asm_unit);
+            asm_unit.print_code(mem_offset);
         }
+        println!("$");
     }
 }
 
@@ -276,7 +290,7 @@ impl CodeGenContext {
             reserved_stack_size: vec![0],
             gprs: vec![false; TEECAP_GPR_N],
             in_func: false,
-            init_func: TeecapFunction::new(),
+            init_func: TeecapFunction::new("init"),
             break_conts: Vec::new()
         };
         if let TeecapReg::Gpr(n) = TEECAP_STACK_REG {
@@ -311,9 +325,9 @@ impl CodeGenContext {
         }.push_asm_unit(asm_unit);
     }
 
-    fn enter_function(&mut self) {
+    fn enter_function(&mut self, func_name: &str) {
         self.in_func = true;
-        self.functions.push(TeecapFunction::new());
+        self.functions.push(TeecapFunction::new(func_name));
     }
 
     fn exit_function(&mut self) {
@@ -369,7 +383,7 @@ impl CodeGenContext {
         let offset = self.find_var_in_scope(var_name)?;
         let offset_reg = self.gen_li_alloc(TeecapImm::Const(offset as u64));
         let cap_reg = TEECAP_STACK_REG; // let's pretend that it's always in the current inner-most scope
-        self.push_insn(TeecapInsn::Scc(cap_reg, offset_reg));
+        self.push_insn(TeecapInsn::Scco(cap_reg, offset_reg));
         self.release_gpr(&offset_reg);
         Some(cap_reg)
     }
@@ -415,10 +429,19 @@ impl CodeGenContext {
     }
 
     fn print_code(&self) {
-        self.init_func.print_code();
+        println!("{} {} {} {} {}", TEECAP_DEFAULT_MEM_SIZE, TEECAP_GPR_N, 0, 1, -1);
+        println!("{} {} {}", 0, ":<stack>", ":<init>"); // the first is the pc
+        println!("{} {} {}", ":<stack>", TEECAP_DEFAULT_MEM_SIZE, ":<stack>");
+        let mut mem_offset = 0;
+        self.init_func.print_code(&mut mem_offset);
         for func in self.functions.iter() {
-            func.print_code();
+            func.print_code(&mut mem_offset);
         }
+        // stack
+        println!("{} {}", mem_offset, -1);
+        println!(":<stack>");
+        println!("$");
+        println!("-1 -1");
     }
 
     fn drop_result(&mut self, res: &TeecapEvalResult) {
@@ -539,6 +562,12 @@ impl TeecapEvaluator for BinaryOperatorExpression {
             }
             BinaryOperator::LessOrEqual => {
                 ctx.gen_r_a_b(TeecapOpRAB::Le, &lhs, &rhs)
+            }
+            BinaryOperator::Greater => {
+                ctx.gen_r_a_b(TeecapOpRAB::Gt, &lhs, &rhs)
+            }
+            BinaryOperator::GreaterOrEqual => {
+                ctx.gen_r_a_b(TeecapOpRAB::Ge, &lhs, &rhs)
             }
             BinaryOperator::Less => {
                 ctx.gen_r_a_b(TeecapOpRAB::Lt, &lhs, &rhs)
@@ -814,7 +843,7 @@ impl TeecapEmitter for FunctionDefinition {
         let func_name = get_decl_kind_name(&self.declarator.node.kind.node)
             .expect("Bad function name!");
         // emit code for body
-        ctx.enter_function();
+        ctx.enter_function(func_name);
         ctx.push_scope();
         self.statement.teecap_emit_code(ctx);
         ctx.pop_scope();
