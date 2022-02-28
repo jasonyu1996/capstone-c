@@ -339,7 +339,7 @@ impl CodeGenContext {
     }
 
     fn get_cur_func_group_id(&self) -> TeecapFunctionGroupId {
-        self.cur_func.expect("Failed to obtain current function group ID (not in function context)")
+        self.cur_func.as_ref().expect("Failed to obtain current function group ID (not in function context)")
             .group
     }
 
@@ -363,7 +363,7 @@ impl CodeGenContext {
 
     fn push_asm_unit(&mut self, asm_unit: TeecapAssemblyUnit) {
         if self.in_func {
-            &mut self.cur_func.expect("Function list is empty!")
+            self.cur_func.as_mut().expect("Function list is empty!")
         } else {
             &mut self.init_func
         }.push_asm_unit(asm_unit);
@@ -375,7 +375,8 @@ impl CodeGenContext {
     }
 
     fn exit_function(&mut self) {
-        self.function_map.insert();
+        let cur_func = std::mem::take(&mut self.cur_func).expect("Error exit_function: current function not found!");
+        self.function_map.insert(cur_func.name.clone(), cur_func);
         self.in_func = false;
     }
 
@@ -496,7 +497,7 @@ impl CodeGenContext {
         println!("{} {} {}", ":<stack>", TEECAP_DEFAULT_MEM_SIZE, ":<stack>");
         let mut mem_offset = 0;
         self.init_func.print_code(&mut mem_offset);
-        for func in self.functions.iter() {
+        for func in self.function_map.values() {
             func.print_code(&mut mem_offset);
         }
         // stack
