@@ -17,6 +17,10 @@ use lang_c::span::Node;
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
 const TEECAP_STACK_REG: TeecapReg = TeecapReg::Gpr(0); // r0 is used for storing the stack capability
 const TEECAP_DEFAULT_MEM_SIZE: u32 = 1<<16;
+const TEECAP_SEALED_REGION_SIZE: usize = TEECAP_GPR_N + 4;
+
+const TEECAP_SEALED_OFFSET_PC: usize = 0;
+const TEECAP_SEALED_OFFSET_STACK_REG: usize = 4;
 
 type TeecapInt = u64;
 
@@ -48,13 +52,14 @@ impl Display for TeecapReg {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum TeecapImm {
-    Tag(TeecapTag),
+    NTag(TeecapNTag),
+    STag(TeecapSTag),
     Const(TeecapInt)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum TeecapInsn {
     Li(TeecapReg, TeecapImm),
     Sd(TeecapReg, TeecapReg),
@@ -69,7 +74,15 @@ enum TeecapInsn {
     Le(TeecapReg, TeecapReg, TeecapReg),
     Lt(TeecapReg, TeecapReg, TeecapReg),
     And(TeecapReg, TeecapReg),
+    Split(TeecapReg, TeecapReg, TeecapReg),
+    Splitl(TeecapReg, TeecapReg, TeecapReg),
+    Splito(TeecapReg, TeecapReg, TeecapReg),
+    Splitlo(TeecapReg, TeecapReg, TeecapReg),
+    Mov(TeecapReg, TeecapReg),
     Or(TeecapReg, TeecapReg),
+    Mrev(TeecapReg, TeecapReg),
+    Call(TeecapReg, TeecapReg),
+    Seal(TeecapReg),
     Jmp(TeecapReg),
     Out(TeecapReg),
     Halt
@@ -78,7 +91,10 @@ enum TeecapInsn {
 impl Display for TeecapImm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            TeecapImm::Tag(tag) => {
+            TeecapImm::NTag(tag) => {
+                tag.fmt(f)
+            }
+            TeecapImm::STag(tag) => {
                 tag.fmt(f)
             }
             TeecapImm::Const(c) => {
@@ -142,6 +158,30 @@ impl Display for TeecapInsn {
             TeecapInsn::Or(rd, rs) => {
                 write!(f, "or {} {}", rd, rs)
             }
+            TeecapInsn::Split(rd, rs, rp) => {
+                write!(f, "split {} {} {}", rd, rs, rp)
+            }
+            TeecapInsn::Splito(rd, rs, rp) => {
+                write!(f, "splito {} {} {}", rd, rs, rp)
+            }
+            TeecapInsn::Splitl(rd, rs, rp) => {
+                write!(f, "splitl {} {} {}", rd, rs, rp)
+            }
+            TeecapInsn::Splitlo(rd, rs, rp) => {
+                write!(f, "splitlo {} {} {}", rd, rs, rp)
+            }
+            TeecapInsn::Mrev(rd, rs) => {
+                write!(f, "mrev {} {}", rd, rs)
+            }
+            TeecapInsn::Mov(rd, rs) => {
+                write!(f, "mov {} {}", rd, rs)
+            }
+            TeecapInsn::Seal(r) => {
+                write!(f, "seal {}", r)
+            }
+            TeecapInsn::Call(r, ra) => {
+                write!(f, "call {} {}", r, ra)
+            }
             _ => {
                 write!(f, "<und>")
             }
@@ -150,15 +190,24 @@ impl Display for TeecapInsn {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct TeecapTag(u32);
+struct TeecapNTag(u32);
+
+#[derive(Clone, Debug)]
+struct TeecapSTag(String);
 
 enum TeecapAssemblyUnit {
-    Tag(TeecapTag),
+    Tag(TeecapNTag),
     Insn(TeecapInsn),
     Passthrough(String)
 }
 
-impl Display for TeecapTag {
+impl Display for TeecapSTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, ":<{}>", self.0)
+    }
+}
+
+impl Display for TeecapNTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, ":<{}>", self.0)
     }
@@ -264,6 +313,8 @@ impl TeecapEvalResult {
     }
 }
 
+//struct TeecapContext {}
+
 trait TeecapEvaluator {
     fn teecap_evaluate(&self, ctx: &mut CodeGenContext) -> TeecapEvalResult;
 }
@@ -292,9 +343,9 @@ struct CodeGenContext {
     cur_func: Option<TeecapFunction>,
     function_map: TeecapFunctionMap,
     variables: Vec<TeecapScope>,
-    reserved_stack_size: Vec<u32>,
+    reserved_stack_size: u32,
     gprs: Vec<bool>,
-    break_conts: Vec<(TeecapTag, TeecapTag)>, // break and continue stack
+    break_conts: Vec<(TeecapNTag, TeecapNTag)>, // break and continue stack
     in_func: bool,
     struct_map: TeecapStructMap,
 }
@@ -325,7 +376,7 @@ impl CodeGenContext {
             function_map: TeecapFunctionMap::new(),
             cur_func: None,
             variables: vec![TeecapScope::new()],
-            reserved_stack_size: vec![0],
+            reserved_stack_size: 0,
             gprs: vec![false; TEECAP_GPR_N],
             in_func: false,
             init_func: TeecapFunction::new("init"),
@@ -344,8 +395,8 @@ impl CodeGenContext {
     }
 
     fn add_var_to_scope(&mut self, field: TeecapField) {
-        let offset = *self.reserved_stack_size.first().unwrap();
-        *self.reserved_stack_size.first_mut().unwrap() += field.get_size(&self.struct_map);
+        let offset = self.reserved_stack_size;
+        self.reserved_stack_size += field.get_size(&self.struct_map);
         self.variables.first_mut().unwrap().insert(field.name.clone(), (offset, field));
     }
 
@@ -371,6 +422,7 @@ impl CodeGenContext {
 
     fn enter_function(&mut self, func_name: &str) {
         self.in_func = true;
+        self.reserved_stack_size = 0;
         self.cur_func = Some(TeecapFunction::new(func_name));
     }
 
@@ -513,13 +565,13 @@ impl CodeGenContext {
         }
     }
 
-    fn alloc_tag(&mut self) -> TeecapTag {
-        let tag = TeecapTag(self.tag_count);
+    fn alloc_tag(&mut self) -> TeecapNTag {
+        let tag = TeecapNTag(self.tag_count);
         self.tag_count += 1;
         tag
     }
     
-    fn push_break_cont(&mut self, break_tag: TeecapTag, cont_tag: TeecapTag) {
+    fn push_break_cont(&mut self, break_tag: TeecapNTag, cont_tag: TeecapNTag) {
         self.break_conts.push((break_tag, cont_tag));
     }
 
@@ -527,8 +579,8 @@ impl CodeGenContext {
         self.break_conts.pop();
     }
     
-    fn gen_jmp_tag(&mut self, tag: TeecapTag) {
-        let target_reg = self.gen_li_alloc(TeecapImm::Tag(tag));
+    fn gen_jmp_tag(&mut self, tag: TeecapNTag) {
+        let target_reg = self.gen_li_alloc(TeecapImm::NTag(tag));
         self.push_insn(TeecapInsn::Jmp(target_reg));
         self.release_gpr(&target_reg);
     }
@@ -588,12 +640,74 @@ impl CodeGenContext {
         self.push_asm_unit(TeecapAssemblyUnit::Insn(insn));
     }
 
-    fn push_tag(&mut self, tag: TeecapTag) {
+    fn push_tag(&mut self, tag: TeecapNTag) {
         self.push_asm_unit(TeecapAssemblyUnit::Tag(tag));
     }
     
     fn push_passthrough_asm(&mut self, s: String) {
         self.push_asm_unit(TeecapAssemblyUnit::Passthrough(s));
+    }
+
+    fn gen_init_func(&mut self) {
+        self.init_func.push_asm_unit(TeecapAssemblyUnit::Passthrough("delin pc".to_string()));
+        // TODO: jump to the main function
+        //self.init_func.push_asm_unit(TeecapAssemblyUnit::Passthrough("jmp :<main>".to_string()));
+    }
+
+    fn gen_mrev_alloc(&mut self, r: TeecapReg) -> TeecapReg {
+        let rrev = self.grab_gpr().expect("Failed to allocate GPR for mrev!");
+        self.push_insn(TeecapInsn::Mrev(rrev, r));
+        rrev
+    }
+
+    fn gen_splitl_alloc_reversible(&mut self, rs: TeecapReg, offset: u32) -> (TeecapReg, TeecapReg) {
+        let rrev = self.gen_mrev_alloc(rs);
+        let rsplit = self.grab_gpr().expect("Failed to allocate GPR for splitl");
+        let roffset = self.gen_li_alloc(TeecapImm::Const(offset as u64));
+        self.push_insn(TeecapInsn::Splitl(rsplit, rs, roffset));
+        self.release_gpr(&roffset);
+        (rsplit, rrev)
+    }
+
+    fn gen_sd_imm_offset(&mut self, rcap: TeecapReg, rs: TeecapReg, offset: u32) {
+        let roffset = self.gen_li_alloc(TeecapImm::Const(offset as u64));
+        self.push_insn(TeecapInsn::Scco(rcap, roffset));
+        self.release_gpr(&roffset);
+        self.push_insn(TeecapInsn::Sd(rcap, rs));
+    }
+
+    fn gen_seal_setup(&mut self, rpc: TeecapReg, rseal: TeecapReg, rstack: TeecapReg) {
+        self.gen_sd_imm_offset(rseal, rpc, TEECAP_SEALED_OFFSET_PC as u32);
+        self.release_gpr(&rpc);
+        //self.gen_sd_imm_offset(rseal, rstack, TEECAP_SEALED_OFFSET_STACK_REG as u32);
+        // We instead pass the stack as the argument
+        self.push_insn(TeecapInsn::Seal(rseal));
+    }
+
+    fn gen_mov_alloc(&mut self, rs: TeecapReg) -> TeecapReg {
+        let rd = self.grab_gpr().expect("Failed to allocate GPR for mov!");
+        self.push_insn(TeecapInsn::Mov(rd, rs));
+        rd
+    }
+
+    fn gen_call_in_group(&mut self, func_name: &str) {
+        let (rseal, rrev) = self.gen_splitl_alloc_reversible(TEECAP_STACK_REG, self.reserved_stack_size);
+        let (rstack_callee, rrev2) = self.gen_splitl_alloc_reversible(rseal, TEECAP_SEALED_REGION_SIZE as u32);
+        let rstack_rev = self.gen_mrev_alloc(rstack_callee);
+        // now rstack_callee contains a linear capability that points to a region of size
+        // TEECAP_SEALED_REGION_SIZE
+        let rpc = self.gen_mov_alloc(TeecapReg::Pc);
+        let pc_addr_imm = TeecapImm::STag(TeecapSTag(func_name.to_string()));
+        let rpc_addr = self.gen_li_alloc(pc_addr_imm);
+        self.push_insn(TeecapInsn::Scc(rpc, rpc_addr));
+        self.release_gpr(&rpc_addr);
+
+        // set up the sealed capability
+        self.gen_seal_setup(rseal, rpc, rstack_callee);
+        self.push_insn(TeecapInsn::Call(rseal, rstack_callee));
+        self.release_gpr(&rstack_callee);
+
+        // TODO: restore the stack
     }
 }
 
@@ -722,6 +836,7 @@ impl TeecapEvaluator for CallExpression {
                             // FIXME: here we require that the called function be declared before
                             if ctx.get_cur_func_group_id() == ctx.function_map.get(var_name).expect("Undefined function")
                                 .group {
+                                ctx.gen_call_in_group(&var_name);
                                 TeecapEvalResult::Const(0)
                             } else{
                                 eprintln!("Cross-group function call not supported yet: {}", var_name);
@@ -1029,7 +1144,7 @@ impl TeecapEmitter for IfStatement {
         let tag_else = ctx.alloc_tag();
         let reg_cond = self.condition.teecap_evaluate(ctx).to_register(ctx);
 
-        let reg_else = ctx.gen_li_alloc(TeecapImm::Tag(tag_else));
+        let reg_else = ctx.gen_li_alloc(TeecapImm::NTag(tag_else));
         ctx.push_insn(TeecapInsn::Jz(reg_else, reg_cond));
         ctx.release_gpr(&reg_cond);
         ctx.release_gpr(&reg_else);
@@ -1044,7 +1159,7 @@ impl TeecapEmitter for IfStatement {
         if let Some(else_stmt) = &self.else_statement {
             // continuation of then clause: skip the else clause
             let tag_end = ctx.alloc_tag();
-            let reg_end = ctx.gen_li_alloc(TeecapImm::Tag(tag_end));
+            let reg_end = ctx.gen_li_alloc(TeecapImm::NTag(tag_end));
             ctx.push_insn(TeecapInsn::Jmp(reg_end));
             ctx.release_gpr(&reg_end);
 
@@ -1068,7 +1183,7 @@ impl TeecapEmitter for WhileStatement {
 
         ctx.push_tag(tag_start);
         let reg_cond = self.expression.teecap_evaluate(ctx).to_register(ctx);
-        let reg_end = ctx.gen_li_alloc(TeecapImm::Tag(tag_end));
+        let reg_end = ctx.gen_li_alloc(TeecapImm::NTag(tag_end));
         ctx.push_insn(TeecapInsn::Jz(reg_end, reg_cond));
         ctx.release_gpr(&reg_end);
         ctx.release_gpr(&reg_cond);
@@ -1182,6 +1297,7 @@ fn generate_code(trans_unit: &TranslationUnit) {
     for node in trans_unit.0.iter() {
         node.teecap_emit_code(&mut ctx);
     }
+    ctx.gen_init_func();
     // output the code
     ctx.print_code();
 }
