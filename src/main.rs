@@ -182,8 +182,11 @@ impl TeecapAssemblyUnit {
     }
 }
 
+type TeecapFunctionGroupId = u32;
+
 
 struct TeecapFunction {
+    group: TeecapFunctionGroupId,
     name: String, // name of the function
     code: Vec<TeecapAssemblyUnit>
 }
@@ -191,6 +194,7 @@ struct TeecapFunction {
 impl TeecapFunction {
     fn new(name: &str) -> TeecapFunction {
         TeecapFunction {
+            group: 0,
             name: name.to_string(),
             code: Vec::new()
         }
@@ -279,11 +283,14 @@ impl TeecapLiteralConstruct<TeecapInt> for Integer {
     }
 }
 
+type TeecapFunctionMap = HashMap<String, TeecapFunction>;
+
 struct CodeGenContext {
     cur_type: TeecapType,
     tag_count: u32,
     init_func: TeecapFunction,
-    functions: Vec<TeecapFunction>,
+    cur_func: Option<TeecapFunction>,
+    function_map: TeecapFunctionMap,
     variables: Vec<TeecapScope>,
     reserved_stack_size: Vec<u32>,
     gprs: Vec<bool>,
@@ -315,7 +322,8 @@ impl CodeGenContext {
         let mut instance = CodeGenContext {
             cur_type: TeecapType::Int,
             tag_count : 0,
-            functions: Vec::new(),
+            function_map: TeecapFunctionMap::new(),
+            cur_func: None,
             variables: vec![TeecapScope::new()],
             reserved_stack_size: vec![0],
             gprs: vec![false; TEECAP_GPR_N],
@@ -328,6 +336,11 @@ impl CodeGenContext {
             instance.gprs[n as usize] = true; // reserve the gpr for the stack cap
         }
         instance
+    }
+
+    fn get_cur_func_group_id(&self) -> TeecapFunctionGroupId {
+        self.cur_func.expect("Failed to obtain current function group ID (not in function context)")
+            .group
     }
 
     fn add_var_to_scope(&mut self, field: TeecapField) {
@@ -350,7 +363,7 @@ impl CodeGenContext {
 
     fn push_asm_unit(&mut self, asm_unit: TeecapAssemblyUnit) {
         if self.in_func {
-            self.functions.first_mut().expect("Function list is empty!")
+            &mut self.cur_func.expect("Function list is empty!")
         } else {
             &mut self.init_func
         }.push_asm_unit(asm_unit);
@@ -358,10 +371,11 @@ impl CodeGenContext {
 
     fn enter_function(&mut self, func_name: &str) {
         self.in_func = true;
-        self.functions.push(TeecapFunction::new(func_name));
+        self.cur_func = Some(TeecapFunction::new(func_name));
     }
 
     fn exit_function(&mut self) {
+        self.function_map.insert();
         self.in_func = false;
     }
 
@@ -654,6 +668,22 @@ impl TeecapEvaluator for Identifier {
     }
 }
 
+/**
+ * calling conventions: arguments are copied in order at the bottom of the called
+ * stack frame. Upon return, any arguments that are references should be dropped.
+ *
+ * capability manipulation: each capability always has a underlying type, which is the type
+ * of object the memory region contains. We also need to provide some builtin functions.
+ *
+ * Each function should be inside a separate code capability. This would require us to 
+ * decide how capabilities are initialised first.
+ *
+ *
+ * More generally, each function belongs to a function group. A function group corresponds to
+ * a single code capability. The assignment of function groups shall be known at compile
+ * time so the compiler can generate code differently when a function call occurs within the same
+ * function group vs outside the function group.
+ * */
 impl TeecapEvaluator for CallExpression {
     fn teecap_evaluate(&self, ctx: &mut CodeGenContext) -> TeecapEvalResult {
         let callee = self.callee.teecap_evaluate(ctx);
@@ -683,9 +713,19 @@ impl TeecapEvaluator for CallExpression {
                             // 5. create revocation capabilities
                             // 5. invoke sealed capability
                             // 6. linearise revocation capabilities
+                            // drop capabilities before return
                             // 7. provides two kinds of function calls: cross domain and in-domain
-                            eprintln!("Function call not supported yet: {}", var_name);
-                            TeecapEvalResult::Const(0)
+                            // let's say for now that we want to allow everybody to be able to call
+                            // every other function. In this case, we just use the same nonlinear RX
+                            // capability
+                            // FIXME: here we require that the called function be declared before
+                            if ctx.get_cur_func_group_id() == ctx.function_map.get(var_name).expect("Undefined function")
+                                .group {
+                                TeecapEvalResult::Const(0)
+                            } else{
+                                eprintln!("Cross-group function call not supported yet: {}", var_name);
+                                TeecapEvalResult::Const(0)
+                            }
                         }
                     }
                 }
@@ -839,6 +879,7 @@ impl TeecapStruct {
     }
 }
 
+// TODO: add a special type: capability
 #[derive(Clone, Debug)]
 enum TeecapType {
     Int,
