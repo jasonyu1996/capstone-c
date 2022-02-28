@@ -201,7 +201,6 @@ impl TeecapFunction {
     }
 
     fn print_code(&self, mem_offset: &mut u32) {
-        // TODO: add the segment definition as well
         println!("{} {}", mem_offset, -1);
         println!(":<{}>", self.name);
         for asm_unit in self.code.iter() {
@@ -423,8 +422,7 @@ impl CodeGenContext {
      * the specified variable (might fail if the variable cannot be accessed).
      * */
     fn gen_load_cap(&mut self, offset: u32, parent_struct: &Option<String>, var_name: &str) -> Option<TeecapReg> {
-        // TODO: implement this
-        let (r_offset, ftype) = self.resolve_var(offset, parent_struct, var_name)?;
+        let (r_offset, _ftype) = self.resolve_var(offset, parent_struct, var_name)?;
         let offset_reg = self.gen_li_alloc(TeecapImm::Const(r_offset as u64));
         let cap_reg = TEECAP_STACK_REG; // let's pretend that it's always in the current inner-most scope
         self.push_insn(TeecapInsn::Scco(cap_reg, offset_reg));
@@ -673,8 +671,22 @@ impl TeecapEvaluator for CallExpression {
                         TeecapEvalResult::Const(0)
                     }
                     _ => {
-                        eprintln!("Function call not supported yet: {}", var_name);
-                        TeecapEvalResult::Const(0)
+                        if parent_struct.is_some() {
+                            eprintln!("Function pointer not supported yet: {}", var_name);
+                            TeecapEvalResult::Const(0)
+                        } else{
+                            // TODO: support function call
+                            // 1. create sealed capability region
+                            // 2. create stack frame
+                            // 3. move arguments into the stack frame
+                            // 4. seal capability
+                            // 5. create revocation capabilities
+                            // 5. invoke sealed capability
+                            // 6. linearise revocation capabilities
+                            // 7. provides two kinds of function calls: cross domain and in-domain
+                            eprintln!("Function call not supported yet: {}", var_name);
+                            TeecapEvalResult::Const(0)
+                        }
                     }
                 }
             }
