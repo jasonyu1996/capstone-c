@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration};
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator};
 use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
@@ -66,6 +66,10 @@ enum TeecapInsn {
     Ld(TeecapReg, TeecapReg),
     Scc(TeecapReg, TeecapReg),
     Scco(TeecapReg, TeecapReg),
+    Lcc(TeecapReg, TeecapReg),
+    Lcco(TeecapReg, TeecapReg),
+    Lcb(TeecapReg, TeecapReg),
+    Lce(TeecapReg, TeecapReg),
     Add(TeecapReg, TeecapReg),
     Sub(TeecapReg, TeecapReg),
     Jnz(TeecapReg, TeecapReg),
@@ -126,6 +130,12 @@ impl Display for TeecapInsn {
             TeecapInsn::Scco(rd, rs) => {
                 write!(f, "scco {} {}", rd, rs)
             }
+            TeecapInsn::Lcc(rd, rs) => {
+                write!(f, "lcc {} {}", rd, rs)
+            }
+            TeecapInsn::Lcco(rd, rs) => {
+                write!(f, "lcco {} {}", rd, rs)
+            }
             TeecapInsn::Add(rd, rs) => {
                 write!(f, "add {} {}", rd, rs)
             }
@@ -173,6 +183,12 @@ impl Display for TeecapInsn {
             }
             TeecapInsn::Splitlo(rd, rs, rp) => {
                 write!(f, "splitlo {} {} {}", rd, rs, rp)
+            }
+            TeecapInsn::Lcb(rd, rs) => {
+                write!(f, "lcb {} {}", rd, rs)
+            }
+            TeecapInsn::Lce(rd, rs) => {
+                write!(f, "lce {} {}", rd, rs)
             }
             TeecapInsn::Mrev(rd, rs) => {
                 write!(f, "mrev {} {}", rd, rs)
@@ -318,15 +334,47 @@ impl TeecapEvalResult {
             }
         }
     }
-    fn join(&self, other: &TeecapEvalResult, ctx: &CodeGenContext) -> Option<TeecapEvalResult> {
+    fn join(&self, other: &TeecapEvalResult, ctx: &mut CodeGenContext) -> Option<TeecapEvalResult> {
         if let TeecapEvalResult::Variable(offset1, par1, var1) = self {
             if let TeecapEvalResult::Variable(offset2, None, var2) = other {
                 let mid = ctx.resolve_var(*offset1, par1, var1)?;
                 let offset = offset2 + mid.0;
-                if let TeecapType::Struct(struct_name) = mid.1 {
-                    Some(TeecapEvalResult::Variable(offset, Some(struct_name), var2.to_string()))
-                } else{
-                    None
+                //eprintln!("Type = {:?}", mid.1);
+                //eprintln!("{:#?}", ctx.variables.first().unwrap());
+                //eprintln!("{} {:?} {}", offset1, par1, var1);
+                match mid.1 {
+                    TeecapType::Struct(struct_name) => {
+                        Some(TeecapEvalResult::Variable(offset, Some(struct_name), var2.to_string()))
+                    }
+                    TeecapType::Cap(_) => {
+                        // TODO: it is probably necessary to keep record here only first
+                        // because this could be the left value of an assignment
+                        match var2.as_str() {
+                            "cursor" => {
+                                ctx.gen_cap_query(*offset1, par1, var1, TeecapInsn::Lcc)
+                            }
+                            "offset" => {
+                                ctx.gen_cap_query(*offset1, par1, var1, TeecapInsn::Lcco)
+                            }
+                            "base" => {
+                                ctx.gen_cap_query(*offset1, par1, var1, TeecapInsn::Lcb)
+                            }
+                            "end" => {
+                                ctx.gen_cap_query(*offset1, par1, var1, TeecapInsn::Lce)
+                            }
+                            "size" => {
+                                let cap_end = ctx.gen_cap_query(*offset1, par1, var1, TeecapInsn::Lce)?;
+                                let cap_base = ctx.gen_cap_query(*offset1, par1, var1, TeecapInsn::Lcb)?;
+                                ctx.gen_a_b(TeecapOpAB::Minus, &cap_end, &cap_base);
+                                ctx.drop_result(&cap_base);
+                                Some(cap_end)
+                            }
+                            _ => None
+                        }
+                    }
+                    _ => {
+                        None
+                    }
                 }
             } else{
                 None
@@ -372,7 +420,6 @@ impl TeecapLiteralConstruct<TeecapInt> for Integer {
 type TeecapFunctionMap = HashMap<String, TeecapFunction>;
 
 struct CodeGenContext {
-    cur_type: TeecapType,
     tag_count: u32,
     init_func: TeecapFunction,
     cur_func: Option<TeecapFunction>,
@@ -406,7 +453,6 @@ enum TeecapOpAB {
 impl CodeGenContext {
     fn new() -> CodeGenContext {
         let mut instance = CodeGenContext {
-            cur_type: TeecapType::Int,
             tag_count : 0,
             function_map: TeecapFunctionMap::new(),
             cur_func: None,
@@ -789,6 +835,7 @@ impl CodeGenContext {
     fn gen_call_in_group(&mut self, func_name: &str, args: &Vec<Node<Expression>>) -> TeecapEvalResult {
         let (rseal, rrev) = self.gen_splitlo_alloc_reversible(TEECAP_STACK_REG, self.reserved_stack_size);
         let (rstack_callee, rrev2) = self.gen_splitlo_alloc_reversible(rseal, TEECAP_SEALED_REGION_SIZE as u32);
+
         let rstack_rev = self.gen_mrev_alloc(rstack_callee);
         // now rstack_callee contains a linear capability that points to a region of size
         // TEECAP_SEALED_REGION_SIZE
@@ -835,6 +882,17 @@ impl CodeGenContext {
         self.push_insn(TeecapInsn::Drop(TEECAP_STACK_REG));
         self.push_insn(TeecapInsn::Ret(TeecapReg::Ret, retreg));
         self.release_gpr(&retreg);
+    }
+
+    fn gen_cap_query(&mut self, offset: u32, parent_struct: &Option<String>, var_name: &str,
+                     insn_gen: fn(TeecapReg, TeecapReg) -> TeecapInsn) -> Option<TeecapEvalResult> {
+        let rcap = self.gen_ld_alloc(offset, parent_struct, var_name);
+        let res = self.grab_new_gpr().expect("Failed to allocate GPR for cap query!");
+        self.push_insn(insn_gen(res, rcap));
+        self.gen_store(offset, parent_struct, var_name, &TeecapEvalResult::Register(rcap));
+        // we need to put it back in case it is a linear capability
+        self.release_gpr(&rcap);
+        Some(TeecapEvalResult::Register(res))
     }
 }
 
@@ -1010,6 +1068,8 @@ impl TeecapEvaluator for MemberExpression {
                 lhs.join(&rhs, ctx).expect("Bad member expression!")
             }
             MemberOperator::Indirect => {
+                // TODO: we want to allow cap->field 
+                // where cap is a capability with a type
                 eprintln!("Indirect member operator not supported yet!");
                 TeecapEvalResult::Const(0)
             }
@@ -1027,6 +1087,9 @@ impl TeecapEvaluator for Expression {
                 op.teecap_evaluate(ctx)
             }
             Expression::BinaryOperator(op) => {
+                // TODO: we can enable some binary operations on either 
+                // capabilities or the fields of capabilities
+                // Example: + can be used to move cursor
                 op.teecap_evaluate(ctx)
             }
             Expression::Identifier(id) => {
@@ -1068,7 +1131,6 @@ impl<T: TeecapEvaluator> TeecapEvaluator for Node<T> {
 impl TeecapEmitter for InitDeclarator {
     fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
         let name = get_decl_kind_name(&self.declarator.node.kind.node).expect("Bad variable name!");
-        ctx.add_var_to_scope(TeecapField::new(name.to_string(), ctx.cur_type.clone()));
 
         let init_val = match &self.initializer {
             Some(n) => {
@@ -1125,6 +1187,7 @@ impl TeecapStruct {
 #[derive(Clone, Debug)]
 enum TeecapType {
     Int,
+    Cap(Option<Box<TeecapType>>), // might be another capability associated with another type
     Struct(String)
 }
 
@@ -1132,6 +1195,7 @@ impl TeecapType {
     fn get_size(&self, struct_map: &TeecapStructMap) -> u32 {
         match self {
             TeecapType::Int => 1,
+            TeecapType::Cap(_) => 1,
             TeecapType::Struct(struct_name) => {
                 struct_map.get(struct_name).expect("Struct undefined!").size
             }
@@ -1150,25 +1214,99 @@ struct TeecapField {
     field_type: TeecapType,
 }
 
-impl TeecapField {
-    fn new(name: String, field_type: TeecapType) -> TeecapField {
-        TeecapField { name: name, field_type: field_type }
+
+trait AsDeclaration {
+    fn get_declarators(&self) -> Vec<&Declarator>;
+    fn get_specifiers(&self) -> Vec<&TypeSpecifier>;
+}
+
+impl AsDeclaration for Declaration {
+    fn get_declarators(&self) -> Vec<&Declarator> {
+        self.declarators.iter().map(|x| &x.node.declarator.node).collect()
     }
-    fn parse(ctx: &mut CodeGenContext, struct_field: &StructField) -> Vec<TeecapField>  {
-        // only accept single specifier and declarator for now
-        let field_type = match &struct_field.specifiers.first().expect("No specifier for struct fields!").node {
-            SpecifierQualifier::TypeSpecifier(t) => {
-                t.to_teecap_type(ctx)
+
+    fn get_specifiers(&self) -> Vec<&TypeSpecifier> {
+        self.specifiers.iter().filter_map(|x| {
+            match &x.node {
+                DeclarationSpecifier::TypeSpecifier(type_spec) => {
+                    Some(&type_spec.node)
+                }
+                _ => {
+                    None
+                }
+            }
+        }).collect()
+    }
+}
+
+impl AsDeclaration for ParameterDeclaration {
+    fn get_declarators(&self) -> Vec<&Declarator> {
+        self.declarator.as_ref().iter().map(|x| &x.node).collect()
+    }
+
+    fn get_specifiers(&self) -> Vec<&TypeSpecifier> {
+        self.specifiers.iter().filter_map(|x| {
+            match &x.node {
+                DeclarationSpecifier::TypeSpecifier(type_spec) => {
+                    Some(&type_spec.node)
+                }
+                _ => {
+                    None
+                }
+            }
+        }).collect()
+    }
+}
+
+impl AsDeclaration for StructField {
+    fn get_declarators(&self) -> Vec<&Declarator> {
+        self.declarators.iter().filter_map(|x| x.node.declarator.as_ref().map(|d| &d.node)).collect()
+    }
+    fn get_specifiers(&self) -> Vec<&TypeSpecifier> {
+        self.specifiers.iter().filter_map(|x| {
+            match &x.node {
+                SpecifierQualifier::TypeSpecifier(type_spec) => {
+                    Some(&type_spec.node)
+                }
+                _ => {
+                    None
+                }
+            }
+        }).collect()
+    }
+}
+
+impl TeecapField {
+    fn parse_from_declarator(ctx: &mut CodeGenContext, decl: &Declarator, base_type: TeecapType) 
+        -> TeecapField{
+        let name = match &decl.kind.node {
+            DeclaratorKind::Identifier(id) => {
+                &id.node.name
             }
             _ => {
-                TeecapType::Int
+                panic!("No name specified for a field!");
             }
         };
-        struct_field.declarators.iter().map(|x| {
-            let name = get_decl_kind_name(&x.node.declarator.as_ref()
-                                          .expect("No declarator for struct fields!")
-                                          .node.kind.node).expect("Struct field name missing");
-            TeecapField { name: name.to_string(), field_type: field_type.clone() }
+        let mut ttype = base_type;
+        //eprintln!("Decl = {:?}", decl.derived);
+        for derived in decl.derived.iter() {
+            match derived.node {
+                DerivedDeclarator::Pointer(_) => {
+                    ttype = TeecapType::Cap(Some(Box::new(ttype)))
+                }
+                _ => {
+                }
+            }
+        }
+        TeecapField { name: name.to_string(), field_type: ttype }
+    }
+
+    fn parse<T:AsDeclaration> (ctx: &mut CodeGenContext, struct_field: &T) -> Vec<TeecapField>  {
+        // only accept single specifier and declarator for now
+        let field_type = struct_field.get_specifiers().first()
+            .expect("No specifier for struct fields!").to_teecap_type(ctx);
+        struct_field.get_declarators().iter().map(|x| {
+            TeecapField::parse_from_declarator(ctx, &x, field_type.clone())
         }).collect()
     }
 }
@@ -1230,22 +1368,12 @@ impl<T: ToTeecapType> ToTeecapType for Node<T> {
     }
 }
 
-fn try_get_type(ctx: &mut CodeGenContext, decl_spec: &DeclarationSpecifier) -> Option<TeecapType> {
-    match decl_spec {
-        DeclarationSpecifier::TypeSpecifier(type_spec) => {
-            Some(type_spec.to_teecap_type(ctx))
-        }
-        _ => {
-            None
-        }
-    } 
-}
-
 impl TeecapEmitter for Declaration {
     fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
-        let ttype = self.specifiers.iter().map(|x| try_get_type(ctx, &x.node)).fold(None, |x, y| x.or(y))
-            .unwrap_or(TeecapType::Int); // the default type is int
-        ctx.cur_type = ttype;
+        let fields = TeecapField::parse(ctx, self);
+        for field in fields.into_iter() {
+            ctx.add_var_to_scope(field);
+        }
         for n in self.declarators.iter() {
             n.teecap_emit_code(ctx);
         }
@@ -1403,12 +1531,10 @@ fn get_decl_kind_name(kind: &DeclaratorKind) -> Option<&str> {
 
 impl TeecapEmitter for ParameterDeclaration {
     fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
-        let ttype = self.specifiers.iter().map(|x| try_get_type(ctx, &x.node)).fold(None, |x, y| x.or(y))
-            .unwrap_or(TeecapType::Int); // the default type is int
-        //ctx.cur_type = ttype;
-        let name = get_decl_kind_name(&self.declarator.as_ref().expect("No name given in parameter!").node.kind.node)
-            .expect("No name given in parameter!");
-        ctx.add_var_to_scope(TeecapField { name: name.to_string(), field_type: ttype });
+        let fields = TeecapField::parse(ctx, self);
+        for field in fields.into_iter() {
+            ctx.add_var_to_scope(field);
+        }
     }
 }
 
@@ -1483,6 +1609,9 @@ fn main() {
     let config = Config::default();
     match parse(&config, std::env::args().nth(1).expect("Missing source file name!")) {
         Ok(parser_result)  => {
+            if std::env::var("TEECAP_SHOW_AST").is_ok() {
+                println!("AST:\n{:#?}", &parser_result);
+            } 
             generate_code(&parser_result.unit);
         }
         Err(e) => {
