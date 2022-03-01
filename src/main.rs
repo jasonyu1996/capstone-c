@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier};
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration};
 use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
@@ -744,7 +744,18 @@ impl CodeGenContext {
         rd
     }
 
-    fn gen_call_in_group(&mut self, func_name: &str) {
+    fn gen_call_stack_setup(&mut self, rstack: TeecapReg, args: &Vec<Node<Expression>>) {
+        let mut offset = 0;
+        for arg in args.iter() {
+            let res = arg.teecap_evaluate(self).to_register(self);
+            // TODO: here we still assume that everything is just 1 word long
+            self.gen_sd_imm_offset(rstack, res, offset);
+            self.release_gpr(&res);
+            offset += 1;
+        }
+    }
+
+    fn gen_call_in_group(&mut self, func_name: &str, args: &Vec<Node<Expression>>) -> TeecapEvalResult {
         let (rseal, rrev) = self.gen_splitlo_alloc_reversible(TEECAP_STACK_REG, self.reserved_stack_size);
         let (rstack_callee, rrev2) = self.gen_splitlo_alloc_reversible(rseal, TEECAP_SEALED_REGION_SIZE as u32);
         let rstack_rev = self.gen_mrev_alloc(rstack_callee);
@@ -757,10 +768,11 @@ impl CodeGenContext {
         self.release_gpr(&rpc_addr);
 
         // set up the sealed capability
+        self.gen_call_stack_setup(rstack_callee, args);
         self.gen_seal_setup(rseal, rpc, rstack_callee);
         self.push_insn(TeecapInsn::Call(rseal, rstack_callee));
         self.release_gpr(&rstack_callee);
-        self.release_gpr(&rseal);
+        //self.release_gpr(&rseal);
 
         // restore the stack/
         self.push_insn(TeecapInsn::Lin(rstack_rev));
@@ -777,6 +789,8 @@ impl CodeGenContext {
         self.push_insn(TeecapInsn::Lin(rrev));
         self.push_insn(TeecapInsn::Mov(TEECAP_STACK_REG, rrev));
         self.release_gpr(&rrev);
+
+        TeecapEvalResult::Register(rseal)
     }
 
     fn in_cur_func_group(&self, func_name: &str) -> bool {
@@ -786,6 +800,7 @@ impl CodeGenContext {
 
     fn gen_return(&mut self, retval: TeecapEvalResult) {
         let retreg = retval.to_register(self);
+        self.push_insn(TeecapInsn::Drop(TEECAP_STACK_REG));
         self.push_insn(TeecapInsn::Ret(TeecapReg::Ret, retreg));
         self.release_gpr(&retreg);
     }
@@ -914,9 +929,9 @@ impl TeecapEvaluator for CallExpression {
                             // every other function. In this case, we just use the same nonlinear RX
                             // capability
                             // FIXME: here we require that the called function be declared before
+                            //let args_iter : Vec<TeecapEvalResult> = self.arguments.iter().map(|x| x.teecap_evaluate(ctx)).collect();
                             if ctx.in_cur_func_group(var_name){
-                                ctx.gen_call_in_group(&var_name);
-                                TeecapEvalResult::Const(0)
+                                ctx.gen_call_in_group(&var_name, &self.arguments)
                             } else{
                                 eprintln!("Cross-group function call not supported yet: {}", var_name);
                                 TeecapEvalResult::Const(0)
@@ -1351,6 +1366,43 @@ fn get_decl_kind_name(kind: &DeclaratorKind) -> Option<&str> {
     }
 }
 
+impl TeecapEmitter for ParameterDeclaration {
+    fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
+        let ttype = self.specifiers.iter().map(|x| try_get_type(ctx, &x.node)).fold(None, |x, y| x.or(y))
+            .unwrap_or(TeecapType::Int); // the default type is int
+        //ctx.cur_type = ttype;
+        let name = get_decl_kind_name(&self.declarator.as_ref().expect("No name given in parameter!").node.kind.node)
+            .expect("No name given in parameter!");
+        ctx.add_var_to_scope(TeecapField { name: name.to_string(), field_type: ttype });
+    }
+}
+
+impl TeecapEmitter for FunctionDeclarator {
+    fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
+        for param in self.parameters.iter() {
+            param.teecap_emit_code(ctx);
+        }
+    }
+}
+
+impl TeecapEmitter for DerivedDeclarator {
+    fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
+        match self {
+            DerivedDeclarator::Function(func_declarator) => {
+                func_declarator.teecap_emit_code(ctx);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl TeecapEmitter for Declarator {
+    fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
+        for derived in self.derived.iter() {
+            derived.teecap_emit_code(ctx);
+        }
+    }
+}
 
 impl TeecapEmitter for FunctionDefinition {
     fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
@@ -1359,6 +1411,7 @@ impl TeecapEmitter for FunctionDefinition {
         // emit code for body
         ctx.enter_function(func_name);
         ctx.push_scope();
+        self.declarator.teecap_emit_code(ctx);
         self.statement.teecap_emit_code(ctx);
         ctx.pop_scope();
         ctx.exit_function();
