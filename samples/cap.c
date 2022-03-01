@@ -1,5 +1,6 @@
-int main(){
-    int *a;
+int main(int *heap){
+    print(heap);
+    print(heap.cursor);
     int b;
-    print(a.cursor);
+    exit();
 }
