@@ -831,6 +831,7 @@ impl CodeGenContext {
 
     fn gen_return(&mut self, retval: TeecapEvalResult) {
         let retreg = retval.to_register(self);
+        self.push_insn(TeecapInsn::Drop(TeecapReg::Sc));
         self.push_insn(TeecapInsn::Drop(TEECAP_STACK_REG));
         self.push_insn(TeecapInsn::Ret(TeecapReg::Ret, retreg));
         self.release_gpr(&retreg);

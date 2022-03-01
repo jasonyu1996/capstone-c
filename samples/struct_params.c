@@ -28,5 +28,8 @@ int main(){
     v2.a = 3; v2.b = 1; v2.c = 0;
     print(foo(v1, v2));
 
+    v1 = v2;
+    print(v1.a);
+
     exit();
 }
