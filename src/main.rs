@@ -27,7 +27,7 @@ type TeecapInt = u64;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum TeecapReg {
-    Pc, Id, Epc, Ret, Gpr(u8)
+    Pc, Sc, Epc, Ret, Gpr(u8)
 }
 
 impl Display for TeecapReg {
@@ -36,8 +36,8 @@ impl Display for TeecapReg {
            TeecapReg::Pc => {
                write!(f, "pc")
            }
-           TeecapReg::Id => {
-               write!(f, "id")
+           TeecapReg::Sc => {
+               write!(f, "sc")
            }
            TeecapReg::Epc => {
                write!(f, "epc")
@@ -82,7 +82,11 @@ enum TeecapInsn {
     Or(TeecapReg, TeecapReg),
     Mrev(TeecapReg, TeecapReg),
     Call(TeecapReg, TeecapReg),
+    Lin(TeecapReg),
     Seal(TeecapReg),
+    Drop(TeecapReg),
+    Ret(TeecapReg, TeecapReg),
+    RetSealed(TeecapReg, TeecapReg),
     Jmp(TeecapReg),
     Out(TeecapReg),
     Halt
@@ -181,6 +185,18 @@ impl Display for TeecapInsn {
             }
             TeecapInsn::Call(r, ra) => {
                 write!(f, "call {} {}", r, ra)
+            }
+            TeecapInsn::Lin(r) => {
+                write!(f, "lin {}", r)
+            }
+            TeecapInsn::Drop(r) => {
+                write!(f, "drop {}", r)
+            }
+            TeecapInsn::Ret(rd, rs) => {
+                write!(f, "ret {} {}", rd, rs)
+            }
+            TeecapInsn::RetSealed(rd, rs) => {
+                write!(f, "retsl {} {}", rd, rs)
             }
             _ => {
                 write!(f, "<und>")
@@ -394,6 +410,11 @@ impl CodeGenContext {
             .group
     }
 
+    fn get_cur_func_name(&self) -> &str {
+        &self.cur_func.as_ref().expect("Failed to obtain current function group ID (not in function context)")
+            .name
+    }
+
     fn add_var_to_scope(&mut self, field: TeecapField) {
         let offset = self.reserved_stack_size;
         self.reserved_stack_size += field.get_size(&self.struct_map);
@@ -421,18 +442,32 @@ impl CodeGenContext {
     }
 
     fn enter_function(&mut self, func_name: &str) {
+        self.clear_gprs();
         self.in_func = true;
         self.reserved_stack_size = 0;
         self.cur_func = Some(TeecapFunction::new(func_name));
+
+        let r = self.gen_li_alloc(TeecapImm::Const(0));
+        self.push_insn(TeecapInsn::Scco(TEECAP_STACK_REG, r));
+        self.release_gpr(&r);
     }
 
     fn exit_function(&mut self) {
+        self.gen_return(TeecapEvalResult::Const(0));
+        self.clear_gprs();
+
         let cur_func = std::mem::take(&mut self.cur_func).expect("Error exit_function: current function not found!");
         self.function_map.insert(cur_func.name.clone(), cur_func);
         self.in_func = false;
     }
 
-    fn grab_gpr(&mut self) -> Option<TeecapReg> {
+    fn grab_gpr(&mut self, reg: TeecapReg) {
+        if let TeecapReg::Gpr(n) = reg {
+            self.gprs[n as usize] = true;
+        }
+    }
+
+    fn grab_new_gpr(&mut self) -> Option<TeecapReg> {
         let some_n = self.gprs.iter().enumerate().find(|&(idx, &b)| !b).map(|x| x.0 as u8);
         if let &Some(n) = &some_n {
             self.gprs[n as usize] = true;
@@ -448,13 +483,18 @@ impl CodeGenContext {
         }
     }
 
+    fn clear_gprs(&mut self) {
+        self.gprs.iter_mut().for_each(|x| *x = false);
+        self.grab_gpr(TEECAP_STACK_REG);
+    }
+
     fn gen_li(&mut self, reg: &TeecapReg, val: TeecapImm) {
         self.push_insn(TeecapInsn::Li(reg.clone(),
             val));
     }
 
     fn gen_li_alloc(&mut self, val: TeecapImm) -> TeecapReg {
-        let reg = self.grab_gpr().expect("Gpr allocation for li failed!");
+        let reg = self.grab_new_gpr().expect("Gpr allocation for li failed!");
         self.gen_li(&reg, val);
         reg
     }
@@ -467,7 +507,7 @@ impl CodeGenContext {
     }
 
     fn gen_ld_alloc(&mut self, offset: u32, parent_struct: &Option<String>, var_name: &str) -> TeecapReg {
-        let reg = self.grab_gpr().expect("Gpr allocation for ld failed!");
+        let reg = self.grab_new_gpr().expect("Gpr allocation for ld failed!");
         self.gen_ld(&reg, offset, parent_struct, var_name);
         reg
     }
@@ -609,7 +649,7 @@ impl CodeGenContext {
     fn gen_r_a_b(&mut self, op: TeecapOpRAB, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
         let lhs_reg = lhs.to_register(self);
         let rhs_reg = rhs.to_register(self);
-        let res_reg = self.grab_gpr().expect("Failed to allocate gpr for eq!");
+        let res_reg = self.grab_new_gpr().expect("Failed to allocate gpr for eq!");
         self.push_insn(match op {
             TeecapOpRAB::Le => {
                 TeecapInsn::Le(res_reg, lhs_reg, rhs_reg)
@@ -648,25 +688,39 @@ impl CodeGenContext {
         self.push_asm_unit(TeecapAssemblyUnit::Passthrough(s));
     }
 
-    fn gen_init_func(&mut self) {
-        self.init_func.push_asm_unit(TeecapAssemblyUnit::Passthrough("delin pc".to_string()));
-        // TODO: jump to the main function
-        //self.init_func.push_asm_unit(TeecapAssemblyUnit::Passthrough("jmp :<main>".to_string()));
+    fn gen_init_func_pre(&mut self) {
+        self.push_asm_unit(TeecapAssemblyUnit::Passthrough("delin pc".to_string()));
+        // set up the sc capability
+        let r = self.gen_splitlo_alloc(TEECAP_STACK_REG, TEECAP_SEALED_REGION_SIZE as u32);
+        self.push_insn(TeecapInsn::Mov(TeecapReg::Sc, TEECAP_STACK_REG));
+        self.push_insn(TeecapInsn::Mov(TEECAP_STACK_REG, r));
+        self.release_gpr(&r);
+    }
+
+    fn gen_init_func_post(&mut self) {
+        // jump to the main function
+        let r = self.gen_li_alloc(TeecapImm::STag(TeecapSTag("main".to_string())));
+        self.push_insn(TeecapInsn::Jmp(r));
+        self.release_gpr(&r);
     }
 
     fn gen_mrev_alloc(&mut self, r: TeecapReg) -> TeecapReg {
-        let rrev = self.grab_gpr().expect("Failed to allocate GPR for mrev!");
+        let rrev = self.grab_new_gpr().expect("Failed to allocate GPR for mrev!");
         self.push_insn(TeecapInsn::Mrev(rrev, r));
         rrev
     }
 
-    fn gen_splitl_alloc_reversible(&mut self, rs: TeecapReg, offset: u32) -> (TeecapReg, TeecapReg) {
-        let rrev = self.gen_mrev_alloc(rs);
-        let rsplit = self.grab_gpr().expect("Failed to allocate GPR for splitl");
+    fn gen_splitlo_alloc(&mut self, rs: TeecapReg, offset: u32) -> TeecapReg {
+        let rsplit = self.grab_new_gpr().expect("Failed to allocate GPR for splitl");
         let roffset = self.gen_li_alloc(TeecapImm::Const(offset as u64));
-        self.push_insn(TeecapInsn::Splitl(rsplit, rs, roffset));
+        self.push_insn(TeecapInsn::Splitlo(rsplit, rs, roffset));
         self.release_gpr(&roffset);
-        (rsplit, rrev)
+        rsplit
+    }
+
+    fn gen_splitlo_alloc_reversible(&mut self, rs: TeecapReg, offset: u32) -> (TeecapReg, TeecapReg) {
+        let rrev = self.gen_mrev_alloc(rs);
+        (self.gen_splitlo_alloc(rs, offset), rrev)
     }
 
     fn gen_sd_imm_offset(&mut self, rcap: TeecapReg, rs: TeecapReg, offset: u32) {
@@ -676,7 +730,7 @@ impl CodeGenContext {
         self.push_insn(TeecapInsn::Sd(rcap, rs));
     }
 
-    fn gen_seal_setup(&mut self, rpc: TeecapReg, rseal: TeecapReg, rstack: TeecapReg) {
+    fn gen_seal_setup(&mut self, rseal: TeecapReg, rpc: TeecapReg, rstack: TeecapReg) {
         self.gen_sd_imm_offset(rseal, rpc, TEECAP_SEALED_OFFSET_PC as u32);
         self.release_gpr(&rpc);
         //self.gen_sd_imm_offset(rseal, rstack, TEECAP_SEALED_OFFSET_STACK_REG as u32);
@@ -685,14 +739,14 @@ impl CodeGenContext {
     }
 
     fn gen_mov_alloc(&mut self, rs: TeecapReg) -> TeecapReg {
-        let rd = self.grab_gpr().expect("Failed to allocate GPR for mov!");
+        let rd = self.grab_new_gpr().expect("Failed to allocate GPR for mov!");
         self.push_insn(TeecapInsn::Mov(rd, rs));
         rd
     }
 
     fn gen_call_in_group(&mut self, func_name: &str) {
-        let (rseal, rrev) = self.gen_splitl_alloc_reversible(TEECAP_STACK_REG, self.reserved_stack_size);
-        let (rstack_callee, rrev2) = self.gen_splitl_alloc_reversible(rseal, TEECAP_SEALED_REGION_SIZE as u32);
+        let (rseal, rrev) = self.gen_splitlo_alloc_reversible(TEECAP_STACK_REG, self.reserved_stack_size);
+        let (rstack_callee, rrev2) = self.gen_splitlo_alloc_reversible(rseal, TEECAP_SEALED_REGION_SIZE as u32);
         let rstack_rev = self.gen_mrev_alloc(rstack_callee);
         // now rstack_callee contains a linear capability that points to a region of size
         // TEECAP_SEALED_REGION_SIZE
@@ -706,8 +760,34 @@ impl CodeGenContext {
         self.gen_seal_setup(rseal, rpc, rstack_callee);
         self.push_insn(TeecapInsn::Call(rseal, rstack_callee));
         self.release_gpr(&rstack_callee);
+        self.release_gpr(&rseal);
 
-        // TODO: restore the stack
+        // restore the stack/
+        self.push_insn(TeecapInsn::Lin(rstack_rev));
+        self.push_insn(TeecapInsn::Drop(rstack_rev)); // TODO: if the result is an uninitialised capability, initialise it first
+        self.release_gpr(&rstack_rev);
+
+        //self.push_insn(TeecapInsn::Drop(rseal));
+
+        self.push_insn(TeecapInsn::Lin(rrev2));
+        self.push_insn(TeecapInsn::Drop(rrev2));
+        self.release_gpr(&rrev2);
+
+        self.push_insn(TeecapInsn::Drop(TEECAP_STACK_REG));
+        self.push_insn(TeecapInsn::Lin(rrev));
+        self.push_insn(TeecapInsn::Mov(TEECAP_STACK_REG, rrev));
+        self.release_gpr(&rrev);
+    }
+
+    fn in_cur_func_group(&self, func_name: &str) -> bool {
+        self.get_cur_func_name() == func_name ||
+        self.get_cur_func_group_id() == self.function_map.get(func_name).expect("Undefined function").group
+    }
+
+    fn gen_return(&mut self, retval: TeecapEvalResult) {
+        let retreg = retval.to_register(self);
+        self.push_insn(TeecapInsn::Ret(TeecapReg::Ret, retreg));
+        self.release_gpr(&retreg);
     }
 }
 
@@ -834,8 +914,7 @@ impl TeecapEvaluator for CallExpression {
                             // every other function. In this case, we just use the same nonlinear RX
                             // capability
                             // FIXME: here we require that the called function be declared before
-                            if ctx.get_cur_func_group_id() == ctx.function_map.get(var_name).expect("Undefined function")
-                                .group {
+                            if ctx.in_cur_func_group(var_name){
                                 ctx.gen_call_in_group(&var_name);
                                 TeecapEvalResult::Const(0)
                             } else{
@@ -1245,6 +1324,15 @@ impl TeecapEmitter for Statement {
             Statement::Asm(asm_stmt) => {
                 asm_stmt.teecap_emit_code(ctx); 
             }
+            Statement::Return(ret) => {
+                let retval =
+                    if let Some(exp) = ret {
+                        exp.teecap_evaluate(ctx)
+                    } else{
+                        TeecapEvalResult::Const(0)
+                    };
+                ctx.gen_return(retval);
+            }
             _ => {
                 eprintln!("Unsupported statement: {:?}", self);
             }
@@ -1294,10 +1382,11 @@ impl TeecapEmitter for ExternalDeclaration {
 
 fn generate_code(trans_unit: &TranslationUnit) {
     let mut ctx = CodeGenContext::new();
+    ctx.gen_init_func_pre();
     for node in trans_unit.0.iter() {
         node.teecap_emit_code(&mut ctx);
     }
-    ctx.gen_init_func();
+    ctx.gen_init_func_post();
     // output the code
     ctx.print_code();
 }
