@@ -288,7 +288,7 @@ impl TeecapFunction {
 
 type TeecapScope = HashMap<String, (u32, TeecapField)>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum TeecapEvalResult {
     Const(TeecapInt),
     Register(TeecapReg),
@@ -297,16 +297,24 @@ enum TeecapEvalResult {
 
 impl TeecapEvalResult {
     fn to_register(&self, ctx: &mut CodeGenContext) -> TeecapReg {
+        self.to_register_with_offset(0, ctx).unwrap() // should not fail at offset 0
+    }
+
+    fn to_register_with_offset(&self, offset: u32, ctx: &mut CodeGenContext) -> Option<TeecapReg> {
+        if self.get_size(ctx) <= offset {
+            return None;
+        }
         match self {
             &TeecapEvalResult::Const(n) => {
-                ctx.gen_li_alloc(TeecapImm::Const(n))
+                Some(ctx.gen_li_alloc(TeecapImm::Const(n)))
             }
             TeecapEvalResult::Register(r) => {
-                r.clone()
+                Some(r.clone())
             }
-            TeecapEvalResult::Variable(offset, parent_struct, r_var_name) => {
+            TeecapEvalResult::Variable(par_offset, parent_struct, r_var_name) => {
                 // load the variable
-                ctx.gen_ld_alloc(*offset, parent_struct, r_var_name)
+                Some(ctx.gen_ld_alloc(par_offset + offset, parent_struct, r_var_name)) // note: here the type and size 
+                    // information will be lost
             }
         }
     }
@@ -325,6 +333,17 @@ impl TeecapEvalResult {
             }
         } else{
             None
+        }
+    }
+    fn get_size(&self, ctx: &CodeGenContext) -> u32 {
+        match self {
+            TeecapEvalResult::Const(_) => 1,
+            TeecapEvalResult::Register(_) => 1,
+            TeecapEvalResult::Variable(offset, parent, name) => {
+                //eprintln!("{:#?}", (offset, parent, name, ctx.variables.first().unwrap(), &ctx.struct_map));
+                let (_, ttype) = ctx.resolve_var(*offset, parent, name).expect("Variable result not found!");
+                ttype.get_size(&ctx.struct_map)
+            }
         }
     }
 }
@@ -516,6 +535,7 @@ impl CodeGenContext {
         match parent_struct {
             Some(parent_name) => {
                 let par = self.struct_map.get(parent_name)?;
+                //eprintln!("{:#?}", par);
                 par.get_field(var_name).map(|(o, t)| (offset + o, t))
             }
             None => {
@@ -537,23 +557,36 @@ impl CodeGenContext {
         Some(cap_reg)
     }
 
-    fn gen_store(&mut self, offset: u32, parent_struct: &Option<String>, var_name: &str, val: &TeecapEvalResult) -> TeecapReg {
-        let reg = val.to_register(self);
-        let cap_reg = self.gen_load_cap(offset, parent_struct, var_name).expect("Unable to access variable through capabilities!");
-        self.push_insn(TeecapInsn::Sd(cap_reg, reg));
-        self.release_gpr(&cap_reg);
-        reg
+    fn gen_store_with_cap(&mut self, offset: u32, rcap: TeecapReg, val: &TeecapEvalResult) {
+        let rvalue_size = val.get_size(self);
+        for i in 0..rvalue_size {
+            let reg = val.to_register_with_offset(i, self).unwrap();
+            self.gen_sd_imm_offset(rcap, reg, offset + i);
+            self.release_gpr(&reg);
+        }
+    }
+
+    fn gen_store(&mut self, offset: u32, parent_struct: &Option<String>, var_name: &str, val: &TeecapEvalResult) -> TeecapEvalResult {
+        let rvalue_size = val.get_size(self);
+        for i in 0..rvalue_size {
+            let reg = val.to_register_with_offset(i, self).unwrap();
+            let cap_reg = self.gen_load_cap(offset + i, parent_struct, var_name).expect("Unable to access variable through capabilities!");
+            self.push_insn(TeecapInsn::Sd(cap_reg, reg));
+            self.release_gpr(&reg);
+            self.release_gpr(&cap_reg);
+        }
+        val.clone()
     }
 
     fn gen_store_drop_result(&mut self, offset: u32, parent_struct: &Option<String>, var_name: &str, val: &TeecapEvalResult) {
-        let reg = self.gen_store(offset, parent_struct, var_name, val);
-        self.release_gpr(&reg);
+        let res = self.gen_store(offset, parent_struct, var_name, val);
+        self.drop_result(&res);
     }
 
     fn gen_assignment(&mut self, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
         match &lhs {
             TeecapEvalResult::Variable(offset, parent_struct, var_name) => {
-                TeecapEvalResult::Register(self.gen_store(*offset, parent_struct, var_name, rhs))
+                self.gen_store(*offset, parent_struct, var_name, rhs)
             }
             _ => {
                 eprintln!("Unsupported lvalue for assignment: {:?}", lhs);
@@ -747,11 +780,9 @@ impl CodeGenContext {
     fn gen_call_stack_setup(&mut self, rstack: TeecapReg, args: &Vec<Node<Expression>>) {
         let mut offset = 0;
         for arg in args.iter() {
-            let res = arg.teecap_evaluate(self).to_register(self);
-            // TODO: here we still assume that everything is just 1 word long
-            self.gen_sd_imm_offset(rstack, res, offset);
-            self.release_gpr(&res);
-            offset += 1;
+            let res = arg.teecap_evaluate(self);
+            self.gen_store_with_cap(offset, rstack, &res);
+            offset += res.get_size(self);
         }
     }
 
@@ -1058,7 +1089,7 @@ impl TeecapEmitter for InitDeclarator {
     }
 }
 
-
+#[derive(Debug)]
 struct TeecapStruct {
     size: u32,
     name: String,
@@ -1112,6 +1143,7 @@ trait ToTeecapType {
     fn to_teecap_type(&self, ctx: &mut CodeGenContext) -> TeecapType;
 }
 
+#[derive(Debug)]
 struct TeecapField {
     name: String,
     field_type: TeecapType,
@@ -1121,11 +1153,8 @@ impl TeecapField {
     fn new(name: String, field_type: TeecapType) -> TeecapField {
         TeecapField { name: name, field_type: field_type }
     }
-    fn parse(ctx: &mut CodeGenContext, struct_field: &StructField) -> TeecapField  {
+    fn parse(ctx: &mut CodeGenContext, struct_field: &StructField) -> Vec<TeecapField>  {
         // only accept single specifier and declarator for now
-        let name = get_decl_kind_name(&struct_field.declarators.first().expect("No declarator for struct fields!")
-                                      .node.declarator.as_ref().expect("No declarator for struct fields!")
-                                      .node.kind.node).expect("Struct field name missing!");
         let field_type = match &struct_field.specifiers.first().expect("No specifier for struct fields!").node {
             SpecifierQualifier::TypeSpecifier(t) => {
                 t.to_teecap_type(ctx)
@@ -1134,10 +1163,12 @@ impl TeecapField {
                 TeecapType::Int
             }
         };
-        TeecapField {
-            name: name.to_string(),
-            field_type: field_type
-        }
+        struct_field.declarators.iter().map(|x| {
+            let name = get_decl_kind_name(&x.node.declarator.as_ref()
+                                          .expect("No declarator for struct fields!")
+                                          .node.kind.node).expect("Struct field name missing");
+            TeecapField { name: name.to_string(), field_type: field_type.clone() }
+        }).collect()
     }
 }
 
@@ -1158,11 +1189,14 @@ impl ToTeecapType for StructType {
         if let Some(decl) = &self.declarations {
             // if this comes with declarations
             let mut teecap_struct = TeecapStruct::new(id.node.name.clone(), &mut ctx.struct_map);
+            //eprintln!("{:#?}", decl);
             for f in decl.iter() {
                 match &f.node {
                     StructDeclaration::Field(field) => {
-                        let field = TeecapField::parse(ctx, &field.node);
-                        teecap_struct.add_field(field, &ctx.struct_map);
+                        let fields = TeecapField::parse(ctx, &field.node);
+                        for field in fields.into_iter() {
+                            teecap_struct.add_field(field, &ctx.struct_map);
+                        }
                     }
                     _ => {
                         eprintln!("Static assertion in struct not supported!");
