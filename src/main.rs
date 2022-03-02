@@ -333,7 +333,7 @@ struct TeecapVariable {
     ttype: TeecapType,
     //parent_type: Option<String>,
     //name: String,
-    cap: TeecapReg, // actuall register that has the capability for loading the variable
+    cap: TeecapRegResult, // actuall register that has the capability for loading the variable
 }
 
 #[derive(Debug, Clone)]
@@ -352,7 +352,7 @@ impl TeecapVariable {
                         Some(TeecapEvalResult::Variable(TeecapVariable {
                             offset_in_cap: offset,
                             ttype: ttype,
-                            cap: reg_lhs.reg
+                            cap: reg_lhs.clone()
                         }))
                     } 
                     _ => None
@@ -391,7 +391,7 @@ impl TeecapVariable {
                 let (offset, ttype) = ctx.resolve_var(self.offset_in_cap, &Some(parent_name.to_string()), other).expect("Field not found!");
                 Some(TeecapEvalResult::Variable(TeecapVariable { offset_in_cap: offset, 
                     ttype: ttype,
-                    cap: self.cap}))
+                    cap: self.cap.clone()}))
             }
             _ => {
                 None
@@ -646,6 +646,14 @@ impl CodeGenContext {
         }
     }
 
+    fn release_gpr_no_recurse(&mut self, reg: &TeecapRegResult) {
+        if reg.reg != TEECAP_STACK_REG {
+            if let &TeecapReg::Gpr(n) = &reg.reg {
+                self.gprs[n as usize] = false;
+            }
+        }
+    }
+
     fn clear_gprs(&mut self) {
         self.gprs.iter_mut().for_each(|x| *x = false);
         self.grab_gpr(TEECAP_STACK_REG);
@@ -689,7 +697,7 @@ impl CodeGenContext {
         Some(TeecapVariable {
             offset_in_cap: offset,
             ttype: ttype,
-            cap: TEECAP_STACK_REG,
+            cap: TeecapRegResult::new_simple(TEECAP_STACK_REG, TeecapType::Cap(None))
         })
     }
 
@@ -708,11 +716,11 @@ impl CodeGenContext {
 
     fn gen_load_cap_extra_offset(&mut self, var: &TeecapVariable, extra_offset: u32) -> Option<TeecapRegResult> {
         let offset_reg = self.gen_li_alloc(TeecapImm::Const((var.offset_in_cap + extra_offset) as u64));
-        let cap_reg = var.cap; // TODO: change this to a TeecapRegResult to keep track of writeback
+        let cap_reg = var.cap.reg; // TODO: change this to a TeecapRegResult to keep track of writeback
         self.push_insn(TeecapInsn::Scco(cap_reg, offset_reg.reg));
         self.release_gpr(&offset_reg);
         // TODO: handle writeback here
-        Some(TeecapRegResult::new_simple(cap_reg, var.ttype.clone()))
+        Some(var.cap.clone())
     }
 
     /**
@@ -1027,7 +1035,7 @@ impl CodeGenContext {
         let rcap = self.gen_ld_alloc(cap_var);
         let res = self.grab_new_gpr().expect("Failed to allocate GPR for cap query!");
         self.push_insn(insn_gen(res.reg, rcap.reg));
-        self.gen_store(cap_var, &TeecapEvalResult::Register(rcap.clone()));
+        //self.gen_store(cap_var, &TeecapEvalResult::Register(rcap.clone()));
         // we need to put it back in case it is a linear capability
         self.release_gpr(&rcap);
         Some(TeecapEvalResult::Register(res))
@@ -1130,8 +1138,10 @@ impl TeecapEvaluator for CallExpression {
             TeecapEvalResult::UnresolvedVar(unresolved_var) => {
                 match unresolved_var.0.as_str() {
                     "print" => {
-                        ctx.push_insn(TeecapInsn::Out(args.first()
-                            .expect("Missing argument for print!").reg));
+                        let r = args.first()
+                            .expect("Missing argument for print!");
+                        ctx.push_insn(TeecapInsn::Out(r.reg));
+                        ctx.release_gpr_no_recurse(&r);
                         TeecapEvalResult::Const(0)
                     }
                     "exit" => {
@@ -1142,7 +1152,7 @@ impl TeecapEvaluator for CallExpression {
                         // TODO: support function call
                         // 1. create sealed capability region
                         // 2. create stack frame
-                        // 3. move arguments into the stack frame
+                        // 3.jmove arguments into the stack frame
                         // 4. seal capability
                         // 5. create revocation capabilities
                         // 5. invoke sealed capability
