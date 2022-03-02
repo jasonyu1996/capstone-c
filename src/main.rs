@@ -92,6 +92,7 @@ enum TeecapInsn {
     Mrev(TeecapReg, TeecapReg),
     Call(TeecapReg, TeecapReg),
     Lin(TeecapReg),
+    Delin(TeecapReg),
     Seal(TeecapReg),
     Drop(TeecapReg),
     Ret(TeecapReg, TeecapReg),
@@ -129,19 +130,23 @@ impl TeecapRegResult {
         TeecapRegResult { reg: reg, release_strategy: TeecapRegRelease::Simple, data_type: dtype}
     }
 
-    fn new_writeback(reg: TeecapReg, wb_to: TeecapRegResult, dtype: TeecapType) -> TeecapRegResult {
-        TeecapRegResult { reg: reg, release_strategy: TeecapRegRelease::WriteBack(Box::new(wb_to)), data_type: dtype }
+    fn new_writeback(reg: TeecapReg, wb_to: TeecapRegResult, offset: u32, dtype: TeecapType) -> TeecapRegResult {
+        TeecapRegResult { reg: reg, release_strategy: TeecapRegRelease::WriteBack(Box::new(wb_to), offset), data_type: dtype }
     }
 
-    fn set_writeback(&mut self, wb_to: TeecapRegResult) {
-        self.release_strategy = TeecapRegRelease::WriteBack(Box::new(wb_to));
+    fn set_writeback(&mut self, wb_to: TeecapRegResult, offset: u32) {
+        self.release_strategy = TeecapRegRelease::WriteBack(Box::new(wb_to), offset);
+    }
+
+    fn to_simple(&self) -> TeecapRegResult {
+        TeecapRegResult { reg: self.reg, release_strategy: TeecapRegRelease::Simple, data_type: self.data_type.clone() }
     }
 }
 
 #[derive(Clone, Debug)]
 enum TeecapRegRelease {
     Simple,
-    WriteBack(Box<TeecapRegResult>)
+    WriteBack(Box<TeecapRegResult>, u32) // the reliant capability register and the offset
 }
 
 impl Display for TeecapInsn {
@@ -236,6 +241,9 @@ impl Display for TeecapInsn {
             }
             TeecapInsn::Lin(r) => {
                 write!(f, "lin {}", r)
+            }
+            TeecapInsn::Delin(r) => {
+                write!(f, "delin {}", r)
             }
             TeecapInsn::Drop(r) => {
                 write!(f, "drop {}", r)
@@ -633,15 +641,13 @@ impl CodeGenContext {
         match &reg.release_strategy {
             TeecapRegRelease::Simple => {
                 // no need to do anything
+                self.release_gpr_no_recurse(reg);
             }
-            TeecapRegRelease::WriteBack(wb_to) => {
-                self.push_insn(TeecapInsn::Sd(wb_to.reg, reg.reg));
-                self.release_gpr(wb_to);
-            }
-        }
-        if reg.reg != TEECAP_STACK_REG {
-            if let &TeecapReg::Gpr(n) = &reg.reg {
-                self.gprs[n as usize] = false;
+            TeecapRegRelease::WriteBack(wb_to, offset) => {
+                self.gen_store_with_cap(*offset, wb_to, &TeecapEvalResult::Register(reg.to_simple()));
+                self.release_gpr_no_recurse(reg);
+                //self.push_insn(TeecapInsn::Sd(wb_to.reg, reg.reg));
+                self.release_gpr(wb_to); // TODO: change to loops
             }
         }
     }
@@ -674,7 +680,7 @@ impl CodeGenContext {
         let cap_reg = self.gen_load_cap_extra_offset(var, offset).expect("Failed to obtain capability for ld!");
         self.push_insn(TeecapInsn::Ld(reg.reg, cap_reg.reg));
         if var.ttype.is_cap() {
-            reg.set_writeback(cap_reg);
+            reg.set_writeback(cap_reg, var.offset_in_cap + offset);
         } else{
             self.release_gpr(&cap_reg); // TODO: we should not reuse cap registers like this
         }
@@ -906,9 +912,9 @@ impl CodeGenContext {
         self.push_asm_unit(TeecapAssemblyUnit::Passthrough("delin pc".to_string()));
         // set up the sc capability
         let stack_reg = TeecapRegResult::new_simple(TEECAP_STACK_REG, TeecapType::Cap(None));
-        let rheap = self.gen_splitlo_alloc(&stack_reg, TEECAP_STACK_SIZE);
+        let rheap = self.gen_splitlo_alloc_const(&stack_reg, TEECAP_STACK_SIZE);
 
-        let r = self.gen_splitlo_alloc(&stack_reg, TEECAP_SEALED_REGION_SIZE as u32);
+        let r = self.gen_splitlo_alloc_const(&stack_reg, TEECAP_SEALED_REGION_SIZE as u32);
         self.push_insn(TeecapInsn::Mov(TeecapReg::Sc, TEECAP_STACK_REG));
         self.push_insn(TeecapInsn::Mov(TEECAP_STACK_REG, r.reg));
 
@@ -934,17 +940,22 @@ impl CodeGenContext {
     }
 
 
-    fn gen_splitlo_alloc(&mut self, rs: &TeecapRegResult, offset: u32) -> TeecapRegResult {
+    fn gen_splitlo_alloc(&mut self, rs: &TeecapRegResult, roffset: &TeecapRegResult) -> TeecapRegResult {
         let rsplit = self.grab_new_gpr().expect("Failed to allocate GPR for splitl");
-        let roffset = self.gen_li_alloc(TeecapImm::Const(offset as u64));
+        //let roffset = self.gen_li_alloc(TeecapImm::Const(offset as u64));
         self.push_insn(TeecapInsn::Splitlo(rsplit.reg, rs.reg, roffset.reg));
-        self.release_gpr(&roffset);
+        //self.release_gpr(&roffset);
         rsplit
     }
 
-    fn gen_splitlo_alloc_reversible(&mut self, rs: &TeecapRegResult, offset: u32) -> (TeecapRegResult, TeecapRegResult) {
+    fn gen_splitlo_alloc_const(&mut self, rs: &TeecapRegResult, offset: u32) -> TeecapRegResult {
+        let roffset = self.gen_li_alloc(TeecapImm::Const(offset as u64));
+        self.gen_splitlo_alloc(rs, &roffset)
+    }
+
+    fn gen_splitlo_alloc_const_reversible(&mut self, rs: &TeecapRegResult, offset: u32) -> (TeecapRegResult, TeecapRegResult) {
         let rrev = self.gen_mrev_alloc(rs);
-        (self.gen_splitlo_alloc(rs, offset), rrev)
+        (self.gen_splitlo_alloc_const(rs, offset), rrev)
     }
 
     fn gen_sd_imm_offset(&mut self, rcap: &TeecapRegResult, rs: &TeecapRegResult, offset: u32) {
@@ -978,9 +989,9 @@ impl CodeGenContext {
     }
 
     fn gen_call_in_group(&mut self, func_name: &str, args: &Vec<Node<Expression>>) -> TeecapEvalResult {
-        let (rseal, rrev) = self.gen_splitlo_alloc_reversible(
+        let (rseal, rrev) = self.gen_splitlo_alloc_const_reversible(
             &TeecapRegResult::new_simple(TEECAP_STACK_REG, TeecapType::Cap(None)), self.reserved_stack_size);
-        let (rstack_callee, rrev2) = self.gen_splitlo_alloc_reversible(&rseal, TEECAP_SEALED_REGION_SIZE as u32);
+        let (rstack_callee, rrev2) = self.gen_splitlo_alloc_const_reversible(&rseal, TEECAP_SEALED_REGION_SIZE as u32);
 
         let rstack_rev = self.gen_mrev_alloc(&rstack_callee);
         // now rstack_callee contains a linear capability that points to a region of size
@@ -1137,15 +1148,35 @@ impl TeecapEvaluator for CallExpression {
         let res = match &callee {
             TeecapEvalResult::UnresolvedVar(unresolved_var) => {
                 match unresolved_var.0.as_str() {
+                    // builtin pseudo calls
                     "print" => {
                         let r = args.first()
                             .expect("Missing argument for print!");
                         ctx.push_insn(TeecapInsn::Out(r.reg));
-                        ctx.release_gpr_no_recurse(&r);
+                        //ctx.release_gpr_no_recurse(&r);
                         TeecapEvalResult::Const(0)
                     }
                     "exit" => {
                         ctx.push_insn(TeecapInsn::Halt);
+                        TeecapEvalResult::Const(0)
+                    }
+                    "splitlo" => {
+                        TeecapEvalResult::Register(ctx.gen_splitlo_alloc(&args[0], &args[1]))
+                    }
+                    "seal" => {
+                        ctx.push_insn(TeecapInsn::Seal(args.first().expect("Missing argument for seal!").reg));
+                        TeecapEvalResult::Const(0)
+                    }
+                    "lin" => {
+                        ctx.push_insn(TeecapInsn::Lin(args.first().expect("Missing argument for lin!").reg));
+                        TeecapEvalResult::Const(0)
+                    }
+                    "delin" => {
+                        ctx.push_insn(TeecapInsn::Delin(args.first().expect("Missing argument for delin!").reg));
+                        TeecapEvalResult::Const(0)
+                    }
+                    "scco" => {
+                        ctx.push_insn(TeecapInsn::Scco(args[0].reg, args[1].reg));
                         TeecapEvalResult::Const(0)
                     }
                     _ => {

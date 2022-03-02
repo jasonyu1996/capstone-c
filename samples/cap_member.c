@@ -18,6 +18,10 @@ int main(struct data *heap){
     heap->bar.a = 51;
     print(heap->bar.b);
     print(heap->bar.a);
-    int b;
+    struct data* koo;
+    koo = heap;
+    print(heap);
+    print(koo);
+    print(koo->bar.a);
     exit();
 }
