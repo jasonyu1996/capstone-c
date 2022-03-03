@@ -29,8 +29,15 @@ void* sealed_setup(int* cap, void* pcc, void* epc, void* stack, int* metaparam) 
     return cap;
 }
 
+struct malloc_state {
+    void* heap;
+    int alloc_n;
+};
+
 TEECAP_ATTR_HAS_METAPARAM void* malloc(int size) {
     void* heap = TEECAP_METAPARAM;
+    print(heap);
+    TEECAP_METAPARAM = heap;
     returnsl(42, malloc);
 }
 

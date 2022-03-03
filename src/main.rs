@@ -16,7 +16,7 @@ use std::str::FromStr;
 use lang_c::driver::{SyntaxError, Error};
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator, Extension};
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator, Extension, ArraySize};
 use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
@@ -523,6 +523,32 @@ enum TeecapEvalResult {
 }
 
 impl TeecapEvalResult {
+    fn get_type(&self) -> &TeecapType {
+        match self {
+            TeecapEvalResult::Const(_) => &TeecapType::Int,
+            TeecapEvalResult::Register(reg) => &reg.data_type,
+            TeecapEvalResult::Variable(var) => &var.ttype,
+            TeecapEvalResult::UnresolvedVar(var) => &TeecapType::Int, // resolve first, otherwise fall back to int
+        }
+    }
+
+    fn try_into_variable(&self, ctx: &mut CodeGenContext) -> Option<TeecapVariable> {
+        match self {
+            TeecapEvalResult::Variable(var) => Some(var.clone()),
+            TeecapEvalResult::UnresolvedVar(var) => {
+                ctx.resolve_top_var(var)
+            },
+            _ => None
+        }
+    }
+
+
+    fn resolve(&mut self, ctx: &mut CodeGenContext) {
+        if let TeecapEvalResult::UnresolvedVar(var) = self {
+            *self = TeecapEvalResult::Variable(ctx.resolve_top_var(&var).expect("Failed to resolve variable!"));
+        }
+    }
+
     fn to_register(&self, ctx: &mut CodeGenContext) -> TeecapRegResult {
         self.to_register_with_offset(0, ctx).unwrap() // should not fail at offset 0
     }
@@ -722,13 +748,15 @@ impl CodeGenContext {
         }
     }
 
-    fn gen_index(&mut self, lhs: &TeecapEvalResult, rhs: &TeecapEvalResult) -> TeecapEvalResult {
-        let rhs_reg = rhs.to_register(self); // it probably makes more sense to generate rhs first
-        let lhs_reg = lhs.to_register(self);
+    fn gen_index(&mut self, lhs: &mut TeecapEvalResult, rhs: &mut TeecapEvalResult) -> TeecapEvalResult {
         //eprintln!("{:?} {:?}", lhs_reg, rhs_reg);
         //eprintln!("{:?}", self.variables);
-        match (&lhs_reg.data_type, &rhs_reg.data_type) {
+        rhs.resolve(self);
+        lhs.resolve(self);
+        match (lhs.get_type(), rhs.get_type()) {
             (TeecapType::Cap(base_type), TeecapType::Int) => {
+                let rhs_reg = rhs.to_register(self); // it probably makes more sense to generate rhs first
+                let lhs_reg = lhs.to_register(self);
                 let base_size = base_type.as_ref().map_or(1, |t| t.get_size(&self.struct_map));
                 //eprintln!("base_size = {}", base_size);
                 let rsize = self.gen_li_alloc(TeecapImm::Const(base_size as u64));
@@ -740,9 +768,20 @@ impl CodeGenContext {
                     cap: lhs_reg
                 })
             }
-            _ => {
-                self.release_gpr(&lhs_reg);
+            (TeecapType::Array(base_type, _len), TeecapType::Int) => {
+                let lhs_var = lhs.try_into_variable(self).expect("Bad index op!");
+                let rhs_reg = rhs.to_register(self);
+                let base_size = base_type.get_size(&self.struct_map);
+                let rsize = self.gen_li_alloc(TeecapImm::Const(base_size as u64));
+                self.push_insn(TeecapInsn::Mult(rsize.reg, rhs_reg.reg));
                 self.release_gpr(&rhs_reg);
+                TeecapEvalResult::Variable(TeecapVariable {
+                    offset_in_cap: lhs_var.offset_in_cap.add(&TeecapOffset::Register(rsize.reg), self),
+                    ttype: *base_type.clone(),
+                    cap: lhs_var.cap.clone()
+                })
+            }
+            _ => {
                 TeecapEvalResult::Const(0)
             }
         }
@@ -821,6 +860,13 @@ impl CodeGenContext {
             self.gprs[n as usize].grab();
         }
         some_n.map(|x| TeecapRegResult::new_simple(TeecapReg::Gpr(x), TeecapType::Int))
+    }
+
+    fn get_gpr_state(&self, reg: TeecapReg) -> TeecapRegState {
+        match reg {
+            TeecapReg::Gpr(n) => self.gprs[n as usize],
+            _ => TeecapRegState::Pinned
+        }
     }
 
     fn release_gpr(&mut self, reg: &TeecapRegResult) {
@@ -905,7 +951,7 @@ impl CodeGenContext {
         let (offset, ttype) = self.resolve_var(TeecapOffset::Const(0), &None, var)?;
         Some(TeecapVariable {
             offset_in_cap: offset,
-            ttype: ttype,
+            ttype,
             cap: TeecapRegResult::new_simple(TEECAP_STACK_REG, TeecapType::Cap(None))
         })
     }
@@ -979,6 +1025,13 @@ impl CodeGenContext {
             TeecapEvalResult::UnresolvedVar(var) => {
                 let var = self.resolve_top_var(var).expect("Failed to resolve variable for assignment!");
                 self.gen_store(&var, rhs)
+            }
+            TeecapEvalResult::Register(reg) => {
+                // this can happen in reg()
+                let rhs_reg = rhs.to_register(self);
+                self.push_insn(TeecapInsn::Mov(reg.reg, rhs_reg.reg)); // then we simply move the value and we are done
+                self.release_gpr(&rhs_reg);
+                lhs.clone()
             }
             _ => {
                 eprintln!("Unsupported lvalue for assignment: {:?}", lhs);
@@ -1345,8 +1398,8 @@ impl TeecapEvaluator for Constant {
 
 impl TeecapEvaluator for BinaryOperatorExpression {
     fn teecap_evaluate(&self, ctx: &mut CodeGenContext) -> TeecapEvalResult {
-        let lhs = self.lhs.teecap_evaluate(ctx);
-        let rhs = self.rhs.teecap_evaluate(ctx);
+        let mut lhs = self.lhs.teecap_evaluate(ctx);
+        let mut rhs = self.rhs.teecap_evaluate(ctx);
         match self.operator.node {
             BinaryOperator::Assign => {
                 ctx.gen_assignment(&lhs, &rhs)
@@ -1383,7 +1436,7 @@ impl TeecapEvaluator for BinaryOperatorExpression {
                 ctx.gen_r_a_b(TeecapOpRAB::Lt, &lhs, &rhs)
             }
             BinaryOperator::Index => {
-                ctx.gen_index(&lhs, &rhs)
+                ctx.gen_index(&mut lhs, &mut rhs)
             }
             _ => {
                 TeecapEvalResult::Const(0)
@@ -1503,7 +1556,9 @@ impl TeecapEvaluator for CallExpression {
                     "reg" => {
                         let s: &str = &*self.arguments.first().expect("Missing argument for reg!").node.teecap_try_into_str().expect("Wrong argument type for reg!");
                         let reg = TeecapReg::try_from_str(s.trim_matches('\"')).expect("Unknown register name!");
-                        ctx.grab_gpr(reg);
+                        if !matches!(ctx.get_gpr_state(reg), TeecapRegState::Pinned) {
+                            eprintln!("Warning: register {} is not pinned", reg);
+                        }
                         TeecapEvalResult::Register(TeecapRegResult::new_simple(reg, TeecapType::Int))
                     }
                     "returnsl" => {
@@ -1716,7 +1771,8 @@ impl TeecapStruct {
 enum TeecapType {
     Int,
     Cap(Option<Box<TeecapType>>), // might be another capability associated with another type
-    Struct(String)
+    Struct(String),
+    Array(Box<TeecapType>, u32)
 }
 
 impl TeecapType {
@@ -1726,6 +1782,9 @@ impl TeecapType {
             TeecapType::Cap(_) => 1,
             TeecapType::Struct(struct_name) => {
                 struct_map.get(struct_name).expect("Struct undefined!").size
+            },
+            TeecapType::Array(base_type, size) => {
+                base_type.get_size(struct_map) * size
             }
         }
     }
@@ -1825,9 +1884,22 @@ impl TeecapField {
         let mut ttype = base_type;
         //eprintln!("Decl = {:?}", decl.derived);
         for derived in decl.derived.iter() {
-            match derived.node {
+            match &derived.node {
                 DerivedDeclarator::Pointer(_) => {
                     ttype = TeecapType::Cap(Some(Box::new(ttype)))
+                }
+                DerivedDeclarator::Array(array_decl) => {
+                    let size = match &array_decl.node.size {
+                        ArraySize::VariableExpression(e) => {
+                            let rsize = e.teecap_evaluate(ctx);
+                            match rsize {
+                                TeecapEvalResult::Const(size) => size,
+                                _ => 1
+                            }
+                        }
+                        _ => 1,
+                    };
+                    ttype = TeecapType::Array(Box::new(ttype), size as u32)
                 }
                 _ => {
                 }
