@@ -1,4 +1,4 @@
-int main(){
+int _start(){
     int a = 6024, b = 304, tmp;
     while(a != 0) {
         while(a >= b){

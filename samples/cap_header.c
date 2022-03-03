@@ -1,8 +1,16 @@
 #include "teecap.h"
 
-int main(int *heap){
-    print(heap);
-    print(heap.cursor);
-    int b;
+int main(struct teecap_runtime runtime){
+    print(runtime.version_major);
+    print(runtime.version_minor);
+    print(runtime.malloc);
+    print(runtime.malloc());
+    print(runtime.malloc);
+    print(runtime.malloc());
+    print(runtime.malloc);
+    print(runtime.malloc());
+    print(runtime.malloc);
+    print(runtime.malloc());
+    print(runtime.malloc);
     exit();
 }

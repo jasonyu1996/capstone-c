@@ -5,7 +5,7 @@ int fib(int n) {
     return fib(n - 1) + fib(n - 2);
 }
 
-int main() {
+int _start() {
     print(fib(10));
     exit();
 }

@@ -3,7 +3,7 @@ struct fib {
     int a1;
 };
 
-int main(){
+int _start(){
     struct fib res;
     res.a0 = 1;
     res.a1 = 1;

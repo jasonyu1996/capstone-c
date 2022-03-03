@@ -21,7 +21,7 @@ int foo(struct Vec3 v1, struct Vec3 v2){
     return a + b + c;
 }
 
-int main(){
+int _start(){
     struct Vec3 v1, v2;
 
     v1.a = 2; v1.b = 3; v1.c = 1;

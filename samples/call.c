@@ -9,7 +9,7 @@ void foo(int a, int b) {
     bar();
 }
 
-int main(){
+int _start(){
     int a = 2, b = 4;
     foo();
     print(a + b);

@@ -8,7 +8,7 @@ struct data {
 };
 
 
-int main(struct data *heap){
+int _start(struct data *heap){
     print(heap);
     print(heap.cursor);
     print(heap->foo);
