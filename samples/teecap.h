@@ -12,6 +12,8 @@
 #define TEECAP_SEALED_REGION_SIZE 36
 #define TEECAP_METAPARAM (reg("r1"))
 
+#define TEECAP_ATTR_HAS_METAPARAM __attribute__((pinned("r1")))
+
 struct teecap_runtime {
     int version_major;
     int version_minor;
@@ -27,7 +29,7 @@ void* sealed_setup(int* cap, void* pcc, void* epc, void* stack, int* metaparam) 
     return cap;
 }
 
-void* malloc(int size) {
+TEECAP_ATTR_HAS_METAPARAM void* malloc(int size) {
     void* heap = TEECAP_METAPARAM;
     returnsl(42, malloc);
 }

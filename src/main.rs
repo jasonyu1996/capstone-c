@@ -16,7 +16,7 @@ use std::str::FromStr;
 use lang_c::driver::{SyntaxError, Error};
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator};
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator, Extension};
 use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
@@ -31,6 +31,39 @@ const TEECAP_STACK_SIZE: u32 = 1<<14;
 
 type TeecapInt = u64;
 
+
+#[derive(Clone, Copy, Debug)]
+enum TeecapRegState {
+    Pinned,
+    Grabbed,
+    Free
+}
+
+impl TeecapRegState {
+    fn grab(&mut self) {
+        if !matches!(*self, TeecapRegState::Pinned) {
+            *self = TeecapRegState::Grabbed;
+        }
+    }
+
+    fn free(&mut self) {
+        if !matches!(*self, TeecapRegState::Pinned) {
+            *self = TeecapRegState::Free;
+        }
+    }
+
+    fn pin(&mut self) {
+        *self = TeecapRegState::Pinned;
+    }
+
+    fn reset(&mut self) {
+        *self = TeecapRegState::Free;
+    }
+
+    fn is_available(&self) -> bool {
+        matches!(*self, TeecapRegState::Free)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum TeecapReg {
@@ -118,6 +151,43 @@ impl TeecapReg {
                 _ => None
             }
         }
+    }
+}
+
+
+#[derive(Debug)]
+struct TeecapFunctionType {
+    pinned_gprs: Vec<TeecapReg>
+}
+
+impl TeecapFunctionType {
+    fn default() -> TeecapFunctionType {
+        TeecapFunctionType { pinned_gprs: Vec::new() }
+    }
+
+    fn from_specifiers(specifiers: &Vec<Node<DeclarationSpecifier>>) -> TeecapFunctionType {
+        let mut func_type = TeecapFunctionType::default();
+        for spec in specifiers.iter() {
+            match &spec.node {
+                DeclarationSpecifier::Extension(extensions) => {
+                    for ext in extensions.iter() {
+                        match &ext.node {
+                            Extension::Attribute(attr) => {
+                                match attr.name.node.as_str() {
+                                    "pinned" => {
+                                        func_type.pinned_gprs.extend(attr.arguments.iter().filter_map(|x| x.node.teecap_try_into_str().and_then(|s| TeecapReg::try_from_str(s.trim_matches('\"')))));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            _ => { }
+                        }
+                    }
+                }
+                _ => { }
+            }
+        }
+        func_type
     }
 }
 
@@ -341,15 +411,17 @@ type TeecapFunctionGroupId = u32;
 struct TeecapFunction {
     group: TeecapFunctionGroupId,
     name: String, // name of the function
-    code: Vec<TeecapAssemblyUnit>
+    code: Vec<TeecapAssemblyUnit>,
+    func_type: TeecapFunctionType,
 }
 
 impl TeecapFunction {
-    fn new(name: &str) -> TeecapFunction {
+    fn new(name: &str, func_type: TeecapFunctionType) -> TeecapFunction {
         TeecapFunction {
             group: 0,
             name: name.to_string(),
-            code: Vec::new()
+            code: Vec::new(),
+            func_type
         }
     }
 
@@ -600,7 +672,7 @@ struct CodeGenContext {
     function_map: TeecapFunctionMap,
     variables: Vec<TeecapScope>,
     reserved_stack_size: u32,
-    gprs: Vec<bool>,
+    gprs: [TeecapRegState; TEECAP_GPR_N],
     break_conts: Vec<(TeecapNTag, TeecapNTag)>, // break and continue stack
     in_func: bool,
     struct_map: TeecapStructMap,
@@ -632,14 +704,14 @@ impl CodeGenContext {
             cur_func: None,
             variables: vec![TeecapScope::new()],
             reserved_stack_size: 0,
-            gprs: vec![false; TEECAP_GPR_N],
+            gprs: [TeecapRegState::Free; TEECAP_GPR_N],
             in_func: false,
-            init_func: TeecapFunction::new("_init"),
+            init_func: TeecapFunction::new("_init", TeecapFunctionType::default()),
             break_conts: Vec::new(),
             struct_map: TeecapStructMap::new()
         };
         if let TeecapReg::Gpr(n) = TEECAP_STACK_REG {
-            instance.gprs[n as usize] = true; // reserve the gpr for the stack cap
+            instance.gprs[n as usize] = TeecapRegState::Pinned; // reserve the gpr for the stack cap
         }
         instance
     }
@@ -712,11 +784,15 @@ impl CodeGenContext {
         }.push_asm_unit(asm_unit);
     }
 
-    fn enter_function(&mut self, func_name: &str) {
-        self.clear_gprs();
+    fn enter_function(&mut self, func_name: &str, func_type: TeecapFunctionType) {
         self.in_func = true;
         self.reserved_stack_size = 0;
-        self.cur_func = Some(TeecapFunction::new(func_name));
+        self.reset_gprs();
+        for pinned_gpr in func_type.pinned_gprs.iter() {
+            self.pin_gpr(*pinned_gpr);
+        }
+        self.cur_func = Some(TeecapFunction::new(func_name, func_type));
+        
 
         // not really necessary to do this
         //let r = self.gen_li_alloc(TeecapImm::Const(0));
@@ -726,7 +802,7 @@ impl CodeGenContext {
 
     fn exit_function(&mut self) {
         self.gen_return(&TeecapEvalResult::Const(0), &TeecapEvalResult::Const(0));
-        self.clear_gprs();
+        self.reset_gprs();
 
         let cur_func = std::mem::take(&mut self.cur_func).expect("Error exit_function: current function not found!");
         self.function_map.insert(cur_func.name.clone(), cur_func);
@@ -735,14 +811,14 @@ impl CodeGenContext {
 
     fn grab_gpr(&mut self, reg: TeecapReg) {
         if let TeecapReg::Gpr(n) = reg {
-            self.gprs[n as usize] = true;
+            self.gprs[n as usize].grab();
         }
     }
 
     fn grab_new_gpr(&mut self) -> Option<TeecapRegResult> {
-        let some_n = self.gprs.iter().enumerate().find(|&(idx, &b)| !b).map(|x| x.0 as u8);
+        let some_n = self.gprs.iter().enumerate().find(|&(idx, &b)| b.is_available()).map(|x| x.0 as u8);
         if let &Some(n) = &some_n {
-            self.gprs[n as usize] = true;
+            self.gprs[n as usize].grab();
         }
         some_n.map(|x| TeecapRegResult::new_simple(TeecapReg::Gpr(x), TeecapType::Int))
     }
@@ -775,14 +851,20 @@ impl CodeGenContext {
     fn release_gpr_no_recurse(&mut self, reg: &TeecapRegResult) {
         if reg.reg != TEECAP_STACK_REG {
             if let &TeecapReg::Gpr(n) = &reg.reg {
-                self.gprs[n as usize] = false;
+                self.gprs[n as usize].free();
             }
         }
     }
 
-    fn clear_gprs(&mut self) {
-        self.gprs.iter_mut().for_each(|x| *x = false);
-        self.grab_gpr(TEECAP_STACK_REG);
+    fn pin_gpr(&mut self, reg: TeecapReg) {
+        if let TeecapReg::Gpr(n) = reg {
+            self.gprs[n as usize].pin();
+        }
+    }
+
+    fn reset_gprs(&mut self) {
+        self.gprs.iter_mut().for_each(|x| x.reset());
+        self.pin_gpr(TEECAP_STACK_REG);
     }
 
     fn gen_li(&mut self, reg: &TeecapRegResult, val: TeecapImm) {
@@ -2022,8 +2104,9 @@ impl TeecapEmitter for FunctionDefinition {
     fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
         let func_name = get_decl_kind_name(&self.declarator.node.kind.node)
             .expect("Bad function name!");
+        let func_type = TeecapFunctionType::from_specifiers(&self.specifiers);
         // emit code for body
-        ctx.enter_function(func_name);
+        ctx.enter_function(func_name, func_type);
         ctx.push_scope();
         self.declarator.teecap_emit_code(ctx);
         self.statement.teecap_emit_code(ctx);
