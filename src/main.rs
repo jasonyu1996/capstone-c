@@ -16,7 +16,7 @@ use std::str::FromStr;
 use lang_c::driver::{SyntaxError, Error};
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator, Extension, ArraySize};
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator, Extension, ArraySize, TypeName};
 use lang_c::span::Node;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
@@ -1694,6 +1694,10 @@ impl TeecapEvaluator for Expression {
             Expression::Member(member) => {
                 member.teecap_evaluate(ctx)
             }
+            Expression::SizeOfTy(st) => {
+                let ttype = TeecapType::parse(ctx, &st.node.0.node).expect("Bad type specifier in sizeof!");
+                TeecapEvalResult::Const(ttype.get_size(&ctx.struct_map) as u64)
+            }
             _ => {
                 TeecapEvalResult::Const(0)
             }
@@ -1795,6 +1799,39 @@ impl TeecapType {
             _ => false
         }
     }
+
+    fn derived_decorate(&mut self, ctx: &mut CodeGenContext, derived: &DerivedDeclarator) {
+        match &derived {
+            DerivedDeclarator::Pointer(_) => {
+                *self = TeecapType::Cap(Some(Box::new(self.clone())));
+            }
+            DerivedDeclarator::Array(array_decl) => {
+                let size = match &array_decl.node.size {
+                    ArraySize::VariableExpression(e) => {
+                        let rsize = e.teecap_evaluate(ctx);
+                        match rsize {
+                            TeecapEvalResult::Const(size) => size,
+                            _ => 1
+                        }
+                    }
+                    _ => 1,
+                };
+                *self = TeecapType::Array(Box::new(self.clone()), size as u32);
+            }
+            _ => {
+            }
+        }
+    }
+
+    fn parse<T:AsDeclaration>(ctx: &mut CodeGenContext, declaration: &T) -> Option<TeecapType> {
+        let mut t = declaration.get_specifiers().first()?.to_teecap_type(ctx);
+        for decl in declaration.get_declarators().iter() {
+            for d in decl.derived.iter() {
+                t.derived_decorate(ctx, &d.node);
+            }
+        }
+        Some(t)
+    }
 }
 
 
@@ -1812,6 +1849,30 @@ struct TeecapField {
 trait AsDeclaration {
     fn get_declarators(&self) -> Vec<&Declarator>;
     fn get_specifiers(&self) -> Vec<&TypeSpecifier>;
+}
+
+impl AsDeclaration for TypeName {
+    fn get_declarators(&self) -> Vec<&Declarator> {
+        match self.declarator.as_ref() {
+            None => Vec::new(),
+            Some(d) => {
+                vec![&d.node]
+            }
+        }
+    }
+
+    fn get_specifiers(&self) -> Vec<&TypeSpecifier> {
+        self.specifiers.iter().filter_map(|x| {
+            match &x.node {
+                SpecifierQualifier::TypeSpecifier(type_spec) => {
+                    Some(&type_spec.node)
+                }
+                _ => {
+                    None
+                }
+            }
+        }).collect()
+    }
 }
 
 impl AsDeclaration for Declaration {
@@ -1884,26 +1945,7 @@ impl TeecapField {
         let mut ttype = base_type;
         //eprintln!("Decl = {:?}", decl.derived);
         for derived in decl.derived.iter() {
-            match &derived.node {
-                DerivedDeclarator::Pointer(_) => {
-                    ttype = TeecapType::Cap(Some(Box::new(ttype)))
-                }
-                DerivedDeclarator::Array(array_decl) => {
-                    let size = match &array_decl.node.size {
-                        ArraySize::VariableExpression(e) => {
-                            let rsize = e.teecap_evaluate(ctx);
-                            match rsize {
-                                TeecapEvalResult::Const(size) => size,
-                                _ => 1
-                            }
-                        }
-                        _ => 1,
-                    };
-                    ttype = TeecapType::Array(Box::new(ttype), size as u32)
-                }
-                _ => {
-                }
-            }
+            ttype.derived_decorate(ctx, &derived.node);
         }
         TeecapField { name: name.to_string(), field_type: ttype }
     }

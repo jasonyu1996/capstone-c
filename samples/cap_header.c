@@ -12,5 +12,6 @@ int main(struct teecap_runtime runtime){
     print(runtime.malloc);
     print(runtime.malloc());
     print(runtime.malloc);
+    runtime.free();
     exit();
 }
