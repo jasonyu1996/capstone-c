@@ -110,9 +110,11 @@ enum TeecapInsn {
     Lcco(TeecapReg, TeecapReg),
     Lcb(TeecapReg, TeecapReg),
     Lce(TeecapReg, TeecapReg),
+    Lcn(TeecapReg, TeecapReg),
     Add(TeecapReg, TeecapReg),
     Sub(TeecapReg, TeecapReg),
     Mult(TeecapReg, TeecapReg),
+    Div(TeecapReg, TeecapReg),
     Jnz(TeecapReg, TeecapReg),
     Jz(TeecapReg, TeecapReg),
     Eq(TeecapReg, TeecapReg, TeecapReg),
@@ -160,11 +162,14 @@ struct TeecapFunctionType {
     pinned_gprs: Vec<TeecapReg>
 }
 
-impl TeecapFunctionType {
+impl Default for TeecapFunctionType {
     fn default() -> TeecapFunctionType {
         TeecapFunctionType { pinned_gprs: Vec::new() }
     }
+}
 
+
+impl TeecapFunctionType {
     fn from_specifiers(specifiers: &Vec<Node<DeclarationSpecifier>>) -> TeecapFunctionType {
         let mut func_type = TeecapFunctionType::default();
         for spec in specifiers.iter() {
@@ -275,6 +280,9 @@ impl Display for TeecapInsn {
             TeecapInsn::Mult(rd, rs) => {
                 write!(f, "mult {} {}", rd, rs)
             }
+            TeecapInsn::Div(rd, rs) => {
+                write!(f, "div {} {}", rd, rs)
+            }
             TeecapInsn::Jnz(rd, rs) => {
                 write!(f, "jnz {} {}", rd, rs)
             }
@@ -322,6 +330,9 @@ impl Display for TeecapInsn {
             }
             TeecapInsn::Lce(rd, rs) => {
                 write!(f, "lce {} {}", rd, rs)
+            }
+            TeecapInsn::Lcn(rd, rs) => {
+                write!(f, "lcn {} {}", rd, rs)
             }
             TeecapInsn::Mrev(rd, rs) => {
                 write!(f, "mrev {} {}", rd, rs)
@@ -490,11 +501,7 @@ impl TeecapVariable {
                         ctx.gen_cap_query(self, TeecapInsn::Lce)
                     }
                     "size" => {
-                        let cap_end = ctx.gen_cap_query(self, TeecapInsn::Lce)?;
-                        let cap_base = ctx.gen_cap_query(self, TeecapInsn::Lcb)?;
-                        ctx.gen_a_b(TeecapOpAB::Minus, &cap_end, &cap_base);
-                        ctx.drop_result(&cap_base);
-                        Some(cap_end)
+                        ctx.gen_cap_query(self, TeecapInsn::Lcn)
                     }
                     _ => None
                 }
@@ -689,6 +696,14 @@ impl TeecapOffset {
     fn from_reg_result(res: &TeecapRegResult, ctx: &mut CodeGenContext) -> TeecapOffset {
         TeecapOffset::Register(res.reg)
     }
+
+    fn duplicate(&self, ctx: &mut CodeGenContext) -> TeecapOffset {
+        match self {
+            TeecapOffset::Const(n) => TeecapOffset::Const(*n),
+            TeecapOffset::Register(reg) =>
+                TeecapOffset::Register(ctx.gen_mov_alloc(&TeecapRegResult::new_simple(*reg, TeecapType::Int)).reg)
+        }
+    }
 }
 
 struct CodeGenContext {
@@ -718,6 +733,8 @@ enum TeecapOpAB {
     Plus,
     Minus,
     And,
+    Mult,
+    Div,
     Or
 }
 
@@ -771,6 +788,7 @@ impl CodeGenContext {
             (TeecapType::Array(base_type, _len), TeecapType::Int) => {
                 let lhs_var = lhs.try_into_variable(self).expect("Bad index op!");
                 let rhs_reg = rhs.to_register(self);
+                //eprintln!("{:?} {:?} {:?}", lhs_var, rhs_reg, base_type);
                 let base_size = base_type.get_size(&self.struct_map);
                 let rsize = self.gen_li_alloc(TeecapImm::Const(base_size as u64));
                 self.push_insn(TeecapInsn::Mult(rsize.reg, rhs_reg.reg));
@@ -925,11 +943,14 @@ impl CodeGenContext {
     }
 
     fn gen_ld_extra_offset(&mut self, reg: &mut TeecapRegResult, var: &TeecapVariable, offset: &TeecapOffset) {
-        let cap_reg = self.gen_load_cap_extra_offset(var, offset).expect("Failed to obtain capability for ld!");
-        self.push_insn(TeecapInsn::Ld(reg.reg, cap_reg.reg));
         if var.ttype.is_cap() {
-            reg.set_writeback(cap_reg, var.offset_in_cap.add(offset, self));
+            let dup_offset = var.offset_in_cap.duplicate(self);
+            let cap_reg = self.gen_load_cap_extra_offset(var, offset).expect("Failed to obtain capability for ld!");
+            self.push_insn(TeecapInsn::Ld(reg.reg, cap_reg.reg));
+            reg.set_writeback(cap_reg, dup_offset.add(&offset, self));
         } else{
+            let cap_reg = self.gen_load_cap_extra_offset(var, offset).expect("Failed to obtain capability for ld!");
+            self.push_insn(TeecapInsn::Ld(reg.reg, cap_reg.reg));
             self.release_gpr(&cap_reg); // TODO: we should not reuse cap registers like this
         }
         reg.set_type(var.ttype.clone());
@@ -1052,6 +1073,12 @@ impl CodeGenContext {
             }
             TeecapOpAB::And => {
                 TeecapInsn::And(rd.reg, rs.reg)
+            }
+            TeecapOpAB::Mult => {
+                TeecapInsn::Mult(rd.reg, rs.reg)
+            }
+            TeecapOpAB::Div => {
+                TeecapInsn::Div(rd.reg, rs.reg)
             }
             TeecapOpAB::Or => {
                 TeecapInsn::Or(rd.reg, rs.reg)
@@ -1366,11 +1393,14 @@ impl CodeGenContext {
 
     fn gen_cap_query(&mut self, cap_var: &TeecapVariable,
                      insn_gen: fn(TeecapReg, TeecapReg) -> TeecapInsn) -> Option<TeecapEvalResult> {
+        //eprintln!("{:?}", cap_var);
         let rcap = self.gen_ld_alloc(cap_var);
+        //eprintln!("Reg: {:?}", rcap);
         let res = self.grab_new_gpr().expect("Failed to allocate GPR for cap query!");
         self.push_insn(insn_gen(res.reg, rcap.reg));
         //self.gen_store(cap_var, &TeecapEvalResult::Register(rcap.clone()));
         // we need to put it back in case it is a linear capability
+        //eprintln!("rcap = {:?}, {:?}, {:?}", rcap, res, self.get_gpr_state(res.reg));
         self.release_gpr(&rcap);
         Some(TeecapEvalResult::Register(res))
     }
@@ -1409,6 +1439,12 @@ impl TeecapEvaluator for BinaryOperatorExpression {
             }
             BinaryOperator::Minus => {
                 ctx.gen_a_b(TeecapOpAB::Minus, &lhs, &rhs)
+            }
+            BinaryOperator::Multiply => {
+                ctx.gen_a_b(TeecapOpAB::Mult, &lhs, &rhs)
+            }
+            BinaryOperator::Divide => {
+                ctx.gen_a_b(TeecapOpAB::Div, &lhs, &rhs)
             }
             BinaryOperator::LogicalAnd => {
                 ctx.gen_a_b(TeecapOpAB::And, &lhs, &rhs)
@@ -1550,6 +1586,18 @@ impl TeecapEvaluator for CallExpression {
                     "scc" => {
                         let args = self.arguments.to_registers(ctx);
                         ctx.push_insn(TeecapInsn::Scc(args[0].reg, args[1].reg));
+                        ctx.release_gprs(&args);
+                        TeecapEvalResult::Const(0)
+                    }
+                    "mrev" => {
+                        let args = self.arguments.to_registers(ctx);
+                        let reg = ctx.gen_mrev_alloc(args.first().expect("Missing argument for mrev!"));
+                        ctx.release_gprs(&args);
+                        TeecapEvalResult::Register(reg)
+                    }
+                    "drop" => {
+                        let args = self.arguments.to_registers(ctx);
+                        ctx.push_insn(TeecapInsn::Drop(args.first().expect("Missing argument for drop!").reg));
                         ctx.release_gprs(&args);
                         TeecapEvalResult::Const(0)
                     }
@@ -1947,6 +1995,7 @@ impl TeecapField {
         for derived in decl.derived.iter() {
             ttype.derived_decorate(ctx, &derived.node);
         }
+        //eprintln!("ttype = {:?}", ttype);
         TeecapField { name: name.to_string(), field_type: ttype }
     }
 
@@ -2106,6 +2155,8 @@ impl TeecapEmitter for WhileStatement {
         ctx.push_tag(tag_end);
     }
 }
+
+// TODO: add do-while statement
 
 impl TeecapEmitter for AsmStatement {
     fn teecap_emit_code(&self, ctx: &mut CodeGenContext) {
