@@ -28,6 +28,7 @@ const TEECAP_SEALED_REGION_SIZE: usize = TEECAP_GPR_N + 4;
 const TEECAP_SEALED_OFFSET_PC: usize = 0;
 const TEECAP_SEALED_OFFSET_STACK_REG: usize = 4;
 const TEECAP_STACK_SIZE: u32 = 1<<14;
+const TEECAP_CLOCK_RATE: u32 = 50;
 
 type TeecapInt = u64;
 
@@ -465,6 +466,7 @@ struct TeecapUnresolvedVar(String); // this is the unresolved variable. We don't
 
 impl TeecapVariable {
     fn join_indirect(&self, other: &TeecapUnresolvedVar, ctx: &mut CodeGenContext) -> Option<TeecapEvalResult> {
+        //eprintln!("Join {:?}", self.ttype);
         match &self.ttype {
             TeecapType::Cap(base_type) => { // indirect join can only be performed on a capability
                 match base_type {
@@ -472,6 +474,7 @@ impl TeecapVariable {
                         let reg_lhs = ctx.gen_ld_alloc(self); // holds a capability
                         //ctx.push_insn(TeecapInsn::Out(reg_lhs.reg));
                         let (offset, ttype) = ctx.resolve_var(TeecapOffset::Const(0), &Some(base_struct_name.to_string()), other)?;
+                        //eprintln!("Resolved: {:?}", (offset, &ttype));
                         Some(TeecapEvalResult::Variable(TeecapVariable {
                             offset_in_cap: offset,
                             ttype: ttype,
@@ -1089,7 +1092,7 @@ impl CodeGenContext {
     }
 
     fn print_code(&self) {
-        println!("{} {} {} {} {}", TEECAP_DEFAULT_MEM_SIZE, TEECAP_GPR_N, 0, 1, -1);
+        println!("{} {} {} {} {}", TEECAP_DEFAULT_MEM_SIZE, TEECAP_GPR_N, TEECAP_CLOCK_RATE, 1, -1);
         println!("{} {} {}", 0, ":<stack>", ":<_init>"); // the first is the pc
         println!("{} {} {}", ":<stack>", TEECAP_DEFAULT_MEM_SIZE, ":<stack>");
         let mut mem_offset = 0;
@@ -1700,6 +1703,8 @@ impl TeecapEvaluator for MemberExpression {
                 lhs.join_direct(&rhs, ctx).expect("Bad direct member expression!")
             }
             MemberOperator::Indirect => {
+                //eprintln!("Indirect {:?} {:?}", lhs, rhs);
+                //eprintln!("{:?}", ctx.variables);
                 lhs.join_indirect(&rhs, ctx).expect("Bad indirect member expression!")
             }
         }

@@ -32,6 +32,7 @@ struct teecap_runtime {
     int version_minor;
     void* malloc; // a sealed capability for invoking the memory allocator
     void* free;
+    void* new_thread;
 };
 
 void* sealed_setup(int* cap, void* pcc, void* epc, void* stack, int* metaparam) {
@@ -166,28 +167,74 @@ void malloc_init(struct malloc_state* malloc_state, void* heap) {
 
 }
 
+#define TEECAP_SCHED_MAX_THREAD_N 16
+
+struct sched_state {
+    void* threads[TEECAP_SCHED_MAX_THREAD_N];
+    int thread_n;
+};
+
+
+void new_thread(void* sealed_cap) {
+    // given a sealed return capability, add it to the scheduler queue for scheduling
+    // synchronisation might be an issue
+    // more challenging is to keep malloc also safe
+}
+
+void sched_init(struct sched_state* sched_state) {
+    sched_state->thread_n = 0;
+    int i = 0;
+    while(i < TEECAP_SCHED_MAX_THREAD_N) {
+        sched_state->threads[i] = 0;
+        i = i + 1;
+    }
+}
+
+TEECAP_ATTR_HAS_METAPARAM void sched() {
+    struct sched_state* sched_state = TEECAP_METAPARAM;
+
+    // TODO: do scheduling here
+
+    TEECAP_METAPARAM = sched_state;
+}
+
 void _start(void* heap) {
-    struct teecap_runtime runtime;
-    runtime.version_minor = 1;
-    runtime.version_major = 0;
-    void *malloc_sealed, *free_sealed, *tmp;
+    struct teecap_runtime* runtime;
+    void *malloc_sealed, *free_sealed, *sched_sealed, *tmp;
+    TEECAP_ALLOC_BOTTOM(runtime, tmp, heap, sizeof(struct teecap_runtime));
+    delin(runtime);
+    // FIXME: let's say they can use the same runtime struct for now. See whether there will be problems
+    runtime->version_minor = 1;
+    runtime->version_major = 0;
+
     struct malloc_state *malloc_state;
+    struct sched_state *sched_state;
     TEECAP_ALLOC_BOTTOM(malloc_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(free_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
+    TEECAP_ALLOC_BOTTOM(sched_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(malloc_state, tmp, heap, sizeof(struct malloc_state));
     delin(malloc_state); // make sure this is written back
+    TEECAP_ALLOC_BOTTOM(sched_state, tmp, heap, sizeof(struct sched_state));
+    delin(sched_state);
 
     // set up initial malloc state
 
     malloc_init(malloc_state, heap);
 
-    void *malloc_pc, *free_pc;
+    void *malloc_pc, *free_pc, *sched_pc, *epc;
     TEECAP_BUILD_CP(malloc_pc, malloc);
-    runtime.malloc = sealed_setup(malloc_sealed, malloc_pc, 0, 0, malloc_state);
+    runtime->malloc = sealed_setup(malloc_sealed, malloc_pc, 0, 0, malloc_state);
     TEECAP_BUILD_CP(free_pc, free);
-    runtime.free = sealed_setup(free_sealed, free_pc, 0, 0, malloc_state);
+    runtime->free = sealed_setup(free_sealed, free_pc, 0, 0, malloc_state);
 
-    main(runtime);
+    TEECAP_BUILD_CP(sched_pc, sched);
+    epc = sealed_setup(sched_sealed, sched_pc, 0, 0, sched_state);
+
+
+
+    main(runtime); // note that runtime is linear (hence we cannot directly pass it to a different threads)
+    // when creating a new thread we need to duplicate the runtime struct as a result.
+    // The sealed capabilities are linear, so we cannot do that while allowing everyone access to the interfaces
 }
 
 #endif
