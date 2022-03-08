@@ -28,7 +28,7 @@ const TEECAP_SEALED_REGION_SIZE: usize = TEECAP_GPR_N + 4;
 const TEECAP_SEALED_OFFSET_PC: usize = 0;
 const TEECAP_SEALED_OFFSET_STACK_REG: usize = 4;
 const TEECAP_STACK_SIZE: u32 = 1<<14;
-const TEECAP_CLOCK_RATE: u32 = 50;
+const TEECAP_CLOCK_RATE: u32 = 100;
 
 type TeecapInt = u64;
 
@@ -133,6 +133,7 @@ enum TeecapInsn {
     Lin(TeecapReg),
     Delin(TeecapReg),
     Seal(TeecapReg),
+    SealRet(TeecapReg, TeecapReg),
     Drop(TeecapReg),
     Ret(TeecapReg, TeecapReg),
     RetSealed(TeecapReg, TeecapReg),
@@ -143,7 +144,7 @@ enum TeecapInsn {
 
 impl TeecapReg {
     fn try_from_str(s: &str) -> Option<TeecapReg> {
-        if s.starts_with('r') {
+        if s.starts_with('r') && !s.starts_with("re") {
             Some(TeecapReg::Gpr(u8::from_str(&s[1..]).ok()?))
         } else{
             match s {
@@ -344,6 +345,9 @@ impl Display for TeecapInsn {
             TeecapInsn::Seal(r) => {
                 write!(f, "seal {}", r)
             }
+            TeecapInsn::SealRet(rd, rs) => {
+                write!(f, "sealret {} {}", rd, rs)
+            }
             TeecapInsn::Call(r, ra) => {
                 write!(f, "call {} {}", r, ra)
             }
@@ -425,15 +429,17 @@ struct TeecapFunction {
     name: String, // name of the function
     code: Vec<TeecapAssemblyUnit>,
     func_type: TeecapFunctionType,
+    return_type: TeecapType
 }
 
 impl TeecapFunction {
-    fn new(name: &str, func_type: TeecapFunctionType) -> TeecapFunction {
+    fn new(name: &str, func_type: TeecapFunctionType, return_type: TeecapType) -> TeecapFunction {
         TeecapFunction {
             group: 0,
             name: name.to_string(),
             code: Vec::new(),
-            func_type
+            func_type,
+            return_type
         }
     }
 
@@ -752,7 +758,7 @@ impl CodeGenContext {
             reserved_stack_size: 0,
             gprs: [TeecapRegState::Free; TEECAP_GPR_N],
             in_func: false,
-            init_func: TeecapFunction::new("_init", TeecapFunctionType::default()),
+            init_func: TeecapFunction::new("_init", TeecapFunctionType::default(), TeecapType::Void),
             break_conts: Vec::new(),
             struct_map: TeecapStructMap::new()
         };
@@ -844,14 +850,14 @@ impl CodeGenContext {
         }.push_asm_unit(asm_unit);
     }
 
-    fn enter_function(&mut self, func_name: &str, func_type: TeecapFunctionType) {
+    fn enter_function(&mut self, func_name: &str, func_type: TeecapFunctionType, func_return_type: TeecapType) {
         self.in_func = true;
         self.reserved_stack_size = 0;
         self.reset_gprs();
         for pinned_gpr in func_type.pinned_gprs.iter() {
             self.pin_gpr(*pinned_gpr);
         }
-        self.cur_func = Some(TeecapFunction::new(func_name, func_type));
+        self.cur_func = Some(TeecapFunction::new(func_name, func_type, func_return_type));
         
 
         // not really necessary to do this
@@ -1364,17 +1370,26 @@ impl CodeGenContext {
     }
 
     fn gen_retval_setup(&mut self, retval: &TeecapEvalResult) {
-        self.gen_store_with_cap(&TeecapOffset::Const(0), 
-            &TeecapRegResult::new_simple(TEECAP_STACK_REG, TeecapType::Cap(None)), retval);
+        match &self.cur_func.as_ref().unwrap().return_type {
+            TeecapType::Void => {
+                // We don't really need to do anything here
+            }
+            _ => {
+                self.gen_store_with_cap(&TeecapOffset::Const(0), 
+                    &TeecapRegResult::new_simple(TEECAP_STACK_REG, TeecapType::Cap(None)), retval);
+                self.push_insn(TeecapInsn::Drop(TEECAP_STACK_REG));
+            }
+        }
     }
 
     // ordinary return
     // return value should be passed through the stack
     fn gen_return(&mut self, retval: &TeecapEvalResult, sealed_repl: &TeecapEvalResult) {
-        //self.push_insn(TeecapInsn::Out(TeecapReg::Sc));
         self.gen_retval_setup(retval);
         let r = sealed_repl.to_register(self);
-        self.push_insn(TeecapInsn::Drop(TeecapReg::Sc));
+        //self.push_insn(TeecapInsn::Drop(TeecapReg::Sc)); // FIXME: cannot directly drop sc; should not allow dropping sc
+        // Save the context in the invoked sealed capability instead of sc
+        // Temporary solution for now: allowing dropping of uninitialised caps
         self.push_insn(TeecapInsn::Drop(TEECAP_STACK_REG));
         self.release_gpr_ancestors(&r);
         self.push_insn(TeecapInsn::Ret(TeecapReg::Ret, r.reg));
@@ -1566,6 +1581,14 @@ impl TeecapEvaluator for CallExpression {
                         let args = self.arguments.to_registers(ctx);
                         ctx.push_insn(TeecapInsn::Seal(args.first().expect("Missing argument for seal!").reg));
                         ctx.release_gprs(&args);
+                        TeecapEvalResult::Const(0)
+                    }
+                    "sealret" => {
+                        let arg_rd = self.arguments.first().expect("Missing arguments for sealret!").teecap_evaluate(ctx).to_register(ctx);
+                        let reg_name: &str = &*self.arguments[1].node.teecap_try_into_str().expect("Wrong argument type for reg!");
+                        let arg_rs = TeecapReg::try_from_str(reg_name.trim_matches('\"')).expect("Unknown register name!");
+                        ctx.push_insn(TeecapInsn::SealRet(arg_rd.reg, arg_rs));
+                        ctx.release_gpr(&arg_rd);
                         TeecapEvalResult::Const(0)
                     }
                     "lin" => {
@@ -1827,6 +1850,7 @@ impl TeecapStruct {
 #[derive(Clone, Debug)]
 enum TeecapType {
     Int,
+    Void,
     Cap(Option<Box<TeecapType>>), // might be another capability associated with another type
     Struct(String),
     Array(Box<TeecapType>, u32)
@@ -1836,6 +1860,7 @@ impl TeecapType {
     fn get_size(&self, struct_map: &TeecapStructMap) -> u32 {
         match self {
             TeecapType::Int => 1,
+            TeecapType::Void => 1,
             TeecapType::Cap(_) => 1,
             TeecapType::Struct(struct_name) => {
                 struct_map.get(struct_name).expect("Struct undefined!").size
@@ -1902,6 +1927,23 @@ struct TeecapField {
 trait AsDeclaration {
     fn get_declarators(&self) -> Vec<&Declarator>;
     fn get_specifiers(&self) -> Vec<&TypeSpecifier>;
+}
+
+impl AsDeclaration for FunctionDefinition {
+    fn get_declarators(&self) -> Vec<&Declarator> {
+        vec![&self.declarator.node]
+    }
+    
+    fn get_specifiers(&self) -> Vec<&TypeSpecifier> {
+        self.specifiers.iter().filter_map(|x| {
+            match &x.node {
+                DeclarationSpecifier::TypeSpecifier(t) => {
+                    Some(&t.node)
+                }
+                _ => None
+            }
+        }).collect()
+    }
 }
 
 impl AsDeclaration for TypeName {
@@ -2057,6 +2099,9 @@ impl ToTeecapType for TypeSpecifier {
         match self {
             TypeSpecifier::Struct(struct_node) => {
                 struct_node.to_teecap_type(ctx)
+            }
+            TypeSpecifier::Void => {
+                TeecapType::Void
             }
             _ => {
                 TeecapType::Int
@@ -2275,8 +2320,9 @@ impl TeecapEmitter for FunctionDefinition {
         let func_name = get_decl_kind_name(&self.declarator.node.kind.node)
             .expect("Bad function name!");
         let func_type = TeecapFunctionType::from_specifiers(&self.specifiers);
+        let func_return_type = TeecapType::parse(ctx, self).expect("Function return type missing!");
         // emit code for body
-        ctx.enter_function(func_name, func_type);
+        ctx.enter_function(func_name, func_type, func_return_type);
         ctx.push_scope();
         self.declarator.teecap_emit_code(ctx);
         self.statement.teecap_emit_code(ctx);
@@ -2291,7 +2337,7 @@ impl TeecapEmitter for ExternalDeclaration {
             ExternalDeclaration::Declaration(n) => {
                 n.teecap_emit_code(ctx);
             }
-            ExternalDeclaration::StaticAssert(n) => {
+            ExternalDeclaration::StaticAssert(_n) => {
             }
             ExternalDeclaration::FunctionDefinition(n) => {
                 n.teecap_emit_code(ctx);
