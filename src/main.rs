@@ -1,7 +1,6 @@
-#![feature(box_patterns)]
+#![feature(box_patterns, once_cell)]
 
 use std::any::type_name;
-use std::env::var_os;
 use std::fmt::Display;
 use std::os::unix::process::parent_id;
 /**
@@ -12,25 +11,45 @@ use std::os::unix::process::parent_id;
 
 use std::{iter::Map, collections::HashMap};
 use std::str::FromStr;
+use std::lazy::Lazy;
 
 use lang_c::driver::{SyntaxError, Error};
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
     StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
 use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator, Extension, ArraySize, TypeName};
 use lang_c::span::Node;
+use clap::Parser as ClapParser;
 
 const TEECAP_GPR_N: usize = 32; // number of general-purpose registers
 const TEECAP_STACK_REG: TeecapReg = TeecapReg::Gpr(0); // r0 is used for storing the stack capability
-const TEECAP_CLEANUP_REG: TeecapReg = TeecapReg::Gpr((TEECAP_GPR_N - 1) as u8);
-const TEECAP_DEFAULT_MEM_SIZE: u32 = 1<<16;
 const TEECAP_SEALED_REGION_SIZE: usize = TEECAP_GPR_N + 4;
 
 const TEECAP_SEALED_OFFSET_PC: usize = 0;
 const TEECAP_SEALED_OFFSET_STACK_REG: usize = 4;
-const TEECAP_STACK_SIZE: u32 = 1<<14;
-const TEECAP_CLOCK_RATE: u32 = 100;
 
 type TeecapInt = u64;
+
+#[derive(ClapParser)]
+#[clap(author, version, about)]
+struct Args {
+    source: String,
+    #[clap(long, default_value_t = 500)]
+    clock_rate: u32,
+    #[clap(long, default_value_t = 1<<14)]
+    stack_size: u32,
+    #[clap(long, default_value_t = 1<<16)]
+    mem_size: usize,
+    #[clap(long, default_value_t = 32)]
+    gpr_n: usize,
+    #[clap(long)]
+    show_ast: bool,
+    #[clap(long)]
+    print_comments: bool
+}
+
+const CLI_ARGS: Lazy<Args> = Lazy::new(|| {
+    Args::parse()
+});
 
 
 #[derive(Clone, Copy, Debug)]
@@ -413,7 +432,7 @@ impl TeecapAssemblyUnit {
                 *mem_offset += 1;
             }
             TeecapAssemblyUnit::Comment(s) => {
-                if std::env::var("TEECAP_PRINT_COMMENTS").is_ok() {
+                if CLI_ARGS.print_comments {
                     println!("# {}", s);
                 }
             }
@@ -1098,9 +1117,9 @@ impl CodeGenContext {
     }
 
     fn print_code(&self) {
-        println!("{} {} {} {} {}", TEECAP_DEFAULT_MEM_SIZE, TEECAP_GPR_N, TEECAP_CLOCK_RATE, 1, -1);
+        println!("{} {} {} {} {}", CLI_ARGS.mem_size, CLI_ARGS.gpr_n, CLI_ARGS.clock_rate, 1, -1);
         println!("{} {} {}", 0, ":<stack>", ":<_init>"); // the first is the pc
-        println!("{} {} {}", ":<stack>", TEECAP_DEFAULT_MEM_SIZE, ":<stack>");
+        println!("{} {} {}", ":<stack>", CLI_ARGS.mem_size, ":<stack>");
         let mut mem_offset = 0;
         self.init_func.print_code(&mut mem_offset);
         for func in self.function_map.values() {
@@ -1214,7 +1233,7 @@ impl CodeGenContext {
         self.push_asm_unit(TeecapAssemblyUnit::Passthrough("delin pc".to_string()));
         // set up the sc capability
         let stack_reg = TeecapRegResult::new_simple(TEECAP_STACK_REG, TeecapType::Cap(None));
-        let rheap = self.gen_splitlo_alloc_const(&stack_reg, TEECAP_STACK_SIZE);
+        let rheap = self.gen_splitlo_alloc_const(&stack_reg, CLI_ARGS.stack_size);
 
         let r = self.gen_splitlo_alloc_const(&stack_reg, TEECAP_SEALED_REGION_SIZE as u32);
         self.push_insn(TeecapInsn::Mov(TeecapReg::Sc, TEECAP_STACK_REG));
@@ -1639,6 +1658,15 @@ impl TeecapEvaluator for CallExpression {
                         let args = self.arguments.to_registers(ctx);
                         ctx.gen_return_sealed(&TeecapEvalResult::Register(args[0].clone()), 
                             &TeecapEvalResult::Register(args[1].clone()));
+                        TeecapEvalResult::Const(0)
+                    }
+                    "direct_call" => {
+                        // does not do anything beyond a call instruction
+                        let args = self.arguments.to_registers(ctx);
+                        let dummy_arg = ctx.gen_li_alloc(TeecapImm::Const(0));
+                        ctx.push_insn(TeecapInsn::Call(args[0].reg, dummy_arg.reg));
+                        ctx.release_gpr(&dummy_arg);
+                        ctx.release_gprs(&args);
                         TeecapEvalResult::Const(0)
                     }
                     _ => {
@@ -2357,11 +2385,12 @@ fn generate_code(trans_unit: &TranslationUnit) {
     ctx.print_code();
 }
 
+
 fn main() {
     let config = Config::default();
-    match parse(&config, std::env::args().nth(1).expect("Missing source file name!")) {
+    match parse(&config, &CLI_ARGS.source) {
         Ok(parser_result)  => {
-            if std::env::var("TEECAP_SHOW_AST").is_ok() {
+            if CLI_ARGS.show_ast {
                 println!("AST:\n{:#?}", &parser_result);
             } 
             generate_code(&parser_result.unit);

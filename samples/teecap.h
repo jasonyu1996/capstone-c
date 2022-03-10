@@ -37,6 +37,8 @@ struct teecap_runtime {
     void* malloc; // a sealed capability for invoking the memory allocator
     void* free;
     void* thread_start;
+    void* create_thread;
+    void* join_all;
 };
 
 void* sealed_setup(int* cap, void* pcc, void* epc, void* stack, int* metaparam) {
@@ -187,7 +189,9 @@ void malloc_init(struct malloc_state* malloc_state, void* heap) {
 
 #define TEECAP_SCHED_MAX_THREAD_N 16
 
-struct sched_state {
+/// This is part of the scheduler state that should be accessed by more than one
+/// thread at the same time
+struct sched_critical_state {
     void* threads[TEECAP_SCHED_MAX_THREAD_N];
     int thread_n; // this does not include the current thread
     // so the actual number threads is 
@@ -196,20 +200,36 @@ struct sched_state {
     // physical threads
 };
 
+struct sched_state {
+    struct sched_critical_state *critical_state;
+    int thread_finished;
+};
+
 // the wrapper does very minimal things. We do not need a larger stack
 #define TEECAP_THREAD_WRAPPER_STACK_SIZE 32
+
+
+struct run_thread_arg {
+    void* thread;
+    struct sched_state* sched_state;
+};
 
 // wrapper function
 TEECAP_ATTR_HAS_METAPARAM 
 TEECAP_ATTR_DEDICATED_STACK void _run_thread() {
     TEECAP_STACK_SETUP;
-    void* thread = TEECAP_METAPARAM;
+    struct run_thread_arg* arg = TEECAP_METAPARAM;
+    void* thread = arg->thread;
 
-    thread();
+    direct_call(thread); // FIXME: this call tried to allocate stack (unnecessary) and get return value
 
-    // TODO: here probably we would need to seal some caps to manipulate sched state
-    TEECAP_METAPARAM = thread;
+    arg->sched_state->thread_finished = 1;
+
+    arg->thread = thread;
+    TEECAP_METAPARAM = arg;
     TEECAP_STACK_RETURN;
+
+    direct_call(reg("epc"));
 }
 
 
@@ -226,9 +246,14 @@ TEECAP_ATTR_HAS_METAPARAM void thread_start(void* thread_cap) {
     // TODO: here we assume that only one thread is using thread_start and can change thread_n + 1;
     // we need to think about synchronisation in general
     
-    int thread_n = sched_state->thread_n;
-    sched_state->threads[thread_n] = thread_cap;
-    sched_state->thread_n = thread_n + 1;
+    struct sched_critical_state* critical_state = sched_state->critical_state;
+    // critical_state should always be valid
+
+    int thread_n = critical_state->thread_n;
+    critical_state->threads[thread_n] = thread_cap;
+    critical_state->thread_n = thread_n + 1;
+
+    sched_state->critical_state = critical_state;
 
     TEECAP_METAPARAM = sched_state;
     returnsl(0, thread_start);
@@ -241,18 +266,27 @@ TEECAP_ATTR_DEDICATED_STACK void sched() {
     TEECAP_STACK_SETUP;
     struct sched_state* sched_state = TEECAP_METAPARAM;
 
-    int thread_n = sched_state->thread_n;
-    void *next_thread, *tmp;
-    int i = 0;
-    if(thread_n){
-        next_thread = sched_state->threads[0];
-        while(i + 1 < thread_n) {
-            tmp = sched_state->threads[i + 1]; // FIXME: avoiding compiler bugs for now
-            sched_state->threads[i] = tmp;
-            i = i + 1;
+    struct sched_critical_state* critical_state = sched_state->critical_state;
+    if(critical_state != 0){
+        int thread_n = critical_state->thread_n;
+        void *next_thread, *tmp;
+        int i = 0;
+        if(thread_n){
+            next_thread = critical_state->threads[0];
+            while(i + 1 < thread_n) {
+                tmp = critical_state->threads[i + 1]; // FIXME: avoiding compiler bugs for now
+                critical_state->threads[i] = tmp;
+                i = i + 1;
+            }
+            if(sched_state->thread_finished){ // if the current thread has finished, do not schedule it
+                sched_state->thread_finished = 0;
+                critical_state->thread_n = thread_n - 1;
+            } else {
+                critical_state->threads[thread_n - 1] = reg("ret");
+            }
+            reg("ret") = next_thread;
         }
-        sched_state->threads[thread_n - 1] = reg("ret");
-        reg("ret") = next_thread;
+        sched_state->critical_state = critical_state; // write back since critical_state is linear
     }
 
     TEECAP_METAPARAM = sched_state;
@@ -260,13 +294,14 @@ TEECAP_ATTR_DEDICATED_STACK void sched() {
     returnsl(0, sched);
 }
 
-void sched_init(struct sched_state* sched_state) {
-    sched_state->thread_n = 0;
+struct sched_critical_state* sched_init(struct sched_critical_state* state) {
+    state->thread_n = 0;
     int i = 0;
     while(i < TEECAP_SCHED_MAX_THREAD_N) {
-        sched_state->threads[i] = 0;
+        state->threads[i] = 0;
         i = i + 1;
     }
+    return state; // must return the capability since it is going to be linear
 }
 
 #define TEECAP_SCHED_STACK_SIZE 4096
@@ -274,7 +309,8 @@ void sched_init(struct sched_state* sched_state) {
 
 /// return a sealed capability that can be passed to 
 // thread_start() for scheduling
-void* create_thread(struct teecap_runtime* runtime, int func) {
+TEECAP_ATTR_HAS_METAPARAM void* create_thread(struct teecap_runtime* runtime, int func) {
+    struct sched_state* sched_state = TEECAP_METAPARAM;
     void* sealed_cap = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
     void* pc;
     TEECAP_BUILD_CP(pc, func);
@@ -286,16 +322,45 @@ void* create_thread(struct teecap_runtime* runtime, int func) {
 
     sealed_cap = sealed_setup(sealed_cap, pc, 0, stack, 0);
 
-    TEECAP_BUILD_CP(wrapper_pc, _run_thread);
-    void* wrapper_sealed = sealed_return_setup(wrapper_sealed_region, wrapper_pc, 0, wrapper_stack, sealed_cap);
+    struct run_thread_arg* arg = runtime->malloc(sizeof(struct run_thread_arg));
+    arg->thread = sealed_cap;
+    arg->sched_state = sched_state;
 
-    return wrapper_sealed;
+    TEECAP_BUILD_CP(wrapper_pc, _run_thread);
+    void* wrapper_sealed = sealed_return_setup(wrapper_sealed_region, wrapper_pc, 0, wrapper_stack, arg);
+
+    TEECAP_METAPARAM = sched_state;
+    returnsl(wrapper_sealed, create_thread);
+}
+
+TEECAP_ATTR_HAS_METAPARAM void join_all() {
+    struct sched_state* sched_state = TEECAP_METAPARAM;
+    
+    int sleep_n = 1000;
+    while(1) { // TODO: waitqueue would be better
+        struct sched_critical_state* critical_state = sched_state->critical_state;
+        if(critical_state == 0)
+            continue;
+        if(!critical_state->thread_n) {
+            sched_state->critical_state = critical_state;
+            break;
+        }
+        sched_state->critical_state = critical_state;
+        int i = 0;
+        while(i < sleep_n){
+            i = i + 1;
+        }
+    }
+
+    TEECAP_METAPARAM = sched_state;
+    returnsl(0, join_all);
 }
 
 
 void _start(void* heap) {
     struct teecap_runtime* runtime;
-    void *malloc_sealed, *free_sealed, *sched_sealed, *thread_start_sealed, *tmp;
+    void *malloc_sealed, *free_sealed, *sched_sealed, *thread_start_sealed, 
+         *create_thread_sealed, *join_all_sealed, *tmp;
     TEECAP_ALLOC_BOTTOM(runtime, tmp, heap, sizeof(struct teecap_runtime));
     delin(runtime);
     // FIXME: let's say they can use the same runtime struct for now. See whether there will be problems
@@ -304,14 +369,18 @@ void _start(void* heap) {
 
     struct malloc_state *malloc_state;
     struct sched_state *sched_state;
+    struct sched_critical_state *sched_critical_state;
     TEECAP_ALLOC_BOTTOM(malloc_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(free_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(sched_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(thread_start_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
+    TEECAP_ALLOC_BOTTOM(create_thread_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
+    TEECAP_ALLOC_BOTTOM(join_all_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(malloc_state, tmp, heap, sizeof(struct malloc_state));
     delin(malloc_state); // make sure this is written back
     TEECAP_ALLOC_BOTTOM(sched_state, tmp, heap, sizeof(struct sched_state));
     delin(sched_state);
+    TEECAP_ALLOC_BOTTOM(sched_critical_state, tmp, heap, sizeof(struct sched_critical_state));
 
     // scheduler stack
     void* sched_stack;
@@ -319,7 +388,9 @@ void _start(void* heap) {
     // set up initial malloc state
 
     malloc_init(malloc_state, heap);
-    sched_init(sched_state);
+    sched_critical_state = sched_init(sched_critical_state);
+    sched_state->critical_state = sched_critical_state;
+    sched_state->thread_finished = 0;
 
     void *malloc_pc, *free_pc, *sched_pc, *thread_start_pc, *epc;
     TEECAP_BUILD_CP(malloc_pc, malloc);
@@ -331,6 +402,12 @@ void _start(void* heap) {
 
     TEECAP_BUILD_CP(sched_pc, sched);
     epc = sealed_setup(sched_sealed, sched_pc, 0, sched_stack, sched_state);
+
+    void *create_thread_pc, *join_all_pc;
+    TEECAP_BUILD_CP(create_thread_pc, create_thread);
+    runtime->create_thread = sealed_setup(create_thread_sealed, create_thread_pc, 0, 0, sched_state);
+    TEECAP_BUILD_CP(join_all_pc, join_all);
+    runtime->join_all = sealed_setup(join_all_sealed, join_all_pc, 0, 0, sched_state);
 
     // set epc of current thread
     reg("epc") = epc;
