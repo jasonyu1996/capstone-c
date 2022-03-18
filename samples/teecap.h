@@ -30,6 +30,10 @@
     (m) = mrev((v));\
     delin((v));
 
+struct enclave {
+    void* shared_buf;
+    void* func;
+};
 
 struct teecap_runtime {
     int version_major;
@@ -39,7 +43,36 @@ struct teecap_runtime {
     void* thread_start;
     void* create_thread;
     void* join_all;
+    //Enclave operations
+    void* create_enclave;
+    void* enter_enclave;
+    void* destroy_enclave;
 };
+
+//initializes the enclave object, and initializes the capabilities 
+//for the shared and enclave exclusive memory regions
+void* create_enclave(struct enclave* e, void* func_ptr, void* buffer, struct teecap_runtime* runtime) {
+    void* ptr;
+    void* stack = runtime->malloc(TEECAP_THREAD_STACK_SIZE);
+    // print(sizeof(stack));
+    TEECAP_BUILD_CP(ptr, func_ptr);
+    void *tmp = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
+    tmp = sealed_setup(tmp, ptr, 0, stack, buffer);
+    e->func = tmp;
+    return e;
+}
+
+//calls the associated enclave function
+//enclave is automatically destroyed after exiting the call
+void* enter_enclave(struct enclave* e) {
+    direct_call(e->func);
+    return e;
+}
+
+void* destroy_enclave(struct enclave *e, void *revoke_enclave) {
+    drop(e);
+    lin(revoke_enclave);
+}
 
 void* sealed_setup(int* cap, void* pcc, void* epc, void* stack, int* metaparam) {
     cap[TEECAP_SEALED_OFFSET_PC] = pcc;
