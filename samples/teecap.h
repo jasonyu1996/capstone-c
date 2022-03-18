@@ -36,7 +36,7 @@ struct teecap_runtime {
     int version_minor;
     void* malloc; // a sealed capability for invoking the memory allocator
     void* free;
-    void* thread_start;
+    void* start_thread;
     void* create_thread;
     void* join_all;
 };
@@ -120,6 +120,7 @@ void* malloc_find(struct mem_region* region, int size) {
     return res; 
 }
 
+// TODO: it is better to return uninitialised capabilities
 // heap memory allocator
 TEECAP_ATTR_HAS_METAPARAM void* malloc(int size) {
     struct malloc_state* malloc_state = TEECAP_METAPARAM;
@@ -234,7 +235,7 @@ TEECAP_ATTR_DEDICATED_STACK void _run_thread() {
 
 
 /// Called by a thread to add another thread to the scheduler
-TEECAP_ATTR_HAS_METAPARAM void thread_start(void* thread_cap) {
+TEECAP_ATTR_HAS_METAPARAM void start_thread(void* thread_cap) {
     struct sched_state* sched_state = TEECAP_METAPARAM;
     // given a sealed return capability, add it to the scheduler queue for scheduling
     // synchronisation might be an issue
@@ -243,7 +244,7 @@ TEECAP_ATTR_HAS_METAPARAM void thread_start(void* thread_cap) {
     // need to wrap inside a seal return capability
     
     // add wrapped thread capability to thread list
-    // TODO: here we assume that only one thread is using thread_start and can change thread_n + 1;
+    // TODO: here we assume that only one thread is using start_thread and can change thread_n + 1;
     // we need to think about synchronisation in general
     
     struct sched_critical_state* critical_state = sched_state->critical_state;
@@ -256,7 +257,7 @@ TEECAP_ATTR_HAS_METAPARAM void thread_start(void* thread_cap) {
     sched_state->critical_state = critical_state;
 
     TEECAP_METAPARAM = sched_state;
-    returnsl(0, thread_start);
+    returnsl(0, start_thread);
 }
 
 
@@ -308,7 +309,7 @@ struct sched_critical_state* sched_init(struct sched_critical_state* state) {
 #define TEECAP_THREAD_STACK_SIZE 256
 
 /// return a sealed capability that can be passed to 
-// thread_start() for scheduling
+// start_thread() for scheduling
 TEECAP_ATTR_HAS_METAPARAM void* create_thread(struct teecap_runtime* runtime, int func) {
     struct sched_state* sched_state = TEECAP_METAPARAM;
     void* sealed_cap = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
@@ -359,7 +360,7 @@ TEECAP_ATTR_HAS_METAPARAM void join_all() {
 
 void _start(void* heap) {
     struct teecap_runtime* runtime;
-    void *malloc_sealed, *free_sealed, *sched_sealed, *thread_start_sealed, 
+    void *malloc_sealed, *free_sealed, *sched_sealed, *start_thread_sealed, 
          *create_thread_sealed, *join_all_sealed, *tmp;
     TEECAP_ALLOC_BOTTOM(runtime, tmp, heap, sizeof(struct teecap_runtime));
     delin(runtime);
@@ -373,7 +374,7 @@ void _start(void* heap) {
     TEECAP_ALLOC_BOTTOM(malloc_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(free_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(sched_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
-    TEECAP_ALLOC_BOTTOM(thread_start_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
+    TEECAP_ALLOC_BOTTOM(start_thread_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(create_thread_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(join_all_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(malloc_state, tmp, heap, sizeof(struct malloc_state));
@@ -392,13 +393,13 @@ void _start(void* heap) {
     sched_state->critical_state = sched_critical_state;
     sched_state->thread_finished = 0;
 
-    void *malloc_pc, *free_pc, *sched_pc, *thread_start_pc, *epc;
+    void *malloc_pc, *free_pc, *sched_pc, *start_thread_pc, *epc;
     TEECAP_BUILD_CP(malloc_pc, malloc);
     runtime->malloc = sealed_setup(malloc_sealed, malloc_pc, 0, 0, malloc_state);
     TEECAP_BUILD_CP(free_pc, free);
     runtime->free = sealed_setup(free_sealed, free_pc, 0, 0, malloc_state);
-    TEECAP_BUILD_CP(thread_start_pc, thread_start);
-    runtime->thread_start = sealed_setup(thread_start_sealed, thread_start_pc, 0, 0, sched_state);
+    TEECAP_BUILD_CP(start_thread_pc, start_thread);
+    runtime->start_thread = sealed_setup(start_thread_sealed, start_thread_pc, 0, 0, sched_state);
 
     TEECAP_BUILD_CP(sched_pc, sched);
     epc = sealed_setup(sched_sealed, sched_pc, 0, sched_stack, sched_state);

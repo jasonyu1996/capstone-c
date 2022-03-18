@@ -22,7 +22,7 @@ void main(struct teecap_runtime* runtime){
     }
     i = 0;
     while(i < 4) {
-        runtime->thread_start(threads[i]);
+        runtime->start_thread(threads[i]);
         i = i + 1;
     }
     runtime->join_all();
