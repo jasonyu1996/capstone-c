@@ -70,6 +70,9 @@ void* enter_enclave(struct enclave* e) {
 }
 
 void* destroy_enclave(struct enclave *e, void *revoke_enclave) {
+    print(e);
+    print(1030);
+    print(revoke_enclave);
     drop(e);
     lin(revoke_enclave);
 }
