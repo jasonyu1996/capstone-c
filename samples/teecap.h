@@ -30,11 +30,6 @@
     (m) = mrev((v));\
     delin((v));
 
-struct enclave {
-    void* shared_buf;
-    void* func;
-};
-
 struct teecap_runtime {
     int version_major;
     int version_minor;
@@ -49,33 +44,6 @@ struct teecap_runtime {
     void* destroy_enclave;
 };
 
-//initializes the enclave object, and initializes the capabilities 
-//for the shared and enclave exclusive memory regions
-void* create_enclave(struct enclave* e, void* func_ptr, void* buffer, struct teecap_runtime* runtime) {
-    void* ptr;
-    void* stack = runtime->malloc(TEECAP_THREAD_STACK_SIZE);
-    // print(sizeof(stack));
-    TEECAP_BUILD_CP(ptr, func_ptr);
-    void *tmp = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
-    tmp = sealed_setup(tmp, ptr, 0, stack, buffer);
-    e->func = tmp;
-    return e;
-}
-
-//calls the associated enclave function
-//enclave is automatically destroyed after exiting the call
-void* enter_enclave(struct enclave* e) {
-    direct_call(e->func);
-    return e;
-}
-
-void* destroy_enclave(struct enclave *e, void *revoke_enclave) {
-    print(e);
-    print(1030);
-    print(revoke_enclave);
-    drop(e);
-    lin(revoke_enclave);
-}
 
 void* sealed_setup(int* cap, void* pcc, void* epc, void* stack, int* metaparam) {
     cap[TEECAP_SEALED_OFFSET_PC] = pcc;
@@ -393,6 +361,8 @@ TEECAP_ATTR_HAS_METAPARAM void join_all() {
 }
 
 
+
+
 void _start(void* heap) {
     struct teecap_runtime* runtime;
     void *malloc_sealed, *free_sealed, *sched_sealed, *thread_start_sealed, 
@@ -451,6 +421,80 @@ void _start(void* heap) {
     main(runtime); // note that runtime is linear (hence we cannot directly pass it to a different threads)
     // when creating a new thread we need to duplicate the runtime struct as a result.
     // The sealed capabilities are linear, so we cannot do that while allowing everyone access to the interfaces
+}
+
+/* -------------------------- enclave ---------------- */
+
+// This struct is held by the invoker of an enclave
+struct enclave {
+    void* sealed;
+    void* shared;
+    // the following are revocation capabilities
+    void* sealed_rev;
+    void* code_rev;
+    void* data_rev;
+    void* stack_rev;
+    void* shared_rev;
+    void* runtime_rev;
+}; 
+
+// For an enclave itself
+struct enclave_runtime {
+    void* heap;
+    void* shared;
+    // TODO: pass runtime in later
+};
+
+#define TEECAP_ENCLAVE_SHARED_SIZE 512
+
+
+//initializes the enclave object, and initializes the capabilities 
+//for the shared and enclave exclusive memory regions
+// code and data are directly supplied
+// stack and shared are newly created
+struct enclave* create_enclave(void* code, void* data, struct teecap_runtime* runtime) {
+    struct enclave *encl = runtime->malloc(sizeof(struct enclave));
+    struct enclave_runtime* encl_runtime = runtime->malloc(sizeof(struct enclave_runtime));
+    void *stack = runtime->malloc(TEECAP_THREAD_STACK_SIZE);
+    void *sealed = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
+    void *shared = runtime->malloc(TEECAP_ENCLAVE_SHARED_SIZE);
+    encl->runtime_rev = mrev(encl_runtime);
+    encl->code_rev = mrev(code);
+    encl->data_rev = mrev(data);
+    encl->sealed_rev = mrev(sealed);
+    encl->stack_rev = mrev(stack);
+    encl->shared_rev = mrev(shared);
+    delin(shared);
+    encl->shared = shared;
+    encl_runtime->heap = data;
+    encl_runtime->shared = shared;
+    sealed = sealed_setup(sealed, code, 0, stack, encl_runtime);
+    encl->sealed = sealed;
+    return encl;
+}
+
+//calls the associated enclave function
+//enclave is automatically destroyed after exiting the call
+void* enter_enclave(struct enclave* encl) {
+    direct_call(encl->sealed);
+    return encl;
+}
+
+// NOTE: the code and data capabilities are also destroyed
+void destroy_enclave(struct enclave *encl, struct teecap_runtime* runtime) {
+    lin(encl->sealed_rev);
+    lin(encl->code_rev);
+    lin(encl->data_rev);
+    lin(encl->stack_rev);
+    lin(encl->shared_rev);
+    lin(encl->runtime_rev);
+    runtime->free(encl->sealed_rev);
+    runtime->free(encl->code_rev);
+    runtime->free(encl->data_rev);
+    runtime->free(encl->stack_rev);
+    runtime->free(encl->shared_rev);
+    runtime->free(encl->runtime_rev);
+    runtime->free(encl);
 }
 
 #endif

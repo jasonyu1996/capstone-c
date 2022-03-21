@@ -686,8 +686,6 @@ impl TeecapLiteralConstruct<TeecapInt> for Integer {
     }
 }
 
-type TeecapFunctionMap = HashMap<String, TeecapFunction>;
-
 #[derive(Debug, Clone, Copy)]
 enum TeecapOffset {
     Const(u32),
@@ -738,7 +736,7 @@ struct CodeGenContext {
     tag_count: u32,
     init_func: TeecapFunction,
     cur_func: Option<TeecapFunction>,
-    function_map: TeecapFunctionMap,
+    functions: Vec<TeecapFunction>,
     variables: Vec<TeecapScope>,
     reserved_stack_size: u32,
     gprs: [TeecapRegState; TEECAP_GPR_N],
@@ -771,7 +769,7 @@ impl CodeGenContext {
     fn new() -> CodeGenContext {
         let mut instance = CodeGenContext {
             tag_count : 0,
-            function_map: TeecapFunctionMap::new(),
+            functions: Vec::new(),
             cur_func: None,
             variables: vec![TeecapScope::new()],
             reserved_stack_size: 0,
@@ -890,7 +888,7 @@ impl CodeGenContext {
         self.reset_gprs();
 
         let cur_func = std::mem::take(&mut self.cur_func).expect("Error exit_function: current function not found!");
-        self.function_map.insert(cur_func.name.clone(), cur_func);
+        self.functions.push(cur_func);
         self.in_func = false;
     }
 
@@ -1122,7 +1120,7 @@ impl CodeGenContext {
         println!("{} {} {}", ":<stack>", CLI_ARGS.mem_size, ":<stack>");
         let mut mem_offset = 0;
         self.init_func.print_code(&mut mem_offset);
-        for func in self.function_map.values() {
+        for func in self.functions.iter() {
             func.print_code(&mut mem_offset);
         }
         // stack
@@ -1735,6 +1733,10 @@ impl TeecapEvaluator for UnaryOperatorExpression {
             UnaryOperator::Indirection => {
                 // TODO: *cap expression
                 TeecapEvalResult::Const(0)
+            }
+            UnaryOperator::Address => {
+                // TODO: &obj expresion
+                TeecapEvalResult::Const(0) // support stack obj and in function call arguments only
             }
             _ => {
                 exp
