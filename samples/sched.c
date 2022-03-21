@@ -16,7 +16,7 @@ void main(struct teecap_runtime* runtime){
     int i = 0;
     void* threads[4];
     while(i < 4) {
-        threads[i] = runtime->create_thread(runtime, foo);
+        threads[i] = runtime->thread_create(runtime, foo);
         print(threads[i]);
         i = i + 1;
     }

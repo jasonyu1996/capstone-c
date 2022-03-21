@@ -34,9 +34,9 @@ int main(struct teecap_runtime* runtime) {
     }
     scco(crypto_code, 0);
     void* crypto_data = runtime->malloc(256);
-    struct enclave* encl = create_enclave(crypto_code, crypto_data, runtime);
+    struct enclave* encl = enclave_create(crypto_code, crypto_data, runtime);
     encl = ecall(encl, CRYPTO_CALL_DECRYPT);
-    destroy_enclave(encl, runtime);
+    enclave_destroy(encl, runtime);
     exit();
 }
 

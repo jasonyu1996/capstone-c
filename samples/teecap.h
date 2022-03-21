@@ -36,12 +36,12 @@ struct teecap_runtime {
     void* malloc; // a sealed capability for invoking the memory allocator
     void* free;
     void* thread_start;
-    void* create_thread;
+    void* thread_create;
     void* join_all;
     //Enclave operations
-    void* create_enclave;
-    void* enter_enclave;
-    void* destroy_enclave;
+    void* enclave_create;
+    void* enclave_enter;
+    void* enclave_destroy;
 };
 
 
@@ -313,7 +313,7 @@ struct sched_critical_state* sched_init(struct sched_critical_state* state) {
 
 /// return a sealed capability that can be passed to 
 // thread_start() for scheduling
-TEECAP_ATTR_HAS_METAPARAM void* create_thread(struct teecap_runtime* runtime, int func) {
+TEECAP_ATTR_HAS_METAPARAM void* thread_create(struct teecap_runtime* runtime, int func) {
     struct sched_state* sched_state = TEECAP_METAPARAM;
     void* sealed_cap = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
     void* pc;
@@ -334,7 +334,7 @@ TEECAP_ATTR_HAS_METAPARAM void* create_thread(struct teecap_runtime* runtime, in
     void* wrapper_sealed = sealed_return_setup(wrapper_sealed_region, wrapper_pc, 0, wrapper_stack, arg);
 
     TEECAP_METAPARAM = sched_state;
-    returnsl(wrapper_sealed, create_thread);
+    returnsl(wrapper_sealed, thread_create);
 }
 
 TEECAP_ATTR_HAS_METAPARAM void join_all() {
@@ -366,7 +366,7 @@ TEECAP_ATTR_HAS_METAPARAM void join_all() {
 void _start(void* heap) {
     struct teecap_runtime* runtime;
     void *malloc_sealed, *free_sealed, *sched_sealed, *thread_start_sealed, 
-         *create_thread_sealed, *join_all_sealed, *tmp;
+         *thread_create_sealed, *join_all_sealed, *tmp;
     TEECAP_ALLOC_BOTTOM(runtime, tmp, heap, sizeof(struct teecap_runtime));
     delin(runtime);
     // FIXME: let's say they can use the same runtime struct for now. See whether there will be problems
@@ -380,7 +380,7 @@ void _start(void* heap) {
     TEECAP_ALLOC_BOTTOM(free_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(sched_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(thread_start_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
-    TEECAP_ALLOC_BOTTOM(create_thread_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
+    TEECAP_ALLOC_BOTTOM(thread_create_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(join_all_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(malloc_state, tmp, heap, sizeof(struct malloc_state));
     delin(malloc_state); // make sure this is written back
@@ -409,9 +409,9 @@ void _start(void* heap) {
     TEECAP_BUILD_CP(sched_pc, sched);
     epc = sealed_setup(sched_sealed, sched_pc, 0, sched_stack, sched_state);
 
-    void *create_thread_pc, *join_all_pc;
-    TEECAP_BUILD_CP(create_thread_pc, create_thread);
-    runtime->create_thread = sealed_setup(create_thread_sealed, create_thread_pc, 0, 0, sched_state);
+    void *thread_create_pc, *join_all_pc;
+    TEECAP_BUILD_CP(thread_create_pc, thread_create);
+    runtime->thread_create = sealed_setup(thread_create_sealed, thread_create_pc, 0, 0, sched_state);
     TEECAP_BUILD_CP(join_all_pc, join_all);
     runtime->join_all = sealed_setup(join_all_sealed, join_all_pc, 0, 0, sched_state);
 
@@ -452,7 +452,7 @@ struct enclave_runtime {
 //for the shared and enclave exclusive memory regions
 // code and data are directly supplied
 // stack and shared are newly created
-struct enclave* create_enclave(void* code, void* data, struct teecap_runtime* runtime) {
+struct enclave* enclave_create(void* code, void* data, struct teecap_runtime* runtime) {
     struct enclave *encl = runtime->malloc(sizeof(struct enclave));
     struct enclave_runtime* encl_runtime = runtime->malloc(sizeof(struct enclave_runtime));
     void *stack = runtime->malloc(TEECAP_THREAD_STACK_SIZE);
@@ -475,13 +475,13 @@ struct enclave* create_enclave(void* code, void* data, struct teecap_runtime* ru
 
 //calls the associated enclave function
 //enclave is automatically destroyed after exiting the call
-void* enter_enclave(struct enclave* encl) {
+void* enclave_enter(struct enclave* encl) {
     direct_call(encl->sealed);
     return encl;
 }
 
 // NOTE: the code and data capabilities are also destroyed
-void destroy_enclave(struct enclave *encl, struct teecap_runtime* runtime) {
+void enclave_destroy(struct enclave *encl, struct teecap_runtime* runtime) {
     lin(encl->sealed_rev);
     lin(encl->code_rev);
     lin(encl->data_rev);
