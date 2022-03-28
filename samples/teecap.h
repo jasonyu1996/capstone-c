@@ -442,6 +442,7 @@ struct enclave {
 struct enclave_runtime {
     void* heap;
     void* shared;
+    struct teecap_runtime* runtime;
     // TODO: pass runtime in later
 };
 
@@ -468,6 +469,7 @@ struct enclave* enclave_create(void* code, void* data, struct teecap_runtime* ru
     encl->shared = shared;
     encl_runtime->heap = data;
     encl_runtime->shared = shared;
+    encl_runtime->runtime = runtime;
     sealed = sealed_setup(sealed, code, 0, stack, encl_runtime);
     encl->sealed = sealed;
     return encl;
