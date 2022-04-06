@@ -444,6 +444,7 @@ struct enclave_runtime {
     void* heap;
     void* shared;
     void* code;
+    void* sealed;
     struct teecap_runtime* runtime;
     // TODO: pass runtime in later
 };
@@ -461,6 +462,7 @@ struct enclave* enclave_create(void* code, void* data, void* inner_code, struct 
     void *stack = runtime->malloc(TEECAP_THREAD_STACK_SIZE);
     void *sealed = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
     void *shared = runtime->malloc(TEECAP_ENCLAVE_SHARED_SIZE);
+    void *inner_sealed = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
     encl->runtime_rev = mrev(encl_runtime);
     encl->code_rev = mrev(code);
     encl->data_rev = mrev(data);
@@ -473,6 +475,7 @@ struct enclave* enclave_create(void* code, void* data, void* inner_code, struct 
     encl_runtime->shared = shared;
     encl_runtime->runtime = runtime;
     encl_runtime->code = inner_code;
+    encl_runtime->sealed = inner_sealed;
     sealed = sealed_setup(sealed, code, 0, stack, encl_runtime);
     encl->sealed = sealed;
     return encl;

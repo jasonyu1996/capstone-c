@@ -24,7 +24,8 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void outer() {
     // struct enclave* encl = enclave_create(inner_code, crypto_data, 0, runtime);
     // encl = ecall(encl, 22);
     // enclave_destroy(encl, runtime);
-    void* sealed = sealed_setup(sealed, inner_code, 0, 0, runtime);
+    void *sealed = runtime->sealed;
+    sealed = sealed_setup(sealed, inner_code, 0, 0, runtime);
     direct_call(sealed);
 
     // void* nested_code = runtime->runtime->malloc(128);
@@ -54,6 +55,8 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void inner() {
 
     print(call_code);
     // print(22);
+
+    TEECAP_METAPARAM = runtime;
 
     TEECAP_STACK_RETURN;
 }
