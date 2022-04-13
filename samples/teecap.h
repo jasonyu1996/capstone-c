@@ -128,7 +128,7 @@ void* malloc_find(struct mem_region* region, int size) {
 // heap memory allocator
 TEECAP_ATTR_HAS_METAPARAM void* malloc(int size) {
     struct malloc_state* malloc_state = TEECAP_METAPARAM;
-
+    
     void* res = malloc_find(malloc_state->heap, size);
     if(res != 0){
         malloc_state->alloc_n = malloc_state->alloc_n + 1;
@@ -310,7 +310,7 @@ struct sched_critical_state* sched_init(struct sched_critical_state* state) {
 }
 
 #define TEECAP_SCHED_STACK_SIZE 4096
-#define TEECAP_THREAD_STACK_SIZE 256
+#define TEECAP_THREAD_STACK_SIZE 512
 
 /// return a sealed capability that can be passed to 
 // thread_start() for scheduling
