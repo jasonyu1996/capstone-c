@@ -16,21 +16,24 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void outer() {
     /*}*/
 
     print(call_code);
-    // print(11);
 
     void* inner_code = runtime->code;
     scco(inner_code, 0);
-    // void* crypto_data = runtime->runtime->malloc(128);
-    // struct enclave* encl = enclave_create(inner_code, crypto_data, 0, runtime);
+
+    void* crypto_data = runtime->runtime->malloc(128);
+    print(runtime->runtime->enclave_create);
+    struct enclave* encl2 = runtime->runtime->enclave_create(inner_code, crypto_data, 0, runtime->runtime);
     // encl = ecall(encl, 22);
-    // enclave_destroy(encl, runtime);
-    void *sealed_ = runtime->sealed;
-    sealed_[TEECAP_SEALED_OFFSET_PC] = inner_code;
-    sealed_[TEECAP_SEALED_OFFSET_EPC] = 0;
-    sealed_[TEECAP_SEALED_OFFSET_DEDICATED_STACK] = 0; // stack is actually specified upon call
-    sealed_[TEECAP_SEALED_OFFSET_METAPARAM] = runtime;
-    seal(sealed_);
-    sealed_();
+    // runtime->runtime->enclave_destroy(encl, runtime->runtime);
+
+
+    // void *sealed_ = runtime->sealed;
+    // sealed_[TEECAP_SEALED_OFFSET_PC] = inner_code;
+    // sealed_[TEECAP_SEALED_OFFSET_EPC] = 0;
+    // sealed_[TEECAP_SEALED_OFFSET_DEDICATED_STACK] = 0; // stack is actually specified upon call
+    // sealed_[TEECAP_SEALED_OFFSET_METAPARAM] = runtime;
+    // seal(sealed_);
+    // sealed_();
 
     // void* nested_code = runtime->runtime->malloc(128);
     // int i = 0;
@@ -77,10 +80,10 @@ int main(struct teecap_runtime* runtime) {
     enclave_destroy(encl, runtime);
 
     // scco(inner_code, 0);
-    // void* crypto_data = runtime->malloc(256);
-    // struct enclave* encl = enclave_create(inner_code, crypto_data, inner_code, runtime);
-    // encl = ecall(encl, 22);
-    // enclave_destroy(encl, runtime);
+    // void* crypto_data_inner = runtime->malloc(256);
+    // struct enclave* encl_inner = runtime->enclave_create(inner_code, crypto_data_inner, 0, runtime);
+    // encl_inner = ecall(encl_inner, 22);
+    // enclave_destroy(encl_inner, runtime);
 
     exit();
 }
