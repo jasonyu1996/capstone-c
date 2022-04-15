@@ -5,6 +5,7 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void outer() {
     TEECAP_STACK_SETUP;
     
     struct enclave_runtime* runtime = TEECAP_METAPARAM;
+    struct teecap_runtime* teecap_runtime = runtime->runtime;
     int call_code = runtime->shared[0];
     // this following does not work for now
     // need relative addressing in instructions
@@ -20,9 +21,8 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void outer() {
     void* inner_code = runtime->code;
     scco(inner_code, 0);
 
-    void* crypto_data = runtime->runtime->malloc(128);
-    print(runtime->runtime->enclave_create);
-    struct enclave* encl2 = runtime->runtime->enclave_create(inner_code, crypto_data, 0, runtime->runtime);
+    void* crypto_data = teecap_runtime->malloc(128);
+    struct enclave* encl2 = teecap_runtime->enclave_create(inner_code, crypto_data, 0, teecap_runtime);
     // encl = ecall(encl, 22);
     // runtime->runtime->enclave_destroy(encl, runtime->runtime);
 
@@ -75,7 +75,7 @@ int main(struct teecap_runtime* runtime) {
     }
     scco(outer_code, 0);
     void* crypto_data = runtime->malloc(256);
-    struct enclave* encl = enclave_create(outer_code, crypto_data, inner_code, runtime);
+    struct enclave* encl = runtime->enclave_create(outer_code, crypto_data, inner_code, runtime);
     encl = ecall(encl, 11);
     enclave_destroy(encl, runtime);
 
