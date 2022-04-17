@@ -23,8 +23,11 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void outer() {
 
     void* crypto_data = teecap_runtime->malloc(128);
     struct enclave* encl2 = teecap_runtime->enclave_create(inner_code, crypto_data, 0, teecap_runtime);
-    // encl = ecall(encl, 22);
-    // runtime->runtime->enclave_destroy(encl, runtime->runtime);
+    //TODO: get ecall to work inside enclave
+    // encl2 = ecall(encl2, 22);
+    encl2->shared[0] = 22;
+    direct_call(encl2->sealed);
+    teecap_runtime->enclave_destroy(encl2, teecap_runtime);
 
 
     // void *sealed_ = runtime->sealed;

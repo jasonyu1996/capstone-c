@@ -367,7 +367,7 @@ TEECAP_ATTR_HAS_METAPARAM void join_all() {
 void _start(void* heap) {
     struct teecap_runtime* runtime;
     void *malloc_sealed, *free_sealed, *sched_sealed, *thread_start_sealed, 
-         *thread_create_sealed, *join_all_sealed, *enclave_create_sealed, *tmp;
+         *thread_create_sealed, *join_all_sealed, *enclave_create_sealed, *enclave_destroy_sealed, *tmp;
     TEECAP_ALLOC_BOTTOM(runtime, tmp, heap, sizeof(struct teecap_runtime));
     delin(runtime);
     // FIXME: let's say they can use the same runtime struct for now. See whether there will be problems
@@ -385,6 +385,7 @@ void _start(void* heap) {
     TEECAP_ALLOC_BOTTOM(join_all_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(malloc_state, tmp, heap, sizeof(struct malloc_state));
     TEECAP_ALLOC_BOTTOM(enclave_create_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
+    TEECAP_ALLOC_BOTTOM(enclave_destroy_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     delin(malloc_state); // make sure this is written back
     TEECAP_ALLOC_BOTTOM(sched_state, tmp, heap, sizeof(struct sched_state));
     delin(sched_state);
@@ -400,7 +401,7 @@ void _start(void* heap) {
     sched_state->critical_state = sched_critical_state;
     sched_state->thread_finished = 0;
 
-    void *malloc_pc, *free_pc, *sched_pc, *thread_start_pc, *epc, *enclave_create_pc;
+    void *malloc_pc, *free_pc, *sched_pc, *thread_start_pc, *epc, *enclave_create_pc, *enclave_destroy_pc;
     TEECAP_BUILD_CP(malloc_pc, malloc);
     runtime->malloc = sealed_setup(malloc_sealed, malloc_pc, 0, 0, malloc_state);
     TEECAP_BUILD_CP(free_pc, free);
@@ -409,6 +410,8 @@ void _start(void* heap) {
     runtime->thread_start = sealed_setup(thread_start_sealed, thread_start_pc, 0, 0, sched_state);
     TEECAP_BUILD_CP(enclave_create_pc, enclave_create);
     runtime->enclave_create = sealed_setup(enclave_create_sealed, enclave_create_pc, 0, 0, 0);
+    TEECAP_BUILD_CP(enclave_destroy_pc, enclave_destroy);
+    runtime->enclave_destroy = sealed_setup(enclave_destroy_sealed, enclave_destroy_pc, 0, 0, 0);
 
     TEECAP_BUILD_CP(sched_pc, sched);
     epc = sealed_setup(sched_sealed, sched_pc, 0, sched_stack, sched_state);
@@ -506,6 +509,7 @@ void enclave_destroy(struct enclave *encl, struct teecap_runtime* runtime) {
     runtime->free(encl->shared_rev);
     runtime->free(encl->runtime_rev);
     runtime->free(encl);
+    returnsl(0, enclave_destroy);
 }
 
 #endif
