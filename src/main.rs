@@ -114,8 +114,8 @@ impl Display for TeecapReg {
 
 #[derive(Clone, Debug)]
 enum TeecapImm {
-    NTag(TeecapNTag),
-    STag(TeecapSTag),
+    NTag(TeecapNTag, bool), // bool: relative
+    STag(TeecapSTag, bool),
     Const(TeecapInt)
 }
 
@@ -220,11 +220,17 @@ impl TeecapFunctionType {
 impl Display for TeecapImm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            TeecapImm::NTag(tag) => {
+            TeecapImm::NTag(tag, false) => {
                 tag.fmt(f)
             }
-            TeecapImm::STag(tag) => {
+            TeecapImm::STag(tag, false) => {
                 tag.fmt(f)
+            }
+            TeecapImm::NTag(tag, true) => {
+                write!(f, "*{}", tag)
+            }
+            TeecapImm::STag(tag, true) => {
+                write!(f, "*{}", tag)
             }
             TeecapImm::Const(c) => {
                 c.fmt(f)
@@ -610,7 +616,7 @@ impl TeecapEvalResult {
                 if r.is_some() {
                     r
                 } else{
-                    Some(ctx.gen_li_alloc(TeecapImm::STag(TeecapSTag(unresolved_var.0.clone()))))
+                    Some(ctx.gen_li_alloc(TeecapImm::STag(TeecapSTag(unresolved_var.0.clone()), false)))
                 }
             }
         }
@@ -1155,7 +1161,7 @@ impl CodeGenContext {
     }
     
     fn gen_jmp_tag(&mut self, tag: TeecapNTag) {
-        let target_reg = self.gen_li_alloc(TeecapImm::NTag(tag));
+        let target_reg = self.gen_li_alloc(TeecapImm::NTag(tag, true));
         self.push_insn(TeecapInsn::Jmp(target_reg.reg));
         self.release_gpr(&target_reg);
     }
@@ -1247,7 +1253,7 @@ impl CodeGenContext {
 
     fn gen_init_func_post(&mut self) {
         // jump to the main function
-        let r = self.gen_li_alloc(TeecapImm::STag(TeecapSTag("_start".to_string())));
+        let r = self.gen_li_alloc(TeecapImm::STag(TeecapSTag("_start".to_string()), true));
         self.push_insn(TeecapInsn::Jmp(r.reg));
         self.release_gpr(&r);
     }
@@ -1348,7 +1354,7 @@ impl CodeGenContext {
         // now rstack_callee contains a linear capability that points to a region of size
         // TEECAP_SEALED_REGION_SIZE
         let rpc = self.gen_mov_alloc(&TeecapRegResult::new_simple(TeecapReg::Pc, TeecapType::Cap(None)));
-        let pc_addr_imm = TeecapImm::STag(TeecapSTag(func_name.to_string()));
+        let pc_addr_imm = TeecapImm::STag(TeecapSTag(func_name.to_string()), false);
         let rpc_addr = self.gen_li_alloc(pc_addr_imm);
         self.push_insn(TeecapInsn::Scc(rpc.reg, rpc_addr.reg));
         self.release_gpr(&rpc_addr);
@@ -2179,7 +2185,7 @@ impl TeecapEmitter for IfStatement {
         let tag_else = ctx.alloc_tag();
         let reg_cond = self.condition.teecap_evaluate(ctx).to_register(ctx);
 
-        let reg_else = ctx.gen_li_alloc(TeecapImm::NTag(tag_else));
+        let reg_else = ctx.gen_li_alloc(TeecapImm::NTag(tag_else, true));
         ctx.push_insn(TeecapInsn::Jz(reg_else.reg, reg_cond.reg));
         ctx.release_gpr(&reg_cond);
         ctx.release_gpr(&reg_else);
@@ -2194,7 +2200,7 @@ impl TeecapEmitter for IfStatement {
         if let Some(else_stmt) = &self.else_statement {
             // continuation of then clause: skip the else clause
             let tag_end = ctx.alloc_tag();
-            let reg_end = ctx.gen_li_alloc(TeecapImm::NTag(tag_end));
+            let reg_end = ctx.gen_li_alloc(TeecapImm::NTag(tag_end, true));
             ctx.push_insn(TeecapInsn::Jmp(reg_end.reg));
             ctx.release_gpr(&reg_end);
 
@@ -2218,7 +2224,7 @@ impl TeecapEmitter for WhileStatement {
 
         ctx.push_tag(tag_start);
         let reg_cond = self.expression.teecap_evaluate(ctx).to_register(ctx);
-        let reg_end = ctx.gen_li_alloc(TeecapImm::NTag(tag_end));
+        let reg_end = ctx.gen_li_alloc(TeecapImm::NTag(tag_end, true));
         ctx.push_insn(TeecapInsn::Jz(reg_end.reg, reg_cond.reg));
         ctx.release_gpr(&reg_end);
         ctx.release_gpr(&reg_cond);

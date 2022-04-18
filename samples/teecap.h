@@ -42,7 +42,6 @@ struct teecap_runtime {
     void* enclave_create;
     void* enclave_enter;
     void* enclave_destroy;
-    void* read_code;
 };
 
 
@@ -367,7 +366,9 @@ TEECAP_ATTR_HAS_METAPARAM void join_all() {
 void _start(void* heap) {
     struct teecap_runtime* runtime;
     void *malloc_sealed, *free_sealed, *sched_sealed, *thread_start_sealed, 
-         *thread_create_sealed, *join_all_sealed, *enclave_create_sealed, *enclave_destroy_sealed, *tmp;
+         *thread_create_sealed, *join_all_sealed, *enclave_create_sealed, *enclave_destroy_sealed, 
+         *enclave_enter_sealed,
+         *tmp;
     TEECAP_ALLOC_BOTTOM(runtime, tmp, heap, sizeof(struct teecap_runtime));
     delin(runtime);
     // FIXME: let's say they can use the same runtime struct for now. See whether there will be problems
@@ -386,6 +387,7 @@ void _start(void* heap) {
     TEECAP_ALLOC_BOTTOM(malloc_state, tmp, heap, sizeof(struct malloc_state));
     TEECAP_ALLOC_BOTTOM(enclave_create_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     TEECAP_ALLOC_BOTTOM(enclave_destroy_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
+    TEECAP_ALLOC_BOTTOM(enclave_enter_sealed, tmp, heap, TEECAP_SEALED_REGION_SIZE);
     delin(malloc_state); // make sure this is written back
     TEECAP_ALLOC_BOTTOM(sched_state, tmp, heap, sizeof(struct sched_state));
     delin(sched_state);
@@ -401,7 +403,7 @@ void _start(void* heap) {
     sched_state->critical_state = sched_critical_state;
     sched_state->thread_finished = 0;
 
-    void *malloc_pc, *free_pc, *sched_pc, *thread_start_pc, *epc, *enclave_create_pc, *enclave_destroy_pc;
+    void *malloc_pc, *free_pc, *sched_pc, *thread_start_pc, *epc, *enclave_create_pc, *enclave_destroy_pc, *enclave_enter_cp;
     TEECAP_BUILD_CP(malloc_pc, malloc);
     runtime->malloc = sealed_setup(malloc_sealed, malloc_pc, 0, 0, malloc_state);
     TEECAP_BUILD_CP(free_pc, free);
@@ -412,6 +414,8 @@ void _start(void* heap) {
     runtime->enclave_create = sealed_setup(enclave_create_sealed, enclave_create_pc, 0, 0, 0);
     TEECAP_BUILD_CP(enclave_destroy_pc, enclave_destroy);
     runtime->enclave_destroy = sealed_setup(enclave_destroy_sealed, enclave_destroy_pc, 0, 0, 0);
+    TEECAP_BUILD_CP(enclave_enter_cp, enclave_enter);
+    runtime->enclave_enter = sealed_setup(enclave_enter_sealed, enclave_enter_cp, 0, 0, 0);
 
     TEECAP_BUILD_CP(sched_pc, sched);
     epc = sealed_setup(sched_sealed, sched_pc, 0, sched_stack, sched_state);
@@ -449,7 +453,6 @@ struct enclave {
 struct enclave_runtime {
     void* heap;
     void* shared;
-    void* code;
     void* sealed;
     struct teecap_runtime* runtime;
     // TODO: pass runtime in later
@@ -462,13 +465,12 @@ struct enclave_runtime {
 //for the shared and enclave exclusive memory regions
 // code and data are directly supplied
 // stack and shared are newly created
-struct enclave* enclave_create(void* code, void* data, void* inner_code, struct teecap_runtime* runtime) {
+struct enclave* enclave_create(void* code, void* data, struct teecap_runtime* runtime) {
     struct enclave *encl = runtime->malloc(sizeof(struct enclave));
     struct enclave_runtime* encl_runtime = runtime->malloc(sizeof(struct enclave_runtime));
     void *stack = runtime->malloc(TEECAP_THREAD_STACK_SIZE);
     void *sealed = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
     void *shared = runtime->malloc(TEECAP_ENCLAVE_SHARED_SIZE);
-    void *inner_sealed = runtime->malloc(TEECAP_SEALED_REGION_SIZE);
     encl->runtime_rev = mrev(encl_runtime);
     encl->code_rev = mrev(code);
     encl->data_rev = mrev(data);
@@ -480,8 +482,6 @@ struct enclave* enclave_create(void* code, void* data, void* inner_code, struct 
     encl_runtime->heap = data;
     encl_runtime->shared = shared;
     encl_runtime->runtime = runtime;
-    encl_runtime->code = inner_code;
-    encl_runtime->sealed = inner_sealed;
     sealed = sealed_setup(sealed, code, 0, stack, encl_runtime);
     encl->sealed = sealed;
     returnsl(encl, enclave_create);
@@ -491,7 +491,7 @@ struct enclave* enclave_create(void* code, void* data, void* inner_code, struct 
 //enclave is automatically destroyed after exiting the call
 void* enclave_enter(struct enclave* encl) {
     direct_call(encl->sealed);
-    return encl;
+    returnsl(encl, enclave_enter);
 }
 
 // NOTE: the code and data capabilities are also destroyed
