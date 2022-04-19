@@ -29,7 +29,7 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave() {
 
     struct enclave* inner_enclave = teecap_runtime->enclave_create(inner_enclave_code, data, teecap_runtime);
     print(inner_enclave);
-    inner_enclave = direct_call(inner_enclave->sealed);
+    direct_call(inner_enclave->sealed);
     teecap_runtime->enclave_destroy(inner_enclave, teecap_runtime);
 
     TEECAP_METAPARAM = runtime;
