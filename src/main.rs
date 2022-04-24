@@ -151,6 +151,8 @@ enum TeecapInsn {
     Call(TeecapReg, TeecapReg),
     Lin(TeecapReg),
     Delin(TeecapReg),
+    Tighten(TeecapReg, TeecapReg),
+    Shrink(TeecapReg, TeecapReg, TeecapReg),
     Seal(TeecapReg),
     SealRet(TeecapReg, TeecapReg),
     Drop(TeecapReg),
@@ -381,6 +383,12 @@ impl Display for TeecapInsn {
             }
             TeecapInsn::Delin(r) => {
                 write!(f, "delin {}", r)
+            }
+            TeecapInsn::Tighten(rd, rs) => {
+                write!(f, "tighten {} {}", rd, rs)
+            }
+            TeecapInsn::Shrink(rd, rb, re) => {
+                write!(f, "shrink {} {} {}", rd, rb, re)
             }
             TeecapInsn::Drop(r) => {
                 write!(f, "drop {}", r)
@@ -1623,6 +1631,18 @@ impl TeecapEvaluator for CallExpression {
                     "delin" => {
                         let args = self.arguments.to_registers(ctx);
                         ctx.push_insn(TeecapInsn::Delin(args.first().expect("Missing argument for delin!").reg));
+                        ctx.release_gprs(&args);
+                        TeecapEvalResult::Const(0)
+                    }
+                    "tighten" => {
+                        let args = self.arguments.to_registers(ctx);
+                        ctx.push_insn(TeecapInsn::Tighten(args[0].reg, args[1].reg));
+                        ctx.release_gprs(&args);
+                        TeecapEvalResult::Const(0)
+                    }
+                    "shrink" => {
+                        let args = self.arguments.to_registers(ctx);
+                        ctx.push_insn(TeecapInsn::Shrink(args[0].reg, args[1].reg, args[2].reg));
                         ctx.release_gprs(&args);
                         TeecapEvalResult::Const(0)
                     }

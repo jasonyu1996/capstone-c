@@ -19,7 +19,7 @@
 #define TEECAP_ATTR_DEDICATED_STACK __attribute__((pinned("r2")))
 
 #define TEECAP_MOVE(d, cap) { (d) = (cap); }
-#define TEECAP_BORROW(d, cap) { (d) = (cap); (cap) = mrev(d); delin(d); }
+#define TEECAP_BORROW(d, cap) { (d) = (cap); (cap) = mrev(d); delin(d); tighten(d, 0); }
 #define TEECAP_BORROW_END(cap) { lin(cap); }
 #define TEECAP_BORROW_MUT(d, cap) { (d) = (cap); (cap) = mrev(d); }
 #define TEECAP_BORROW_MUT_END(cap) { lin(cap); }
