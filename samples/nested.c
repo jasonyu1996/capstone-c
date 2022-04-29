@@ -1,22 +1,22 @@
-#include "teecap.h"
+#include "capstone.h"
 #include "enclave.h"
 
-TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave() {
-    TEECAP_STACK_SETUP;
+CAPSTONE_ATTR_DEDICATED_STACK CAPSTONE_ATTR_HAS_METAPARAM void enclave() {
+    CAPSTONE_STACK_SETUP;
     
-    struct enclave_runtime* runtime = TEECAP_METAPARAM;
-    struct teecap_runtime* teecap_runtime = runtime->runtime;
+    struct enclave_runtime* runtime = CAPSTONE_METAPARAM;
+    struct capstone_runtime* capstone_runtime = runtime->runtime;
     int level = runtime->heap[0];
 
     print(level);
     if(level > 2) {
-        TEECAP_METAPARAM = runtime;
-        TEECAP_STACK_RETURN;
+        CAPSTONE_METAPARAM = runtime;
+        CAPSTONE_STACK_RETURN;
         return;
     }
 
-    void* inner_enclave_code = teecap_runtime->malloc(512);
-    void* data = teecap_runtime->malloc(512);
+    void* inner_enclave_code = capstone_runtime->malloc(512);
+    void* data = capstone_runtime->malloc(512);
     int i = 0, code_size = runtime->heap[1];
     while(i < code_size) {
         inner_enclave_code[i] = runtime->heap[2 + i];
@@ -27,20 +27,20 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave() {
     data[1] = code_size;
     scco(inner_enclave_code, 0);
 
-    struct enclave* inner_enclave = teecap_runtime->enclave_create(inner_enclave_code, data, teecap_runtime);
+    struct enclave* inner_enclave = capstone_runtime->enclave_create(inner_enclave_code, data, capstone_runtime);
     print(inner_enclave);
     direct_call(inner_enclave->sealed);
-    teecap_runtime->enclave_destroy(inner_enclave, teecap_runtime);
+    capstone_runtime->enclave_destroy(inner_enclave, capstone_runtime);
 
-    TEECAP_METAPARAM = runtime;
-    TEECAP_STACK_RETURN;
+    CAPSTONE_METAPARAM = runtime;
+    CAPSTONE_STACK_RETURN;
 }
 
-int main(struct teecap_runtime* runtime) {
+int main(struct capstone_runtime* runtime) {
     void* enclave_code = runtime->malloc(512);
     int i = 0;
     void* code_base;
-    TEECAP_BUILD_CP(code_base, 0);
+    CAPSTONE_BUILD_CP(code_base, 0);
     void* data = runtime->malloc(512);
     while(i + enclave < main) {
         enclave_code[i] = code_base[enclave + i];

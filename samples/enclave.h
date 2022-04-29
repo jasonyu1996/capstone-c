@@ -1,7 +1,7 @@
 #ifndef ENCLAVE_H
 #define ENCLAVE_H
 
-#include "teecap.h"
+#include "capstone.h"
 
 struct enclave* ecall(struct enclave* encl, int call_no) {
     encl->shared[0] = call_no;

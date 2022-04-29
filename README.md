@@ -1,7 +1,7 @@
-## TEECap C compiler
+## Capstone C compiler
 
 This is a simple compiler that translates a subset of C into 
-TEECap in a format that can be run on the TEECap emulator.
+Capstone in a format that can be run on the Capstone emulator.
 
 ### Setting up
 
@@ -27,14 +27,29 @@ In the project folder, use the following command to run the compiler:
 
     cargo run <path-to-source-file>
 
+Or
+
+    ./target/debug/capstone-c [options] <path-to-source-file>
+
+The compiler takes some options which can either be used to set a custom machine start state, or to help with debugging the output (`--help` or `-h`).
+
+    OPTIONS:
+        --clock-rate <CLOCK_RATE>    [default: 500]
+        --gpr-n <GPR_N>              [default: 32]
+    -h, --help                       Print help information
+        --mem-size <MEM_SIZE>        [default: 65536]
+        --print-comments             
+        --show-ast                   
+        --stack-size <STACK_SIZE>    [default: 16384]
+    -V, --version                    Print version information
+
+
 The standard output is in a format that can be directly run in the
-TEECap emulator. Therefore, you can pipe them for better convenience.
+Capstone emulator. Therefore, you can pipe them for better convenience.
 
 You can start with the C files in the `samples` folder.
 
 Two environment variables influence the compiler behaviours:
 * `TEECAP_SHOW_AST`: if it is set, the compiler will also display the syntax tree of the source file
-display the syntax tree of the source file
-* `TEECAP_PRINT_COMMENTS`: if it is set, the compiler will emit in the
-  output.
+* `TEECAP_PRINT_COMMENTS`: if it is set, the compiler will emit in the output.
 

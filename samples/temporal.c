@@ -1,12 +1,12 @@
-#include "teecap.h"
+#include "capstone.h"
 #include "enclave.h"
 
-TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave1() {
-    TEECAP_STACK_SETUP;
-    struct enclave_runtime* runtime = TEECAP_METAPARAM;
-    struct teecap_runtime* teecap_runtime = runtime->runtime;
+CAPSTONE_ATTR_DEDICATED_STACK CAPSTONE_ATTR_HAS_METAPARAM void enclave1() {
+    CAPSTONE_STACK_SETUP;
+    struct enclave_runtime* runtime = CAPSTONE_METAPARAM;
+    struct capstone_runtime* capstone_runtime = runtime->runtime;
 
-    void* setup_shared_code = teecap_runtime->malloc(512);
+    void* setup_shared_code = capstone_runtime->malloc(512);
 
     int i = 0, code_size = runtime->heap[0];
     while(i < code_size) {
@@ -14,8 +14,8 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave1() {
         i = i + 1;
     }
 
-    void* shared_mem = teecap_runtime->malloc(128);
-    shared_mem[0] = 44; // just some dumb data
+    void* shared_mem = capstone_runtime->malloc(128);
+    shared_mem[0] = 44; // some random data
     void* shared_rev = mrev(shared_mem);
     void* shared_rev_shared = mrev(shared_mem);
 
@@ -23,23 +23,23 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave1() {
 
     runtime->heap[1] = shared_rev;
     
-    void* setup_shared_cap = teecap_runtime->malloc(TEECAP_SEALED_REGION_SIZE);
+    void* setup_shared_cap = capstone_runtime->malloc(CAPSTONE_SEALED_REGION_SIZE);
     scco(setup_shared_code, 0);
-    setup_shared_cap[TEECAP_SEALED_OFFSET_PC] = setup_shared_code;
-    setup_shared_cap[TEECAP_SEALED_OFFSET_EPC] = 0;
-    setup_shared_cap[TEECAP_SEALED_OFFSET_DEDICATED_STACK] = 0; // stack is actually specified upon call
-    setup_shared_cap[TEECAP_SEALED_OFFSET_METAPARAM] = shared_rev_shared;
+    setup_shared_cap[CAPSTONE_SEALED_OFFSET_PC] = setup_shared_code;
+    setup_shared_cap[CAPSTONE_SEALED_OFFSET_EPC] = 0;
+    setup_shared_cap[CAPSTONE_SEALED_OFFSET_DEDICATED_STACK] = 0; // stack is actually specified upon call
+    setup_shared_cap[CAPSTONE_SEALED_OFFSET_METAPARAM] = shared_rev_shared;
     seal(setup_shared_cap);
 
     runtime->shared[0] = setup_shared_cap;
 
-    TEECAP_METAPARAM = runtime;
-    TEECAP_STACK_RETURN;
+    CAPSTONE_METAPARAM = runtime;
+    CAPSTONE_STACK_RETURN;
 }
 
-TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave2() {
-    TEECAP_STACK_SETUP;
-    struct enclave_runtime* runtime = TEECAP_METAPARAM;
+CAPSTONE_ATTR_DEDICATED_STACK CAPSTONE_ATTR_HAS_METAPARAM void enclave2() {
+    CAPSTONE_STACK_SETUP;
+    struct enclave_runtime* runtime = CAPSTONE_METAPARAM;
 
     void* d = runtime->shared[0];
     void* shared_mem = d();
@@ -49,25 +49,25 @@ TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void enclave2() {
     print(shared_mem);
     print(shared_mem[0]);
     
-    TEECAP_METAPARAM = runtime;
-    TEECAP_STACK_RETURN;
+    CAPSTONE_METAPARAM = runtime;
+    CAPSTONE_STACK_RETURN;
 }
 
 
-TEECAP_ATTR_HAS_METAPARAM void* setup_shared() {
-    void* d = TEECAP_METAPARAM;
+CAPSTONE_ATTR_HAS_METAPARAM void* setup_shared() {
+    void* d = CAPSTONE_METAPARAM;
 
     // perform attestation
 
     return d;
 }
 
-int main(struct teecap_runtime* runtime) {
+int main(struct capstone_runtime* runtime) {
     void* enclave1_code = runtime->malloc(512);
     void* enclave2_code = runtime->malloc(512);
     int i = 0;
     void* code_base;
-    TEECAP_BUILD_CP(code_base, 0);
+    CAPSTONE_BUILD_CP(code_base, 0);
 
     void* data1 = runtime->malloc(512);
     while(i + enclave1 < enclave2) {

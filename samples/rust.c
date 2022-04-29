@@ -1,7 +1,7 @@
-#include "teecap.h"
+#include "capstone.h"
 
 
-int main(struct teecap_runtime* runtime){
+int main(struct capstone_runtime* runtime){
     void *borrowed_foo, *borrowed_bar, *moved_baz;
 
     void *foo = runtime->malloc(32);
@@ -12,9 +12,9 @@ int main(struct teecap_runtime* runtime){
     print(bar);
     print(baz);
 
-    TEECAP_BORROW(borrowed_foo, foo);
-    TEECAP_BORROW_MUT(borrowed_bar, bar);
-    TEECAP_MOVE(moved_baz, baz);
+    CAPSTONE_BORROW(borrowed_foo, foo);
+    CAPSTONE_BORROW_MUT(borrowed_bar, bar);
+    CAPSTONE_MOVE(moved_baz, baz);
 
     print(foo);
     print(borrowed_foo);
@@ -23,8 +23,8 @@ int main(struct teecap_runtime* runtime){
     print(baz);
     print(moved_baz);
 
-    TEECAP_BORROW_END(foo);
-    TEECAP_BORROW_MUT_END(bar);
+    CAPSTONE_BORROW_END(foo);
+    CAPSTONE_BORROW_MUT_END(bar);
 
     print(foo);
     print(bar);

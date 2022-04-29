@@ -1,6 +1,6 @@
-#include "teecap.h"
+#include "capstone.h"
 
-int main(struct teecap_runtime* runtime){
+int main(struct capstone_runtime* runtime){
     print(runtime->version_major);
     print(runtime->version_minor);
 

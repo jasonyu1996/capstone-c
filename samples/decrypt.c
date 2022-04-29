@@ -1,33 +1,25 @@
-#include "teecap.h"
+#include "capstone.h"
 #include "enclave.h"
 
 #define CRYPTO_CALL_ENCRYPT 0
 #define CRYPTO_CALL_DECRYPT 1
 
-TEECAP_ATTR_DEDICATED_STACK TEECAP_ATTR_HAS_METAPARAM void crypto() {
-    TEECAP_STACK_SETUP;
+CAPSTONE_ATTR_DEDICATED_STACK CAPSTONE_ATTR_HAS_METAPARAM void crypto() {
+    CAPSTONE_STACK_SETUP;
     
-    struct enclave_runtime* runtime = TEECAP_METAPARAM;
+    struct enclave_runtime* runtime = CAPSTONE_METAPARAM;
     int call_code = runtime->shared[0];
-    // this following does not work for now
-    // need relative addressing in instructions
-    /*if(call_code == 0) {*/
-        /*// encrypt*/
-    /*} */
-    /*if(call_code == 1) {*/
-        /*// decrypt*/
-    /*}*/
 
-    TEECAP_METAPARAM = runtime;
+    CAPSTONE_METAPARAM = runtime;
 
-    TEECAP_STACK_RETURN;
+    CAPSTONE_STACK_RETURN;
 }
 
-int main(struct teecap_runtime* runtime) {
+int main(struct capstone_runtime* runtime) {
     void* crypto_code = runtime->malloc(128);
     int i = 0;
     void* crypto_base;
-    TEECAP_BUILD_CP(crypto_base, 0);
+    CAPSTONE_BUILD_CP(crypto_base, 0);
     while(i + crypto < main) {
         crypto_code[i] = crypto_base[crypto + i];
         i = i + 1;
