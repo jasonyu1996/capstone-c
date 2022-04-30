@@ -50,6 +50,6 @@ Capstone emulator. Therefore, you can pipe them for better convenience.
 You can start with the C files in the `samples` folder.
 
 Two environment variables influence the compiler behaviours:
-* `TEECAP_SHOW_AST`: if it is set, the compiler will also display the syntax tree of the source file
-* `TEECAP_PRINT_COMMENTS`: if it is set, the compiler will emit in the output.
+* `CAPSTONE_SHOW_AST`: if it is set, the compiler will also display the syntax tree of the source file
+* `CAPSTONE_PRINT_COMMENTS`: if it is set, the compiler will emit in the output.
 
