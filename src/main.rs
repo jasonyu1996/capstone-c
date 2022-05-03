@@ -87,7 +87,7 @@ impl CapstoneRegState {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum CapstoneReg {
-    Pc, Sc, Epc, Ret, Gpr(u8)
+    Pc, Epc, Ret, Gpr(u8)
 }
 
 impl Display for CapstoneReg {
@@ -96,9 +96,9 @@ impl Display for CapstoneReg {
            CapstoneReg::Pc => {
                write!(f, "pc")
            }
-           CapstoneReg::Sc => {
-               write!(f, "sc")
-           }
+           //CapstoneReg::Sc => {
+               //write!(f, "sc")
+           //}
            CapstoneReg::Epc => {
                write!(f, "epc")
            }
@@ -171,7 +171,7 @@ impl CapstoneReg {
             match s {
                 "pc" => Some(CapstoneReg::Pc),
                 "ret" => Some(CapstoneReg::Ret),
-                "sc" => Some(CapstoneReg::Sc),
+                //"sc" => Some(CapstoneReg::Sc),
                 "epc" => Some(CapstoneReg::Epc),
                 _ => None
             }
@@ -1247,12 +1247,12 @@ impl CodeGenContext {
         let stack_reg = CapstoneRegResult::new_simple(CAPSTONE_STACK_REG, CapstoneType::Cap(None));
         let rheap = self.gen_splitlo_alloc_const(&stack_reg, CLI_ARGS.stack_size);
 
-        let r = self.gen_splitlo_alloc_const(&stack_reg, CAPSTONE_SEALED_REGION_SIZE as u32);
-        self.push_insn(CapstoneInsn::Mov(CapstoneReg::Sc, CAPSTONE_STACK_REG));
-        self.push_insn(CapstoneInsn::Mov(CAPSTONE_STACK_REG, r.reg));
+        //let r = self.gen_splitlo_alloc_const(&stack_reg, CAPSTONE_SEALED_REGION_SIZE as u32);
+        //self.push_insn(CapstoneInsn::Mov(CapstoneReg::Sc, CAPSTONE_STACK_REG));
+        //self.push_insn(CapstoneInsn::Mov(CAPSTONE_STACK_REG, r.reg));
 
         // setting the heap offset to 0
-        self.gen_li(&r, CapstoneImm::Const(0));
+        let r = self.gen_li_alloc(CapstoneImm::Const(0));
         self.push_insn(CapstoneInsn::Scco(rheap.reg, r.reg));
 
         self.gen_store_with_cap(&CapstoneOffset::Const(0), &stack_reg, &CapstoneEvalResult::Register(rheap));
