@@ -375,7 +375,6 @@ void _start(void* heap) {
          *tmp;
     CAPSTONE_ALLOC_BOTTOM(runtime, tmp, heap, sizeof(struct capstone_runtime));
     delin(runtime);
-    // FIXME: let's say they can use the same runtime struct for now. See whether there will be problems
     runtime->version_minor = 1;
     runtime->version_major = 0;
 

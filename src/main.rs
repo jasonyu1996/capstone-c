@@ -1,22 +1,25 @@
 #![feature(box_patterns, once_cell)]
 
-use std::any::type_name;
 use std::fmt::Display;
-use std::os::unix::process::parent_id;
 /**
  * Features omitted: no distinguishing different int sizes
  *
  * */
 
 
-use std::{iter::Map, collections::HashMap};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::lazy::Lazy;
 
-use lang_c::driver::{SyntaxError, Error};
-use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition,
-    StaticAssert, Declarator, Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer, Expression, Constant}};
-use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression, BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement, UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier, TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier, DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, StructDeclarator, Extension, ArraySize, TypeName};
+use lang_c::driver::Error;
+use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition, Declarator,
+    Declaration, DeclaratorKind, Statement, BlockItem, InitDeclarator, Integer, Initializer,
+    Expression, Constant}}; 
+use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression,
+    BinaryOperator, Identifier, IfStatement, WhileStatement, CallExpression, AsmStatement,
+    UnaryOperatorExpression, UnaryOperator, MemberExpression, MemberOperator, DeclarationSpecifier,
+    TypeSpecifier, StructType, StructKind, StructDeclaration, StructField, SpecifierQualifier,
+    DerivedDeclarator, FunctionDeclarator, ParameterDeclaration, Extension, ArraySize, TypeName};
 use lang_c::span::Node;
 use clap::Parser as ClapParser;
 
@@ -25,7 +28,6 @@ const CAPSTONE_STACK_REG: CapstoneReg = CapstoneReg::Gpr(0); // r0 is used for s
 const CAPSTONE_SEALED_REGION_SIZE: usize = CAPSTONE_GPR_N + 4;
 
 const CAPSTONE_SEALED_OFFSET_PC: usize = 0;
-const CAPSTONE_SEALED_OFFSET_STACK_REG: usize = 4;
 
 type CapstoneInt = u64;
 
@@ -96,9 +98,6 @@ impl Display for CapstoneReg {
            CapstoneReg::Pc => {
                write!(f, "pc")
            }
-           //CapstoneReg::Sc => {
-               //write!(f, "sc")
-           //}
            CapstoneReg::Epc => {
                write!(f, "epc")
            }
@@ -135,15 +134,11 @@ enum CapstoneInsn {
     Sub(CapstoneReg, CapstoneReg),
     Mult(CapstoneReg, CapstoneReg),
     Div(CapstoneReg, CapstoneReg),
-    Jnz(CapstoneReg, CapstoneReg),
     Jz(CapstoneReg, CapstoneReg),
     Eq(CapstoneReg, CapstoneReg, CapstoneReg),
     Le(CapstoneReg, CapstoneReg, CapstoneReg),
     Lt(CapstoneReg, CapstoneReg, CapstoneReg),
     And(CapstoneReg, CapstoneReg),
-    Split(CapstoneReg, CapstoneReg, CapstoneReg),
-    Splitl(CapstoneReg, CapstoneReg, CapstoneReg),
-    Splito(CapstoneReg, CapstoneReg, CapstoneReg),
     Splitlo(CapstoneReg, CapstoneReg, CapstoneReg),
     Mov(CapstoneReg, CapstoneReg),
     Or(CapstoneReg, CapstoneReg),
@@ -171,7 +166,6 @@ impl CapstoneReg {
             match s {
                 "pc" => Some(CapstoneReg::Pc),
                 "ret" => Some(CapstoneReg::Ret),
-                //"sc" => Some(CapstoneReg::Sc),
                 "epc" => Some(CapstoneReg::Epc),
                 _ => None
             }
@@ -203,7 +197,8 @@ impl CapstoneFunctionType {
                             Extension::Attribute(attr) => {
                                 match attr.name.node.as_str() {
                                     "pinned" => {
-                                        func_type.pinned_gprs.extend(attr.arguments.iter().filter_map(|x| x.node.capstone_try_into_str().and_then(|s| CapstoneReg::try_from_str(s.trim_matches('\"')))));
+                                        func_type.pinned_gprs.extend(attr.arguments.iter().
+                                                filter_map(|x| x.node.capstone_try_into_str().and_then(|s| CapstoneReg::try_from_str(s.trim_matches('\"')))));
                                     }
                                     _ => {}
                                 }
@@ -250,11 +245,7 @@ struct CapstoneRegResult {
 
 impl CapstoneRegResult {
     fn new_simple(reg: CapstoneReg, dtype: CapstoneType) -> CapstoneRegResult {
-        CapstoneRegResult { reg: reg, release_strategy: CapstoneRegRelease::Simple, data_type: dtype}
-    }
-
-    fn new_writeback(reg: CapstoneReg, wb_to: CapstoneRegResult, offset: CapstoneOffset, dtype: CapstoneType) -> CapstoneRegResult {
-        CapstoneRegResult { reg: reg, release_strategy: CapstoneRegRelease::WriteBack(Box::new(wb_to), offset), data_type: dtype }
+        CapstoneRegResult { reg, release_strategy: CapstoneRegRelease::Simple, data_type: dtype}
     }
 
     fn set_writeback(&mut self, wb_to: CapstoneRegResult, offset: CapstoneOffset) {
@@ -312,9 +303,6 @@ impl Display for CapstoneInsn {
             CapstoneInsn::Div(rd, rs) => {
                 write!(f, "div {} {}", rd, rs)
             }
-            CapstoneInsn::Jnz(rd, rs) => {
-                write!(f, "jnz {} {}", rd, rs)
-            }
             CapstoneInsn::Jz(rd, rs) => {
                 write!(f, "jz {} {}", rd, rs)
             }
@@ -341,15 +329,6 @@ impl Display for CapstoneInsn {
             }
             CapstoneInsn::Or(rd, rs) => {
                 write!(f, "or {} {}", rd, rs)
-            }
-            CapstoneInsn::Split(rd, rs, rp) => {
-                write!(f, "split {} {} {}", rd, rs, rp)
-            }
-            CapstoneInsn::Splito(rd, rs, rp) => {
-                write!(f, "splito {} {} {}", rd, rs, rp)
-            }
-            CapstoneInsn::Splitl(rd, rs, rp) => {
-                write!(f, "splitl {} {} {}", rd, rs, rp)
             }
             CapstoneInsn::Splitlo(rd, rs, rp) => {
                 write!(f, "splitlo {} {} {}", rd, rs, rp)
@@ -398,9 +377,6 @@ impl Display for CapstoneInsn {
             }
             CapstoneInsn::RetSealed(rd, rs) => {
                 write!(f, "retsl {} {}", rd, rs)
-            }
-            _ => {
-                write!(f, "<und>")
             }
         }
     }
@@ -454,24 +430,18 @@ impl CapstoneAssemblyUnit {
     }
 }
 
-type CapstoneFunctionGroupId = u32;
-
 
 struct CapstoneFunction {
-    group: CapstoneFunctionGroupId,
     name: String, // name of the function
     code: Vec<CapstoneAssemblyUnit>,
-    func_type: CapstoneFunctionType,
     return_type: CapstoneType
 }
 
 impl CapstoneFunction {
-    fn new(name: &str, func_type: CapstoneFunctionType, return_type: CapstoneType) -> CapstoneFunction {
+    fn new(name: &str, _func_type: CapstoneFunctionType, return_type: CapstoneType) -> CapstoneFunction {
         CapstoneFunction {
-            group: 0,
             name: name.to_string(),
             code: Vec::new(),
-            func_type,
             return_type
         }
     }
@@ -494,8 +464,6 @@ impl CapstoneFunction {
 struct CapstoneVariable {
     offset_in_cap: CapstoneOffset, // offset inside the capability
     ttype: CapstoneType,
-    //parent_type: Option<String>,
-    //name: String,
     cap: CapstoneRegResult, // actuall register that has the capability for loading the variable
 }
 
@@ -505,18 +473,15 @@ struct CapstoneUnresolvedVar(String); // this is the unresolved variable. We don
 
 impl CapstoneVariable {
     fn join_indirect(&self, other: &CapstoneUnresolvedVar, ctx: &mut CodeGenContext) -> Option<CapstoneEvalResult> {
-        //eprintln!("Join {:?}", self.ttype);
         match &self.ttype {
             CapstoneType::Cap(base_type) => { // indirect join can only be performed on a capability
                 match base_type {
                     Some(box CapstoneType::Struct(base_struct_name)) => {
                         let reg_lhs = ctx.gen_ld_alloc(self); // holds a capability
-                        //ctx.push_insn(CapstoneInsn::Out(reg_lhs.reg));
                         let (offset, ttype) = ctx.resolve_var(CapstoneOffset::Const(0), &Some(base_struct_name.to_string()), other)?;
-                        //eprintln!("Resolved: {:?}", (offset, &ttype));
                         Some(CapstoneEvalResult::Variable(CapstoneVariable {
                             offset_in_cap: offset,
-                            ttype: ttype,
+                            ttype,
                             cap: reg_lhs.clone()
                         }))
                     } 
@@ -551,7 +516,7 @@ impl CapstoneVariable {
             CapstoneType::Struct(parent_name) => {
                 let (offset, ttype) = ctx.resolve_var(self.offset_in_cap, &Some(parent_name.to_string()), other).expect("Field not found!");
                 Some(CapstoneEvalResult::Variable(CapstoneVariable { offset_in_cap: offset, 
-                    ttype: ttype,
+                    ttype,
                     cap: self.cap.clone()}))
             }
             _ => {
@@ -577,7 +542,7 @@ impl CapstoneEvalResult {
             CapstoneEvalResult::Const(_) => &CapstoneType::Int,
             CapstoneEvalResult::Register(reg) => &reg.data_type,
             CapstoneEvalResult::Variable(var) => &var.ttype,
-            CapstoneEvalResult::UnresolvedVar(var) => &CapstoneType::Int, // resolve first, otherwise fall back to int
+            CapstoneEvalResult::UnresolvedVar(_var) => &CapstoneType::Int, // resolve first, otherwise fall back to int
         }
     }
 
@@ -604,7 +569,6 @@ impl CapstoneEvalResult {
 
     fn to_register_with_offset(&self, offset: u32, ctx: &mut CodeGenContext) -> Option<CapstoneRegResult> {
         if self.get_size(ctx) <= offset {
-            //eprintln!("{:?} {}", self, self.get_size(ctx));
             return None;
         }
         match self {
@@ -648,7 +612,6 @@ impl CapstoneEvalResult {
     }
     fn join_direct(&self, other: &CapstoneEvalResult, ctx: &mut CodeGenContext) -> Option<CapstoneEvalResult> {
         if let CapstoneEvalResult::UnresolvedVar(rhs) = other {
-            //eprintln!("{:#?}", self);
             match self {
                 CapstoneEvalResult::Variable(var) => {
                     var.join_direct(rhs, ctx)
@@ -669,7 +632,6 @@ impl CapstoneEvalResult {
             CapstoneEvalResult::Const(_) => 1,
             CapstoneEvalResult::Register(_) => 1,
             CapstoneEvalResult::Variable(var) => {
-                //eprintln!("{:#?}", (offset, parent, name, ctx.variables.first().unwrap(), &ctx.struct_map));
                 var.ttype.get_size(&ctx.struct_map)
             }
             CapstoneEvalResult::UnresolvedVar(var) => {
@@ -678,8 +640,6 @@ impl CapstoneEvalResult {
         }
     }
 }
-
-//struct CapstoneContext {}
 
 trait CapstoneEvaluator {
     fn capstone_evaluate(&self, ctx: &mut CodeGenContext) -> CapstoneEvalResult;
@@ -733,7 +693,7 @@ impl CapstoneOffset {
         }
     }
 
-    fn from_reg_result(res: &CapstoneRegResult, ctx: &mut CodeGenContext) -> CapstoneOffset {
+    fn from_reg_result(res: &CapstoneRegResult, _ctx: &mut CodeGenContext) -> CapstoneOffset {
         CapstoneOffset::Register(res.reg)
     }
 
@@ -806,8 +766,6 @@ impl CodeGenContext {
     }
 
     fn gen_index(&mut self, lhs: &mut CapstoneEvalResult, rhs: &mut CapstoneEvalResult) -> CapstoneEvalResult {
-        //eprintln!("{:?} {:?}", lhs_reg, rhs_reg);
-        //eprintln!("{:?}", self.variables);
         rhs.resolve(self);
         lhs.resolve(self);
         match (lhs.get_type(), rhs.get_type()) {
@@ -815,7 +773,6 @@ impl CodeGenContext {
                 let rhs_reg = rhs.to_register(self); // it probably makes more sense to generate rhs first
                 let lhs_reg = lhs.to_register(self);
                 let base_size = base_type.as_ref().map_or(1, |t| t.get_size(&self.struct_map));
-                //eprintln!("base_size = {}", base_size);
                 let rsize = self.gen_li_alloc(CapstoneImm::Const(base_size as u64));
                 self.push_insn(CapstoneInsn::Mult(rsize.reg, rhs_reg.reg));
                 self.release_gpr(&rhs_reg);
@@ -828,7 +785,6 @@ impl CodeGenContext {
             (CapstoneType::Array(base_type, _len), CapstoneType::Int) => {
                 let lhs_var = lhs.try_into_variable(self).expect("Bad index op!");
                 let rhs_reg = rhs.to_register(self);
-                //eprintln!("{:?} {:?} {:?}", lhs_var, rhs_reg, base_type);
                 let base_size = base_type.get_size(&self.struct_map);
                 let rsize = self.gen_li_alloc(CapstoneImm::Const(base_size as u64));
                 self.push_insn(CapstoneInsn::Mult(rsize.reg, rhs_reg.reg));
@@ -845,15 +801,6 @@ impl CodeGenContext {
         }
     }
 
-    fn get_cur_func_group_id(&self) -> CapstoneFunctionGroupId {
-        self.cur_func.as_ref().expect("Failed to obtain current function group ID (not in function context)")
-            .group
-    }
-
-    fn get_cur_func_name(&self) -> &str {
-        &self.cur_func.as_ref().expect("Failed to obtain current function group ID (not in function context)")
-            .name
-    }
 
     fn add_var_to_scope(&mut self, field: CapstoneField) {
         let offset = self.reserved_stack_size;
@@ -889,12 +836,6 @@ impl CodeGenContext {
             self.pin_gpr(*pinned_gpr);
         }
         self.cur_func = Some(CapstoneFunction::new(func_name, func_type, func_return_type));
-        
-
-        // not really necessary to do this
-        //let r = self.gen_li_alloc(CapstoneImm::Const(0));
-        //self.push_insn(CapstoneInsn::Scco(CAPSTONE_STACK_REG, r.reg));
-        //self.release_gpr(&r);
     }
 
     fn exit_function(&mut self) {
@@ -906,14 +847,9 @@ impl CodeGenContext {
         self.in_func = false;
     }
 
-    fn grab_gpr(&mut self, reg: CapstoneReg) {
-        if let CapstoneReg::Gpr(n) = reg {
-            self.gprs[n as usize].grab();
-        }
-    }
 
     fn grab_new_gpr(&mut self) -> Option<CapstoneRegResult> {
-        let some_n = self.gprs.iter().enumerate().find(|&(idx, &b)| b.is_available()).map(|x| x.0 as u8);
+        let some_n = self.gprs.iter().enumerate().find(|&(_idx, &b)| b.is_available()).map(|x| x.0 as u8);
         if let &Some(n) = &some_n {
             self.gprs[n as usize].grab();
         }
@@ -937,7 +873,6 @@ impl CodeGenContext {
                 self.gen_store_with_cap(offset, wb_to, &CapstoneEvalResult::Register(reg.to_simple()));
                 self.release_gpr_no_recurse(reg);
                 offset.drop(self);
-                //self.push_insn(CapstoneInsn::Sd(wb_to.reg, reg.reg));
                 self.release_gpr(wb_to); // TODO: change to loops
             }
         }
@@ -1021,7 +956,6 @@ impl CodeGenContext {
         match parent_struct {
             Some(parent_name) => {
                 let par = self.struct_map.get(parent_name)?;
-                //eprintln!("{:#?}", par);
                 par.get_field(&var.0).map(|(o, t)| (offset.add(&CapstoneOffset::Const(o), self), t))
             }
             None => {
@@ -1039,26 +973,15 @@ impl CodeGenContext {
         Some(var.cap.clone())
     }
 
-    /**
-     * Returns: the register that contains the capability which can be used for accessing
-     * the specified variable (might fail if the variable cannot be accessed).
-     * */
-    fn gen_load_cap(&mut self, var: &CapstoneVariable) -> Option<CapstoneRegResult> {
-        self.gen_load_cap_extra_offset(var, &CapstoneOffset::Const(0))
-    }
-
     fn gen_store_with_cap(&mut self, offset: &CapstoneOffset, rcap: &CapstoneRegResult, val: &CapstoneEvalResult) {
         let rvalue_size = val.get_size(self);
         for i in 0..rvalue_size {
             let reg = val.to_register_with_offset(i, self).unwrap();
             self.release_gpr_ancestors(&reg); // since there is no need to write the value back, we release the ancestors in advance
-            //self.push_insn(CapstoneInsn::Out(CapstoneReg::Pc));
-            //self.push_insn(CapstoneInsn::Out(reg.reg));
             let noffset = &offset.add(&CapstoneOffset::Const(i), self);
             self.gen_sd_imm_offset(rcap, &reg, &noffset);
             self.release_gpr_no_recurse(&reg);
         }
-        //self.push_insn(CapstoneInsn::Out(CapstoneReg::Epc));
     }
 
     fn gen_store(&mut self, var: &CapstoneVariable, val: &CapstoneEvalResult) -> CapstoneEvalResult {
@@ -1141,10 +1064,6 @@ impl CodeGenContext {
         println!("{} {}", mem_offset, -1);
         println!(":<stack>");
         println!("$");
-        //mem_offset += CAPSTONE_STACK_SIZE;
-        //println!("{} {}", mem_offset, -1);
-        //println!(":<heap>");
-        //println!("$");
         println!("-1 -1");
     }
 
@@ -1243,13 +1162,8 @@ impl CodeGenContext {
 
     fn gen_init_func_pre(&mut self) {
         self.push_asm_unit(CapstoneAssemblyUnit::Passthrough("delin pc".to_string()));
-        // set up the sc capability
         let stack_reg = CapstoneRegResult::new_simple(CAPSTONE_STACK_REG, CapstoneType::Cap(None));
         let rheap = self.gen_splitlo_alloc_const(&stack_reg, CLI_ARGS.stack_size);
-
-        //let r = self.gen_splitlo_alloc_const(&stack_reg, CAPSTONE_SEALED_REGION_SIZE as u32);
-        //self.push_insn(CapstoneInsn::Mov(CapstoneReg::Sc, CAPSTONE_STACK_REG));
-        //self.push_insn(CapstoneInsn::Mov(CAPSTONE_STACK_REG, r.reg));
 
         // setting the heap offset to 0
         let r = self.gen_li_alloc(CapstoneImm::Const(0));
@@ -1275,9 +1189,7 @@ impl CodeGenContext {
 
     fn gen_splitlo_alloc(&mut self, rs: &CapstoneRegResult, roffset: &CapstoneRegResult) -> CapstoneRegResult {
         let rsplit = self.grab_new_gpr().expect("Failed to allocate GPR for splitl");
-        //let roffset = self.gen_li_alloc(CapstoneImm::Const(offset as u64));
         self.push_insn(CapstoneInsn::Splitlo(rsplit.reg, rs.reg, roffset.reg));
-        //self.release_gpr(&roffset);
         rsplit
     }
 
@@ -1300,10 +1212,9 @@ impl CodeGenContext {
         self.push_insn(CapstoneInsn::Sd(rcap.reg, rs.reg));
     }
 
-    fn gen_seal_setup(&mut self, rseal: &CapstoneRegResult, rpc: &CapstoneRegResult, rstack: &CapstoneRegResult) {
+    fn gen_seal_setup(&mut self, rseal: &CapstoneRegResult, rpc: &CapstoneRegResult, _rstack: &CapstoneRegResult) {
         self.gen_sd_imm_offset(rseal, rpc, &CapstoneOffset::Const(CAPSTONE_SEALED_OFFSET_PC as u32));
         self.release_gpr(&rpc);
-        //self.gen_sd_imm_offset(rseal, rstack, CAPSTONE_SEALED_OFFSET_STACK_REG as u32);
         // We instead pass the stack as the argument
         self.push_insn(CapstoneInsn::Seal(rseal.reg));
     }
@@ -1380,8 +1291,6 @@ impl CodeGenContext {
         self.push_insn(CapstoneInsn::Drop(rstack_rev.reg)); // TODO: if the result is an uninitialised capability, initialise it first
         self.release_gpr(&rstack_rev);
 
-        //self.push_insn(CapstoneInsn::Drop(rseal));
-
         self.push_insn(CapstoneInsn::Revoke(rrev2.reg));
         self.push_insn(CapstoneInsn::Drop(rrev2.reg));
         self.release_gpr(&rrev2);
@@ -1394,10 +1303,8 @@ impl CodeGenContext {
         CapstoneEvalResult::Register(res)
     }
 
-    fn in_cur_func_group(&self, func_name: &str) -> bool {
+    fn in_cur_func_group(&self, _func_name: &str) -> bool {
         true
-        //self.get_cur_func_name() == func_name ||
-        //self.get_cur_func_group_id() == self.function_map.get(func_name).expect("Undefined function").group
     }
 
     fn gen_retval_setup(&mut self, retval: &CapstoneEvalResult) {
@@ -1418,8 +1325,6 @@ impl CodeGenContext {
     fn gen_return(&mut self, retval: &CapstoneEvalResult, sealed_repl: &CapstoneEvalResult) {
         self.gen_retval_setup(retval);
         let r = sealed_repl.to_register(self);
-        //self.push_insn(CapstoneInsn::Drop(CapstoneReg::Sc)); // FIXME: cannot directly drop sc; should not allow dropping sc
-        // Save the context in the invoked sealed capability instead of sc
         // Temporary solution for now: allowing dropping of uninitialised caps
         self.push_insn(CapstoneInsn::Drop(CAPSTONE_STACK_REG));
         self.release_gpr_ancestors(&r);
@@ -1430,26 +1335,18 @@ impl CodeGenContext {
     fn gen_return_sealed(&mut self, retval: &CapstoneEvalResult, new_pc: &CapstoneEvalResult) {
         self.gen_retval_setup(retval);
         let r = new_pc.to_register(self);
-        //self.push_insn(CapstoneInsn::Drop(CapstoneReg::Sc));
-        // do not drop sc because it should be sealed
         self.push_insn(CapstoneInsn::Drop(CAPSTONE_STACK_REG));
         self.release_gpr_ancestors(&r);
-        //self.push_insn(CapstoneInsn::Out(CapstoneReg::Pc));
-        //self.push_insn(CapstoneInsn::Out(r.reg));
         self.push_insn(CapstoneInsn::RetSealed(CapstoneReg::Ret, r.reg));
         self.release_gpr(&r);
     }
 
     fn gen_cap_query(&mut self, cap_var: &CapstoneVariable,
                      insn_gen: fn(CapstoneReg, CapstoneReg) -> CapstoneInsn) -> Option<CapstoneEvalResult> {
-        //eprintln!("{:?}", cap_var);
         let rcap = self.gen_ld_alloc(cap_var);
-        //eprintln!("Reg: {:?}", rcap);
         let res = self.grab_new_gpr().expect("Failed to allocate GPR for cap query!");
         self.push_insn(insn_gen(res.reg, rcap.reg));
-        //self.gen_store(cap_var, &CapstoneEvalResult::Register(rcap.clone()));
         // we need to put it back in case it is a linear capability
-        //eprintln!("rcap = {:?}, {:?}, {:?}", rcap, res, self.get_gpr_state(res.reg));
         self.release_gpr(&rcap);
         Some(CapstoneEvalResult::Register(res))
     }
@@ -1463,7 +1360,7 @@ impl<T: CapstoneEmitter> CapstoneEmitter for Node<T> {
 }
 
 impl CapstoneEvaluator for Constant {
-   fn capstone_evaluate(&self, ctx: &mut CodeGenContext) -> CapstoneEvalResult {
+   fn capstone_evaluate(&self, _ctx: &mut CodeGenContext) -> CapstoneEvalResult {
        match &self {
            Constant::Integer(int) => {
                CapstoneEvalResult::Const(int.to_capstone_literal())
@@ -1531,7 +1428,7 @@ impl CapstoneEvaluator for BinaryOperatorExpression {
 }
 
 impl CapstoneEvaluator for Identifier {
-    fn capstone_evaluate(&self, ctx: &mut CodeGenContext) -> CapstoneEvalResult {
+    fn capstone_evaluate(&self, _ctx: &mut CodeGenContext) -> CapstoneEvalResult {
         CapstoneEvalResult::UnresolvedVar(CapstoneUnresolvedVar(self.name.to_string()))
     }
 }
@@ -1595,7 +1492,6 @@ impl CapstoneEvaluator for CallExpression {
                             .expect("Missing argument for print!");
                         ctx.push_insn(CapstoneInsn::Out(r.reg));
                         ctx.release_gprs(&args);
-                        //ctx.release_gpr_no_recurse(&r);
                         CapstoneEvalResult::Const(0)
                     }
                     "exit" => {
@@ -1694,21 +1590,6 @@ impl CapstoneEvaluator for CallExpression {
                         CapstoneEvalResult::Const(0)
                     }
                     _ => {
-                        // TODO: support function call
-                        // 1. create sealed capability region
-                        // 2. create stack frame
-                        // 3.jmove arguments into the stack frame
-                        // 4. seal capability
-                        // 5. create revocation capabilities
-                        // 5. invoke sealed capability
-                        // 6. linearise revocation capabilities
-                        // drop capabilities before return
-                        // 7. provides two kinds of function calls: cross domain and in-domain
-                        // let's say for now that we want to allow everybody to be able to call
-                        // every other function. In this case, we just use the same nonlinear RX
-                        // capability
-                        // FIXME: here we require that the called function be declared before
-                        //let args_iter : Vec<CapstoneEvalResult> = self.arguments.iter().map(|x| x.capstone_evaluate(ctx)).collect();
                         match ctx.resolve_top_var(&unresolved_var) {
                             Some(var) => {
                                 let reg = ctx.gen_ld_alloc(&var);
@@ -1782,8 +1663,6 @@ impl CapstoneEvaluator for MemberExpression {
                 lhs.join_direct(&rhs, ctx).expect("Bad direct member expression!")
             }
             MemberOperator::Indirect => {
-                //eprintln!("Indirect {:?} {:?}", lhs, rhs);
-                //eprintln!("{:?}", ctx.variables);
                 lhs.join_indirect(&rhs, ctx).expect("Bad indirect member expression!")
             }
         }
@@ -1882,7 +1761,7 @@ struct CapstoneStruct {
 type CapstoneStructMap = HashMap<String, CapstoneStruct>;
 
 impl CapstoneStruct {
-    fn new(name: String, struct_map: &CapstoneStructMap) -> CapstoneStruct {
+    fn new(name: String, _struct_map: &CapstoneStructMap) -> CapstoneStruct {
         let res = CapstoneStruct {
             size: 0,
             name: name.clone(),
@@ -2094,11 +1973,9 @@ impl CapstoneField {
             }
         };
         let mut ttype = base_type;
-        //eprintln!("Decl = {:?}", decl.derived);
         for derived in decl.derived.iter() {
             ttype.derived_decorate(ctx, &derived.node);
         }
-        //eprintln!("ttype = {:?}", ttype);
         CapstoneField { name: name.to_string(), field_type: ttype }
     }
 
@@ -2129,7 +2006,6 @@ impl ToCapstoneType for StructType {
         if let Some(decl) = &self.declarations {
             // if this comes with declarations
             let mut capstone_struct = CapstoneStruct::new(id.node.name.clone(), &mut ctx.struct_map);
-            //eprintln!("{:#?}", decl);
             for f in decl.iter() {
                 match &f.node {
                     StructDeclaration::Field(field) => {
