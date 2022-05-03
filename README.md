@@ -18,18 +18,13 @@ and switch to the nightly toolchain (run this in the project folder):
     rustup override set nightly
 
 To build the project, run the following in the project folder:
-
-    cargo build
+cargo build
 
 ### Usage
 
 In the project folder, use the following command to run the compiler:
 
     cargo run <path-to-source-file>
-
-Or
-
-    ./target/debug/capstone-c [options] <path-to-source-file>
 
 The compiler takes some options which can either be used to set a custom machine start state, or to help with debugging the output (`--help` or `-h`).
 
@@ -49,7 +44,4 @@ Capstone emulator. Therefore, you can pipe them for better convenience.
 
 You can start with the C files in the `samples` folder.
 
-Two environment variables influence the compiler behaviours:
-* `CAPSTONE_SHOW_AST`: if it is set, the compiler will also display the syntax tree of the source file
-* `CAPSTONE_PRINT_COMMENTS`: if it is set, the compiler will emit in the output.
 
