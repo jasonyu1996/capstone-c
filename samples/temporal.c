@@ -44,7 +44,7 @@ CAPSTONE_ATTR_DEDICATED_STACK CAPSTONE_ATTR_HAS_METAPARAM void enclave2() {
     void* d = runtime->shared[0];
     void* shared_mem = d();
     
-    lin(shared_mem);
+    revoke(shared_mem);
 
     print(shared_mem);
     print(shared_mem[0]);

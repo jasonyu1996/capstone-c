@@ -20,9 +20,9 @@
 
 #define CAPSTONE_MOVE(d, cap) { (d) = (cap); }
 #define CAPSTONE_BORROW(d, cap) { (d) = (cap); (cap) = mrev(d); delin(d); tighten(d, 0); }
-#define CAPSTONE_BORROW_END(cap) { lin(cap); }
+#define CAPSTONE_BORROW_END(cap) { revoke(cap); }
 #define CAPSTONE_BORROW_MUT(d, cap) { (d) = (cap); (cap) = mrev(d); }
-#define CAPSTONE_BORROW_MUT_END(cap) { lin(cap); }
+#define CAPSTONE_BORROW_MUT_END(cap) { revoke(cap); }
 
 #define CAPSTONE_ALLOC_BOTTOM(v, tmp, mem, size) \
     (v) = splitlo((mem), (size));\
@@ -145,7 +145,7 @@ void free_find(struct mem_region* region, void* mem) {
     if(region->leaf) {
         if(!region->free && region->mem.size == mem.size) {
             drop(mem);
-            lin(region->mem);
+            revoke(region->mem);
             region->free = 1;
         }
         return;
@@ -159,7 +159,7 @@ void free_find(struct mem_region* region, void* mem) {
     if(region->left->free && region->right->free) {
         drop(region->left->mem);
         drop(region->right->mem);
-        lin(region->mem);
+        revoke(region->mem);
         region->leaf = 1;
         region->free = 1;
     }
@@ -499,12 +499,12 @@ void* enclave_enter(struct enclave* encl) {
 
 // NOTE: the code and data capabilities are also destroyed
 void enclave_destroy(struct enclave *encl, struct capstone_runtime* runtime) {
-    lin(encl->sealed_rev);
-    lin(encl->code_rev);
-    lin(encl->data_rev);
-    lin(encl->stack_rev);
-    lin(encl->shared_rev);
-    lin(encl->runtime_rev);
+    revoke(encl->sealed_rev);
+    revoke(encl->code_rev);
+    revoke(encl->data_rev);
+    revoke(encl->stack_rev);
+    revoke(encl->shared_rev);
+    revoke(encl->runtime_rev);
     runtime->free(encl->sealed_rev);
     runtime->free(encl->code_rev);
     runtime->free(encl->data_rev);

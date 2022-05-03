@@ -149,7 +149,7 @@ enum CapstoneInsn {
     Or(CapstoneReg, CapstoneReg),
     Mrev(CapstoneReg, CapstoneReg),
     Call(CapstoneReg, CapstoneReg),
-    Lin(CapstoneReg),
+    Revoke(CapstoneReg),
     Delin(CapstoneReg),
     Tighten(CapstoneReg, CapstoneReg),
     Shrink(CapstoneReg, CapstoneReg, CapstoneReg),
@@ -378,8 +378,8 @@ impl Display for CapstoneInsn {
             CapstoneInsn::Call(r, ra) => {
                 write!(f, "call {} {}", r, ra)
             }
-            CapstoneInsn::Lin(r) => {
-                write!(f, "lin {}", r)
+            CapstoneInsn::Revoke(r) => {
+                write!(f, "revoke {}", r)
             }
             CapstoneInsn::Delin(r) => {
                 write!(f, "delin {}", r)
@@ -1340,13 +1340,13 @@ impl CodeGenContext {
         self.release_gpr(&rstack_callee);
 
         // restore the stack
-        self.push_insn(CapstoneInsn::Lin(rstack_rev.reg));
+        self.push_insn(CapstoneInsn::Revoke(rstack_rev.reg));
         let res = self.gen_load_with_cap_alloc(&CapstoneOffset::Const(0), &rstack_rev);
         self.push_insn(CapstoneInsn::Drop(rstack_rev.reg)); // TODO: if the result is an uninitialised capability, initialise it first
         self.release_gpr(&rstack_rev);
 
         self.push_insn(CapstoneInsn::Drop(CAPSTONE_STACK_REG));
-        self.push_insn(CapstoneInsn::Lin(rrev.reg));
+        self.push_insn(CapstoneInsn::Revoke(rrev.reg));
         self.push_insn(CapstoneInsn::Mov(CAPSTONE_STACK_REG, rrev.reg));
         self.release_gpr(&rrev);
 
@@ -1375,19 +1375,19 @@ impl CodeGenContext {
         self.release_gpr(&rseal);
 
         // restore the stack/
-        self.push_insn(CapstoneInsn::Lin(rstack_rev.reg));
+        self.push_insn(CapstoneInsn::Revoke(rstack_rev.reg));
         let res = self.gen_load_with_cap_alloc(&CapstoneOffset::Const(0), &rstack_rev);
         self.push_insn(CapstoneInsn::Drop(rstack_rev.reg)); // TODO: if the result is an uninitialised capability, initialise it first
         self.release_gpr(&rstack_rev);
 
         //self.push_insn(CapstoneInsn::Drop(rseal));
 
-        self.push_insn(CapstoneInsn::Lin(rrev2.reg));
+        self.push_insn(CapstoneInsn::Revoke(rrev2.reg));
         self.push_insn(CapstoneInsn::Drop(rrev2.reg));
         self.release_gpr(&rrev2);
 
         self.push_insn(CapstoneInsn::Drop(CAPSTONE_STACK_REG));
-        self.push_insn(CapstoneInsn::Lin(rrev.reg));
+        self.push_insn(CapstoneInsn::Revoke(rrev.reg));
         self.push_insn(CapstoneInsn::Mov(CAPSTONE_STACK_REG, rrev.reg));
         self.release_gpr(&rrev);
 
@@ -1622,9 +1622,9 @@ impl CapstoneEvaluator for CallExpression {
                         ctx.release_gpr(&arg_rd);
                         CapstoneEvalResult::Const(0)
                     }
-                    "lin" => {
+                    "revoke" => {
                         let args = self.arguments.to_registers(ctx);
-                        ctx.push_insn(CapstoneInsn::Lin(args.first().expect("Missing argument for lin!").reg));
+                        ctx.push_insn(CapstoneInsn::Revoke(args.first().expect("Missing argument for revoke!").reg));
                         ctx.release_gprs(&args);
                         CapstoneEvalResult::Const(0)
                     }
