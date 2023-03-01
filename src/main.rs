@@ -9,7 +9,7 @@ use std::fmt::Display;
 
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::lazy::Lazy;
+use lazy_static::lazy_static;
 
 use lang_c::driver::Error;
 use lang_c::{driver::{Config, parse}, ast::{TranslationUnit, FunctionDefinition, Declarator,
@@ -49,9 +49,9 @@ struct Args {
     print_comments: bool
 }
 
-const CLI_ARGS: Lazy<Args> = Lazy::new(|| {
-    Args::parse()
-});
+lazy_static! {
+    static ref CLI_ARGS : Args = Args::parse();
+}
 
 
 #[derive(Clone, Copy, Debug)]
