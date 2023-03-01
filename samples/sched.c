@@ -1,7 +1,7 @@
-#include "teecap.h"
+#include "capstone.h"
 
-TEECAP_ATTR_DEDICATED_STACK void foo() {
-    TEECAP_STACK_SETUP;
+CAPSTONE_ATTR_DEDICATED_STACK void foo() {
+    CAPSTONE_STACK_SETUP;
 
     int i = 0;
     while(i < 50) {
@@ -9,14 +9,14 @@ TEECAP_ATTR_DEDICATED_STACK void foo() {
         i = i + 1; 
     }
 
-    TEECAP_STACK_RETURN;
+    CAPSTONE_STACK_RETURN;
 }
 
-void main(struct teecap_runtime* runtime){
+void main(struct capstone_runtime* runtime){
     int i = 0;
     void* threads[4];
     while(i < 4) {
-        threads[i] = runtime->create_thread(runtime, foo);
+        threads[i] = runtime->thread_create(runtime, foo);
         print(threads[i]);
         i = i + 1;
     }

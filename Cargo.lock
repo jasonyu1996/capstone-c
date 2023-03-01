@@ -26,6 +26,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "capstone-c"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "lang-c",
+]
+
+[[package]]
 name = "clap"
 version = "3.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -176,14 +184,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "teecap-c"
-version = "0.1.0"
-dependencies = [
- "clap",
- "lang-c",
 ]
 
 [[package]]
