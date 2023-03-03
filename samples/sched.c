@@ -22,7 +22,7 @@ void main(struct capstone_runtime* runtime){
     }
     i = 0;
     while(i < 4) {
-        runtime->start_thread(threads[i]);
+        runtime->thread_start(threads[i]);
         i = i + 1;
     }
     runtime->join_all();
