@@ -1,4 +1,4 @@
-/* MIT License
+MIT License
 
 Copyright (c) 2023 National University of Singapore
 
@@ -19,17 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
- */
-
-int _start(){
-    int n0 = 1, n1 = 1, i = 0;
-    int tmp;
-    while(i < 10) {
-        i = i + 1;
-        tmp = n0 + n1;
-        n0 = n1;
-        n1 = tmp;
-        print(n1);
-    }
-    exit();
-}
