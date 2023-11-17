@@ -1,5 +1,5 @@
 use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator}, span::Span};
-use crate::dag::IRDAG;
+use crate::dag::{IRDAG, IRDAGBuilder};
 use crate::lang_defs::CaplanType;
 
 /**
@@ -63,11 +63,13 @@ pub struct CaplanTranslationUnit {
 
 impl CaplanFunction {
     fn from_ast(ast: &FunctionDefinition, span: &Span) -> Self {
+        let mut dag_builder = IRDAGBuilder::new();
+        dag_builder.build(ast, span);
         let mut res = CaplanFunction {
             name: String::new(),
             ret_type: CaplanType::Int, // default is int
             params: Vec::new(),
-            dag: IRDAG::from_ast(ast, span)
+            dag: dag_builder.into_dag()
         };
         // check function signature
         let func_identifier = &ast.declarator.node.kind.node;
