@@ -31,6 +31,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "lang-c",
+ "lazy_static",
 ]
 
 [[package]]

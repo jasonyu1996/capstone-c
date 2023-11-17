@@ -45,11 +45,21 @@ use lang_c::ast::{ExternalDeclaration, BinaryOperatorExpression,
 use lang_c::span::Node;
 use clap::Parser as ClapParser;
 
-const CAPSTONE_GPR_N: usize = 32; // number of general-purpose registers
-const CAPSTONE_STACK_REG: CapstoneReg = CapstoneReg::Gpr(0); // r0 is used for storing the stack capability
+const CAPSTONE_GPR_N: usize = 31; // number of general-purpose registers
+const CAPSTONE_STACK_REG: CapstoneReg = CapstoneReg::Gpr(1); // sp is used for storing the stack capability
+const CAPSTONE_RA_REG: CapstoneReg = CapstoneReg::Gpr(0); // ra is used for return address
 const CAPSTONE_SEALED_REGION_SIZE: usize = CAPSTONE_GPR_N + 4;
 
 const CAPSTONE_SEALED_OFFSET_PC: usize = 0;
+
+const CAPSTONE_GPR_NAMES : [&'static str; CAPSTONE_GPR_N + 1] = [
+    "zero", "ra", "sp", "gp", "tp",
+    "t0", "t1", "t2",
+    "s0", "s1",
+    "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
+    "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
+    "t3", "t4", "t5", "t6"
+];
 
 type CapstoneInt = u64;
 
@@ -127,7 +137,7 @@ impl Display for CapstoneReg {
                write!(f, "ret")
            }
            CapstoneReg::Gpr(n) => {
-               write!(f, "r{}", n)
+               write!(f, "{}", CAPSTONE_GPR_NAMES[*n as usize + 1])
            }
         }
     }
@@ -143,8 +153,10 @@ enum CapstoneImm {
 #[derive(Clone)]
 enum CapstoneInsn {
     Li(CapstoneReg, CapstoneImm),
-    Sd(CapstoneReg, CapstoneReg),
-    Ld(CapstoneReg, CapstoneReg),
+    Sd(CapstoneReg, CapstoneReg, CapstoneImm),
+    Ld(CapstoneReg, CapstoneReg, CapstoneImm),
+    Stc(CapstoneReg, CapstoneReg, CapstoneImm),
+    Ldc(CapstoneReg, CapstoneReg, CapstoneImm),
     Scc(CapstoneReg, CapstoneReg),
     Scco(CapstoneReg, CapstoneReg),
     Lcc(CapstoneReg, CapstoneReg),
@@ -246,10 +258,10 @@ impl Display for CapstoneImm {
                 tag.fmt(f)
             }
             CapstoneImm::NTag(tag, true) => {
-                write!(f, "*{}", tag)
+                write!(f, "{}", tag)
             }
             CapstoneImm::STag(tag, true) => {
-                write!(f, "*{}", tag)
+                write!(f, "{}", tag)
             }
             CapstoneImm::Const(c) => {
                 c.fmt(f)
@@ -293,112 +305,146 @@ impl Display for CapstoneInsn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
             CapstoneInsn::Li(r, v) => {
-                write!(f, "li {} {}", r, v)
+                match v {
+                    CapstoneImm::NTag(n, _) => {
+                        write!(f, "la {}, {}", r, n.0)
+                    }
+                    CapstoneImm::STag(n, _) => {
+                        write!(f, "lla {}, {}", r, n.0)
+                    }
+                    CapstoneImm::Const(c) => {
+                        write!(f, "li {}, {}", r, c)
+                    }
+                }
             }
-            CapstoneInsn::Sd(rd, rs) => {
-                write!(f, "sd {} {}", rd, rs)
+            CapstoneInsn::Sd(rd, rs, offset) => {
+                write!(f, "sd {}, {}({})", rs, offset, rd)
             }
-            CapstoneInsn::Ld(rd, rs) => {
-                write!(f, "ld {} {}", rd, rs)
+            CapstoneInsn::Ld(rd, rs, offset) => {
+                write!(f, "ld {}, {}({})", rd, offset, rs)
+            }
+            CapstoneInsn::Stc(rs2, rs1, offset) => {
+                write!(f, ".insn s 0x5b, 0x4, {}, {}({})  # stc {}, {}({})", rs2, offset, rs1, rs2, offset, rs1)
+            }
+            CapstoneInsn::Ldc(rd, rs, offset) => {
+                write!(f, ".insn i 0x5b, 0x3, {}, {}({})  # ldc {}, {}({})", rd, offset, rs, rd, offset, rs)
             }
             CapstoneInsn::Scc(rd, rs) => {
-                write!(f, "scc {} {}", rd, rs)
+                write!(f, ".insn r 0x5b, 0x1, 0x5, {}, {}, {}  # scc {}, {}, {}", rd, rd, rs, rd, rd, rs)
             }
             CapstoneInsn::Scco(rd, rs) => {
-                write!(f, "scco {} {}", rd, rs)
+                // write!(f, "scco {}, {}", rd, rs)
+                write!(f, "# scco")
             }
             CapstoneInsn::Lcc(rd, rs) => {
-                write!(f, "lcc {} {}", rd, rs)
+                // write!(f, "lcc {}, {}", rd, rs)
+                write!(f, "# lcc")
             }
             CapstoneInsn::Lcco(rd, rs) => {
-                write!(f, "lcco {} {}", rd, rs)
+                // write!(f, "lcco {}, {}", rd, rs)
+                write!(f, "# lcco")
             }
             CapstoneInsn::Add(rd, rs) => {
-                write!(f, "add {} {}", rd, rs)
+                write!(f, "add {}, {}, {}", rd, rd, rs)
             }
             CapstoneInsn::Sub(rd, rs) => {
-                write!(f, "sub {} {}", rd, rs)
+                write!(f, "sub {}, {}, {}", rd, rd, rs)
             }
             CapstoneInsn::Mult(rd, rs) => {
-                write!(f, "mult {} {}", rd, rs)
+                write!(f, "mul {}, {}, {}", rd, rd, rs)
             }
             CapstoneInsn::Div(rd, rs) => {
-                write!(f, "div {} {}", rd, rs)
+                write!(f, "div {}, {}, {}", rd, rd, rs)
             }
             CapstoneInsn::Jz(rd, rs) => {
-                write!(f, "jz {} {}", rd, rs)
+                write!(f, "beq {}, {}, zero", rd, rs)
             }
             CapstoneInsn::Jmp(r) => {
-                write!(f, "jmp {}", r)
+                write!(f, "jalr zero, {}, 0", r)
             }
             CapstoneInsn::Out(r) => {
-                write!(f, "out {}", r)
+                write!(f, ".insn r 0x5b, 0x1, 0x43, zero, {}, zero  # print({})", r, r)
             }
             CapstoneInsn::Halt => {
-                write!(f, "halt")
+                // write!(f, "halt")
+                write!(f, "# halt")
             }
             CapstoneInsn::Le(rd, r1, r2) => {
-                write!(f, "le {} {} {}", rd, r1, r2)
+                // write!(f, "le {} {} {}", rd, r1, r2)
+                write!(f, "# le")
             }
             CapstoneInsn::Lt(rd, r1, r2) => {
-                write!(f, "lt {} {} {}", rd, r1, r2)
+                // write!(f, "lt {} {} {}", rd, r1, r2)
+                write!(f, "# lt")
             }
             CapstoneInsn::Eq(rd, r1, r2) => {
-                write!(f, "eq {} {} {}", rd, r1, r2)
+                // write!(f, "eq {} {} {}", rd, r1, r2)
+                write!(f, "# eq")
             }
             CapstoneInsn::And(rd, rs) => {
-                write!(f, "and {} {}", rd, rs)
+                write!(f, "and {}, {}, {}", rd, rd, rs)
             }
             CapstoneInsn::Or(rd, rs) => {
-                write!(f, "or {} {}", rd, rs)
+                write!(f, "or {}, {}, {}", rd, rd, rs)
             }
             CapstoneInsn::Splitlo(rd, rs, rp) => {
-                write!(f, "splitlo {} {} {}", rd, rs, rp)
+                // write!(f, "splitlo {} {} {}", rd, rs, rp)
+                write!(f, "# splitlo")
             }
             CapstoneInsn::Lcb(rd, rs) => {
-                write!(f, "lcb {} {}", rd, rs)
+                // write!(f, "lcb {} {}", rd, rs)
+                write!(f, "# lcb")
             }
             CapstoneInsn::Lce(rd, rs) => {
-                write!(f, "lce {} {}", rd, rs)
+                // write!(f, "lce {} {}", rd, rs)
+                write!(f, "# lce")
             }
             CapstoneInsn::Lcn(rd, rs) => {
-                write!(f, "lcn {} {}", rd, rs)
+                // write!(f, "lcn {} {}", rd, rs)
+                write!(f, "# lcn")
             }
             CapstoneInsn::Mrev(rd, rs) => {
-                write!(f, "mrev {} {}", rd, rs)
+                // write!(f, "mrev {} {}", rd, rs)
+                write!(f, "# mrev")
             }
             CapstoneInsn::Mov(rd, rs) => {
-                write!(f, "mov {} {}", rd, rs)
+                write!(f, "mv {}, {}", rd, rs)
             }
             CapstoneInsn::Seal(r) => {
-                write!(f, "seal {}", r)
+                write!(f, ".insn r 0x5b, 0x1, 0x7, {}, {}, zero  # seal {}, {}", r, r, r, r)
             }
             CapstoneInsn::SealRet(rd, rs) => {
-                write!(f, "sealret {} {}", rd, rs)
+                // write!(f, "sealret {} {}", rd, rs)
+                write!(f, "# sealret")
             }
             CapstoneInsn::Call(r, ra) => {
-                write!(f, "call {} {}", r, ra)
+                write!(f, ".insn r 0x5b, 0x1, 0x20, {}, {}, zero  # call {}, {}", ra, r, ra, r)
             }
             CapstoneInsn::Revoke(r) => {
-                write!(f, "revoke {}", r)
+                // write!(f, "revoke {}", r)
+                write!(f, "# revoke")
             }
             CapstoneInsn::Delin(r) => {
-                write!(f, "delin {}", r)
+                // write!(f, "delin {}", r)
+                write!(f, "# delin")
             }
             CapstoneInsn::Tighten(rd, rs) => {
-                write!(f, "tighten {} {}", rd, rs)
+                // write!(f, "tighten {} {}", rd, rs)
+                write!(f, "# tighten")
             }
             CapstoneInsn::Shrink(rd, rb, re) => {
-                write!(f, "shrink {} {} {}", rd, rb, re)
+                // write!(f, "shrink {} {} {}", rd, rb, re)
+                write!(f, "# shrink")
             }
             CapstoneInsn::Drop(r) => {
-                write!(f, "drop {}", r)
+                // write!(f, "drop {}", r)
+                write!(f, "# drop")
             }
             CapstoneInsn::Ret(rd, rs) => {
-                write!(f, "ret {} {}", rd, rs)
+                write!(f, ".insn r 0x5b, 0x1, 0x21, {}, {}, zero  # return {}, {}", rd, rs, rd, rs)
             }
             CapstoneInsn::RetSealed(rd, rs) => {
-                write!(f, "retsl {} {}", rd, rs)
+                write!(f, ".insn r 0x5b, 0x1, 0x21, {}, {}, zero  # return {}, {}", rd, rs, rd, rs)
             }
         }
     }
@@ -419,13 +465,13 @@ enum CapstoneAssemblyUnit {
 
 impl Display for CapstoneSTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, ":<{}>", self.0)
+        write!(f, "_{}:", self.0)
     }
 }
 
 impl Display for CapstoneNTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, ":<{}>", self.0)
+        write!(f, "{}:", self.0)
     }
 }
 
@@ -436,11 +482,11 @@ impl CapstoneAssemblyUnit {
                 println!("{}", tag);
             }
             CapstoneAssemblyUnit::Insn(insn) => {
-                println!("{}", insn);
+                println!("  {}", insn);
                 *mem_offset += 1;
             }
             CapstoneAssemblyUnit::Passthrough(s) => {
-                println!("{}", s);
+                println!("  {}", s);
                 *mem_offset += 1;
             }
             CapstoneAssemblyUnit::Comment(s) => {
@@ -473,12 +519,10 @@ impl CapstoneFunction {
     }
 
     fn print_code(&self, mem_offset: &mut u32) {
-        println!("{} {}", mem_offset, -1);
-        println!(":<{}>", self.name);
+        println!("{}:", self.name);
         for asm_unit in self.code.iter() {
             asm_unit.print_code(mem_offset);
         }
-        println!("$");
     }
 }
 
@@ -778,6 +822,9 @@ impl CodeGenContext {
         if let CapstoneReg::Gpr(n) = CAPSTONE_STACK_REG {
             instance.gprs[n as usize] = CapstoneRegState::Pinned; // reserve the gpr for the stack cap
         }
+        if let CapstoneReg::Gpr(n) = CAPSTONE_RA_REG {
+            instance.gprs[n as usize] = CapstoneRegState::Pinned; // reserve the gpr for the return address cap
+        }
         instance
     }
 
@@ -943,11 +990,11 @@ impl CodeGenContext {
         if var.ttype.is_cap() {
             let dup_offset = var.offset_in_cap.duplicate(self);
             let cap_reg = self.gen_load_cap_extra_offset(var, offset).expect("Failed to obtain capability for ld!");
-            self.push_insn(CapstoneInsn::Ld(reg.reg, cap_reg.reg));
+            self.push_insn(CapstoneInsn::Ld(reg.reg, cap_reg.reg, CapstoneImm::Const(0)));
             reg.set_writeback(cap_reg, dup_offset.add(&offset, self));
         } else{
             let cap_reg = self.gen_load_cap_extra_offset(var, offset).expect("Failed to obtain capability for ld!");
-            self.push_insn(CapstoneInsn::Ld(reg.reg, cap_reg.reg));
+            self.push_insn(CapstoneInsn::Ld(reg.reg, cap_reg.reg, CapstoneImm::Const(0)));
             self.release_gpr(&cap_reg); // TODO: we should not reuse cap registers like this
         }
         reg.set_type(var.ttype.clone());
@@ -1011,7 +1058,7 @@ impl CodeGenContext {
         for i in 0..rvalue_size {
             let reg = val.to_register_with_offset(i, self).unwrap();
             let cap_reg = self.gen_load_cap_extra_offset(var, &CapstoneOffset::Const(i)).expect("Unable to access variable through capabilities!");
-            self.push_insn(CapstoneInsn::Sd(cap_reg.reg, reg.reg));
+            self.push_insn(CapstoneInsn::Sd(cap_reg.reg, reg.reg, CapstoneImm::Const(0)));
             self.release_gpr(&reg);
             self.release_gpr(&cap_reg);
         }
@@ -1074,19 +1121,20 @@ impl CodeGenContext {
     }
 
     fn print_code(&self) {
-        println!("{} {} {} {} {}", CLI_ARGS.mem_size, CLI_ARGS.gpr_n, CLI_ARGS.clock_rate, 1, -1);
-        println!("{} {} {}", 0, ":<stack>", ":<_init>"); // the first is the pc
-        println!("{} {} {}", ":<stack>", CLI_ARGS.mem_size, ":<stack>");
         let mut mem_offset = 0;
+        println!(".section .text");
+        println!(".global _init");
+        println!(".global _start");
         self.init_func.print_code(&mut mem_offset);
+        println!();
         for func in self.functions.iter() {
             func.print_code(&mut mem_offset);
+            println!();
         }
         // stack
-        println!("{} {}", mem_offset, -1);
-        println!(":<stack>");
-        println!("$");
-        println!("-1 -1");
+        println!(".section .data");
+        println!("_stack:");
+        println!("  .zero 4096 * 4");
     }
 
     fn drop_result(&mut self, res: &CapstoneEvalResult) {
@@ -1183,7 +1231,7 @@ impl CodeGenContext {
     }
 
     fn gen_init_func_pre(&mut self) {
-        self.push_asm_unit(CapstoneAssemblyUnit::Passthrough("delin pc".to_string()));
+        // self.push_asm_unit(CapstoneAssemblyUnit::Passthrough("delin pc".to_string()));
         let stack_reg = CapstoneRegResult::new_simple(CAPSTONE_STACK_REG, CapstoneType::Cap(None));
         let rheap = self.gen_splitlo_alloc_const(&stack_reg, CLI_ARGS.stack_size);
 
@@ -1231,7 +1279,7 @@ impl CodeGenContext {
         let roffset = offset.to_register(self);
         self.push_insn(CapstoneInsn::Scco(rcap.reg, roffset.reg));
         self.release_gpr(&roffset);
-        self.push_insn(CapstoneInsn::Sd(rcap.reg, rs.reg));
+        self.push_insn(CapstoneInsn::Sd(rcap.reg, rs.reg, CapstoneImm::Const(0)));
     }
 
     fn gen_seal_setup(&mut self, rseal: &CapstoneRegResult, rpc: &CapstoneRegResult, _rstack: &CapstoneRegResult) {
@@ -1250,7 +1298,7 @@ impl CodeGenContext {
     fn gen_load_with_cap_alloc(&mut self, offset: &CapstoneOffset, rcap: &CapstoneRegResult) -> CapstoneRegResult {
         let r = offset.to_register(self);
         self.push_insn(CapstoneInsn::Scco(rcap.reg, r.reg));
-        self.push_insn(CapstoneInsn::Ld(r.reg, rcap.reg));
+        self.push_insn(CapstoneInsn::Ld(r.reg, rcap.reg, CapstoneImm::Const(0)));
         r
     }
 
@@ -1294,7 +1342,8 @@ impl CodeGenContext {
         let rstack_rev = self.gen_mrev_alloc(&rstack_callee);
         // now rstack_callee contains a linear capability that points to a region of size
         // CAPSTONE_SEALED_REGION_SIZE
-        let rpc = self.gen_mov_alloc(&CapstoneRegResult::new_simple(CapstoneReg::Pc, CapstoneType::Cap(None)));
+        // let rpc = self.gen_mov_alloc(&CapstoneRegResult::new_simple(CapstoneReg::Pc, CapstoneType::Cap(None)));
+        let rpc = self.gen_mov_alloc(&CapstoneRegResult::new_simple(CapstoneReg::Gpr(0), CapstoneType::Cap(None)));
         let pc_addr_imm = CapstoneImm::STag(CapstoneSTag(func_name.to_string()), false);
         let rpc_addr = self.gen_li_alloc(pc_addr_imm);
         self.push_insn(CapstoneInsn::Scc(rpc.reg, rpc_addr.reg));
@@ -1350,7 +1399,7 @@ impl CodeGenContext {
         // Temporary solution for now: allowing dropping of uninitialised caps
         self.push_insn(CapstoneInsn::Drop(CAPSTONE_STACK_REG));
         self.release_gpr_ancestors(&r);
-        self.push_insn(CapstoneInsn::Ret(CapstoneReg::Ret, r.reg));
+        self.push_insn(CapstoneInsn::Ret(CAPSTONE_RA_REG, r.reg));
         self.release_gpr_no_recurse(&r);
     }
 
@@ -1359,7 +1408,7 @@ impl CodeGenContext {
         let r = new_pc.to_register(self);
         self.push_insn(CapstoneInsn::Drop(CAPSTONE_STACK_REG));
         self.release_gpr_ancestors(&r);
-        self.push_insn(CapstoneInsn::RetSealed(CapstoneReg::Ret, r.reg));
+        self.push_insn(CapstoneInsn::RetSealed(CAPSTONE_RA_REG, r.reg));
         self.release_gpr(&r);
     }
 
