@@ -1,0 +1,306 @@
+AST:
+Parse {
+    source: "# 0 \"samples/cap.c\"\n# 0 \"<built-in>\"\n# 0 \"<command-line>\"\n# 1 \"/usr/include/stdc-predef.h\" 1 3 4\n# 0 \"<command-line>\" 2\n# 1 \"samples/cap.c\"\n# 24 \"samples/cap.c\"\nint _start(int *heap){\n    print(heap);\n    print(heap.cursor);\n    int b;\n    exit();\n}\n",
+    unit: TranslationUnit(
+        [
+            Node {
+                node: FunctionDefinition(
+                    Node {
+                        node: FunctionDefinition {
+                            specifiers: [
+                                Node {
+                                    node: TypeSpecifier(
+                                        Node {
+                                            node: Int,
+                                            span: 161…164,
+                                        },
+                                    ),
+                                    span: 161…164,
+                                },
+                            ],
+                            declarator: Node {
+                                node: Declarator {
+                                    kind: Node {
+                                        node: Identifier(
+                                            Node {
+                                                node: Identifier {
+                                                    name: "_start",
+                                                },
+                                                span: 165…171,
+                                            },
+                                        ),
+                                        span: 165…171,
+                                    },
+                                    derived: [
+                                        Node {
+                                            node: Function(
+                                                Node {
+                                                    node: FunctionDeclarator {
+                                                        parameters: [
+                                                            Node {
+                                                                node: ParameterDeclaration {
+                                                                    specifiers: [
+                                                                        Node {
+                                                                            node: TypeSpecifier(
+                                                                                Node {
+                                                                                    node: Int,
+                                                                                    span: 172…175,
+                                                                                },
+                                                                            ),
+                                                                            span: 172…175,
+                                                                        },
+                                                                    ],
+                                                                    declarator: Some(
+                                                                        Node {
+                                                                            node: Declarator {
+                                                                                kind: Node {
+                                                                                    node: Identifier(
+                                                                                        Node {
+                                                                                            node: Identifier {
+                                                                                                name: "heap",
+                                                                                            },
+                                                                                            span: 177…181,
+                                                                                        },
+                                                                                    ),
+                                                                                    span: 177…181,
+                                                                                },
+                                                                                derived: [
+                                                                                    Node {
+                                                                                        node: Pointer(
+                                                                                            [],
+                                                                                        ),
+                                                                                        span: 176…177,
+                                                                                    },
+                                                                                ],
+                                                                                extensions: [],
+                                                                            },
+                                                                            span: 176…181,
+                                                                        },
+                                                                    ),
+                                                                    extensions: [],
+                                                                },
+                                                                span: 172…181,
+                                                            },
+                                                        ],
+                                                        ellipsis: None,
+                                                    },
+                                                    span: 172…181,
+                                                },
+                                            ),
+                                            span: 171…182,
+                                        },
+                                    ],
+                                    extensions: [],
+                                },
+                                span: 165…182,
+                            },
+                            declarations: [],
+                            statement: Node {
+                                node: Compound(
+                                    [
+                                        Node {
+                                            node: Statement(
+                                                Node {
+                                                    node: Expression(
+                                                        Some(
+                                                            Node {
+                                                                node: Call(
+                                                                    Node {
+                                                                        node: CallExpression {
+                                                                            callee: Node {
+                                                                                node: Identifier(
+                                                                                    Node {
+                                                                                        node: Identifier {
+                                                                                            name: "print",
+                                                                                        },
+                                                                                        span: 188…193,
+                                                                                    },
+                                                                                ),
+                                                                                span: 188…193,
+                                                                            },
+                                                                            arguments: [
+                                                                                Node {
+                                                                                    node: Identifier(
+                                                                                        Node {
+                                                                                            node: Identifier {
+                                                                                                name: "heap",
+                                                                                            },
+                                                                                            span: 194…198,
+                                                                                        },
+                                                                                    ),
+                                                                                    span: 194…198,
+                                                                                },
+                                                                            ],
+                                                                        },
+                                                                        span: 188…199,
+                                                                    },
+                                                                ),
+                                                                span: 188…199,
+                                                            },
+                                                        ),
+                                                    ),
+                                                    span: 188…200,
+                                                },
+                                            ),
+                                            span: 188…200,
+                                        },
+                                        Node {
+                                            node: Statement(
+                                                Node {
+                                                    node: Expression(
+                                                        Some(
+                                                            Node {
+                                                                node: Call(
+                                                                    Node {
+                                                                        node: CallExpression {
+                                                                            callee: Node {
+                                                                                node: Identifier(
+                                                                                    Node {
+                                                                                        node: Identifier {
+                                                                                            name: "print",
+                                                                                        },
+                                                                                        span: 205…210,
+                                                                                    },
+                                                                                ),
+                                                                                span: 205…210,
+                                                                            },
+                                                                            arguments: [
+                                                                                Node {
+                                                                                    node: Member(
+                                                                                        Node {
+                                                                                            node: MemberExpression {
+                                                                                                operator: Node {
+                                                                                                    node: Direct,
+                                                                                                    span: 215…216,
+                                                                                                },
+                                                                                                expression: Node {
+                                                                                                    node: Identifier(
+                                                                                                        Node {
+                                                                                                            node: Identifier {
+                                                                                                                name: "heap",
+                                                                                                            },
+                                                                                                            span: 211…215,
+                                                                                                        },
+                                                                                                    ),
+                                                                                                    span: 211…215,
+                                                                                                },
+                                                                                                identifier: Node {
+                                                                                                    node: Identifier {
+                                                                                                        name: "cursor",
+                                                                                                    },
+                                                                                                    span: 216…222,
+                                                                                                },
+                                                                                            },
+                                                                                            span: 211…222,
+                                                                                        },
+                                                                                    ),
+                                                                                    span: 211…222,
+                                                                                },
+                                                                            ],
+                                                                        },
+                                                                        span: 205…223,
+                                                                    },
+                                                                ),
+                                                                span: 205…223,
+                                                            },
+                                                        ),
+                                                    ),
+                                                    span: 205…224,
+                                                },
+                                            ),
+                                            span: 205…224,
+                                        },
+                                        Node {
+                                            node: Declaration(
+                                                Node {
+                                                    node: Declaration {
+                                                        specifiers: [
+                                                            Node {
+                                                                node: TypeSpecifier(
+                                                                    Node {
+                                                                        node: Int,
+                                                                        span: 229…232,
+                                                                    },
+                                                                ),
+                                                                span: 229…232,
+                                                            },
+                                                        ],
+                                                        declarators: [
+                                                            Node {
+                                                                node: InitDeclarator {
+                                                                    declarator: Node {
+                                                                        node: Declarator {
+                                                                            kind: Node {
+                                                                                node: Identifier(
+                                                                                    Node {
+                                                                                        node: Identifier {
+                                                                                            name: "b",
+                                                                                        },
+                                                                                        span: 233…234,
+                                                                                    },
+                                                                                ),
+                                                                                span: 233…234,
+                                                                            },
+                                                                            derived: [],
+                                                                            extensions: [],
+                                                                        },
+                                                                        span: 233…234,
+                                                                    },
+                                                                    initializer: None,
+                                                                },
+                                                                span: 233…234,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 229…235,
+                                                },
+                                            ),
+                                            span: 229…235,
+                                        },
+                                        Node {
+                                            node: Statement(
+                                                Node {
+                                                    node: Expression(
+                                                        Some(
+                                                            Node {
+                                                                node: Call(
+                                                                    Node {
+                                                                        node: CallExpression {
+                                                                            callee: Node {
+                                                                                node: Identifier(
+                                                                                    Node {
+                                                                                        node: Identifier {
+                                                                                            name: "exit",
+                                                                                        },
+                                                                                        span: 240…244,
+                                                                                    },
+                                                                                ),
+                                                                                span: 240…244,
+                                                                            },
+                                                                            arguments: [],
+                                                                        },
+                                                                        span: 240…246,
+                                                                    },
+                                                                ),
+                                                                span: 240…246,
+                                                            },
+                                                        ),
+                                                    ),
+                                                    span: 240…247,
+                                                },
+                                            ),
+                                            span: 240…247,
+                                        },
+                                    ],
+                                ),
+                                span: 182…249,
+                            },
+                        },
+                        span: 161…249,
+                    },
+                ),
+                span: 161…249,
+            },
+        ],
+    ),
+}
