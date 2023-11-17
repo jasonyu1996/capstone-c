@@ -51,7 +51,8 @@ enum IRDAGNodeCons {
     // domain call
     DomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // parameter or global variable
-    Var(String)
+    Var(String),
+    Label
 }
 
 impl IRDAGNode {
@@ -75,19 +76,40 @@ impl IRDAGNode {
 }
 
 pub struct IRDAG {
-    nodes: Vec<GCed<IRDAGNode>>
+    nodes: Vec<GCed<IRDAGNode>>,
+    last_label: Option<GCed<IRDAGNode>>,
+    last_label_node_n: usize
 }
 
 impl IRDAG {
     pub fn new() -> Self {
         IRDAG {
-            nodes: Vec::new()
+            nodes: Vec::new(),
+            last_label: None,
+            last_label_node_n: 0
         }
     }
 
-    fn add_dep(&mut self, a: &GCed<IRDAGNode>, dep: &GCed<IRDAGNode>) {
+    fn add_dep(a: &GCed<IRDAGNode>, dep: &GCed<IRDAGNode>) {
         (**dep).borrow_mut().add_to_rev_deps(a);
         (**a).borrow_mut().inc_dep_count();
+    }
+
+    fn add_nonlabel_node(&mut self, node: &GCed<IRDAGNode>) {
+        self.nodes.push(node.clone());
+        if let Some(label) = self.last_label.as_ref() {
+            // the label must be scheduled before
+            Self::add_dep(&node, label);
+        }
+    }
+
+    fn place_label_node(&mut self, label_node: &GCed<IRDAGNode>) {
+        for prior_node in &self.nodes[self.last_label_node_n..self.nodes.len()] {
+            // the label must be scheduled after the prior nodes
+            Self::add_dep(label_node, prior_node);
+        }
+        self.nodes.push(label_node.clone());
+        self.last_label_node_n = self.nodes.len();
     }
 
     fn new_int_const(&mut self, v: u64) -> GCed<IRDAGNode> {
@@ -106,9 +128,9 @@ impl IRDAG {
             IRDAGNodeCons::IntBinOp(op_type, a.clone(), b.clone()),
             false
         ));
-        self.add_dep(&res, a);
-        self.add_dep(&res, b);
-        self.nodes.push(res.clone());
+        Self::add_dep(&res, a);
+        Self::add_dep(&res, b);
+        self.add_nonlabel_node(&res);
         res
     }
 
@@ -118,8 +140,8 @@ impl IRDAG {
             IRDAGNodeCons::IntUnOp(op_type, a.clone()),
             false
         ));
-        self.add_dep(&res, a);
-        self.nodes.push(res.clone());
+        Self::add_dep(&res, a);
+        self.add_nonlabel_node(&res);
         res
     }
 
@@ -130,7 +152,37 @@ impl IRDAG {
             IRDAGNodeCons::Var(String::from(name)),
             false
         ));
-        self.nodes.push(res.clone());
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    fn new_label(&mut self) -> GCed<IRDAGNode> {
+        // label nodes are not added to the list until they are placed
+        new_gced(IRDAGNode::new(
+            IRDAGNodeVType::Label,
+            IRDAGNodeCons::Label,
+            true
+        ))
+    }
+
+    fn new_branch(&mut self, target: &GCed<IRDAGNode>, cond: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::Branch(target.clone(), cond.clone()),
+            true
+        ));
+        Self::add_dep(&res, cond);
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    fn new_jump(&mut self, target: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::Jump(target.clone()),
+            true
+        ));
+        self.add_nonlabel_node(&res);
         res
     }
 }
@@ -209,7 +261,24 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
     }
 
     fn visit_if_statement(&mut self, if_statement: &'ast lang_c::ast::IfStatement, span: &'ast Span) {
-        
+        self.visit_expression(&if_statement.condition.node, &if_statement.condition.span);
+        let cond = self.last_node.clone();
+        let label_then = self.dag.new_label();
+        let label_taken = self.dag.new_label();
+        let branch_node = self.dag.new_branch(&label_taken, &cond);
+        let _ = self.dag.new_jump(&label_then);
+        self.dag.place_label_node(&label_taken);
+        self.visit_statement(&if_statement.then_statement.node, &if_statement.then_statement.span);
+        if let Some(else_statement_node) = if_statement.else_statement.as_ref() {
+            let label_end = self.dag.new_label();
+            let _ = self.dag.new_jump(&label_end);
+            self.dag.place_label_node(&label_then);
+            self.visit_statement(&else_statement_node.node, &else_statement_node.span);
+            self.dag.place_label_node(&label_end);
+        } else {
+            self.dag.place_label_node(&label_then);
+        }
+        self.last_node = branch_node;
     }
 
     fn visit_binary_operator_expression(
