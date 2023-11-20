@@ -9,9 +9,24 @@ use lang_c::{visit::Visit as ParserVisit,
         BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
         DeclarationSpecifier, TypeSpecifier, Initializer}, span::Span};
 
+
+struct LocalVarInfo {
+    ty: CaplanType,
+    last_access: Option<GCed<IRDAGNode>>
+}
+
+impl LocalVarInfo {
+    fn new(ty: CaplanType) -> Self {
+        Self {
+            ty: ty,
+            last_access: None
+        }
+    }
+}
+
 pub struct IRDAGBuilder {
     dag: IRDAG,
-    locals: HashMap<String, CaplanType>, // TODO: brute-force implementation, no nested scope yet
+    locals: HashMap<String, LocalVarInfo>, // TODO: brute-force implementation, no nested scope yet
     last_node: GCed<IRDAGNode>,
     lval_id_name: Option<String>, // let's say the lvalue can only be an identifier for now
     is_lval: bool, // currently in an lvalue
@@ -46,8 +61,8 @@ impl IRDAGBuilder {
     }
 
     // look up local variable
-    fn lookup_local<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
-        self.locals.get(v)
+    fn lookup_local<'a>(&'a mut self, v: &str) -> Option<&'a mut LocalVarInfo> {
+        self.locals.get_mut(v)
     }
 
     // integer binary operator expression
@@ -59,6 +74,19 @@ impl IRDAGBuilder {
             &expr.rhs.span);
         self.last_node = self.dag.new_int_binop(op_type, &l,
             &self.last_node);
+    }
+
+    fn write_var(&mut self, name: &str, node: &GCed<IRDAGNode>) {
+        let v = self.lookup_local(name).unwrap();
+        if let Some(last_access) = v.last_access.as_ref() {
+            // this current access must wait until after the previous access completes
+            IRDAG::add_dep(node, last_access);
+        }
+        v.last_access = Some(node.clone());
+    }
+
+    fn read_var(&mut self, name: &str, node: &GCed<IRDAGNode>) {
+        self.lookup_local(name).unwrap().last_access = Some(node.clone());
     }
 }
 
@@ -115,8 +143,10 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
                 self.visit_expression(&binary_operator_expression.rhs.node, 
                     &binary_operator_expression.rhs.span);
                 self.is_lval = old_is_lval;
-                eprintln!("Assignment {}", self.lval_id_name.as_ref().unwrap());
-                self.last_node = self.dag.new_write(self.lval_id_name.take().unwrap(), &self.last_node);
+                let name = self.lval_id_name.take().unwrap();
+                eprintln!("Assignment {}", name);
+                self.last_node = self.dag.new_write(name.clone(), &self.last_node);
+                self.write_var(&name, &self.last_node.clone());
             }
             BinaryOperator::Plus => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Add, binary_operator_expression);
@@ -155,6 +185,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
             self.lval_id_name = Some(identifier.name.clone());
         } else {
             self.last_node = self.dag.new_read(identifier.name.clone());
+            self.read_var(&identifier.name, &self.last_node.clone());
         }
     }
 
@@ -221,12 +252,14 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
     fn visit_init_declarator(&mut self, init_declarator: &'ast lang_c::ast::InitDeclarator, span: &'ast Span) {
         assert!(self.decl_id_name.is_none());
         self.visit_declarator(&init_declarator.declarator.node, &init_declarator.declarator.span);
-        assert!(self.decl_id_name.is_some());
         // add this to local
-        self.locals.insert(self.decl_id_name.as_ref().unwrap().clone(), self.decl_type.as_ref().unwrap().clone());
+        let name = self.decl_id_name.take().unwrap();
+        self.locals.insert(name.clone(),
+            LocalVarInfo::new(self.decl_type.as_ref().unwrap().clone()));
         if let Some(initializer_node) = init_declarator.initializer.as_ref() {
             self.visit_initializer(&initializer_node.node, &initializer_node.span);
-            self.last_node = self.dag.new_write(self.decl_id_name.take().unwrap(), &self.last_node);
+            self.last_node = self.dag.new_write(name.clone(), &self.last_node);
+            self.write_var(&name, &self.last_node.clone());
         }
         self.decl_id_name = None;
     }

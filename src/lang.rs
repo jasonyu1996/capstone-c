@@ -52,14 +52,14 @@ impl<'ast> ParserVisit<'ast> for CaplanParam {
 }
 
 pub struct CaplanFunction {
-    name: String,
-    ret_type: CaplanType,
-    params: Vec<CaplanParam>,
-    dag: IRDAG
+    pub name: String,
+    pub ret_type: CaplanType,
+    pub params: Vec<CaplanParam>,
+    pub dag: IRDAG
 }
 
 pub struct CaplanTranslationUnit {
-    functions: Vec<CaplanFunction>
+    pub functions: Vec<CaplanFunction>
 }
 
 impl CaplanFunction {

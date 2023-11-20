@@ -83,7 +83,7 @@ impl std::fmt::Debug for IRDAGNodeCons {
 }
 
 impl IRDAGNodeCons {
-    fn is_control_flow(&self) -> bool {
+    pub fn is_control_flow(&self) -> bool {
         match self {
             IRDAGNodeCons::Branch(_, _) => true,
             IRDAGNodeCons::Jump(_) => true,
@@ -117,8 +117,8 @@ impl IRDAGNode {
 }
 
 pub struct IRDAGBlock {
-    dag: Vec<GCed<IRDAGNode>>,
-    exit_node: Option<GCed<IRDAGNode>> /* the control flow node that jumps to another basic block */
+    pub dag: Vec<GCed<IRDAGNode>>,
+    pub exit_node: Option<GCed<IRDAGNode>> /* the control flow node that jumps to another basic block */
 }
 
 impl IRDAGBlock {
@@ -131,7 +131,7 @@ impl IRDAGBlock {
 }
 
 pub struct IRDAG {
-    blocks: Vec<IRDAGBlock>, // DAGs are separate per basic block
+    pub blocks: Vec<IRDAGBlock>, // DAGs are separate per basic block
 }
 
 impl IRDAG {
@@ -141,7 +141,7 @@ impl IRDAG {
         }
     }
 
-    fn add_dep(a: &GCed<IRDAGNode>, dep: &GCed<IRDAGNode>) {
+    pub fn add_dep(a: &GCed<IRDAGNode>, dep: &GCed<IRDAGNode>) {
         (**dep).borrow_mut().add_to_rev_deps(a);
         (**a).borrow_mut().inc_dep_count();
     }

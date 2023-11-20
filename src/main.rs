@@ -30,8 +30,10 @@ mod lang;
 mod utils;
 mod dag;
 mod dag_builder;
+mod codegen;
 
 use lang::CaplanTranslationUnit;
+use codegen::CodeGen;
 
 #[derive(ClapParser)]
 #[clap(author, version, about)]
@@ -55,7 +57,8 @@ struct Args {
 
 
 fn generate_code(translation_unit: &TranslationUnit) {
-    let _ = CaplanTranslationUnit::from_ast(translation_unit);
+    let codegen = CodeGen::new(CaplanTranslationUnit::from_ast(translation_unit));
+    codegen.codegen()
 }
 
 fn main() {
