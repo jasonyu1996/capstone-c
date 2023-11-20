@@ -29,6 +29,7 @@ mod lang_defs;
 mod lang;
 mod utils;
 mod dag;
+mod dag_builder;
 
 use lang::CaplanTranslationUnit;
 

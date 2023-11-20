@@ -1,5 +1,6 @@
 use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator}, span::Span};
-use crate::dag::{IRDAG, IRDAGBuilder};
+use crate::dag::IRDAG;
+use crate::dag_builder::IRDAGBuilder;
 use crate::lang_defs::CaplanType;
 
 /**
