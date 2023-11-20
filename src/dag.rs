@@ -281,6 +281,22 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
         self.last_node = branch_node;
     }
 
+    fn visit_while_statement(&mut self, while_statement: &'ast lang_c::ast::WhileStatement, span: &'ast Span) {
+        self.visit_expression(&while_statement.expression.node, &while_statement.expression.span);
+        let label_start = self.dag.new_label();
+        let label_taken = self.dag.new_label();
+        let label_end = self.dag.new_label();
+        self.dag.place_label_node(&label_start);
+        let cond = self.last_node.clone();
+        let branch_node = self.dag.new_branch(&cond, &label_taken);
+        let _ = self.dag.new_jump(&label_end);
+        self.dag.place_label_node(&label_taken);
+        self.visit_statement(&while_statement.statement.node, &while_statement.statement.span);
+        let _ = self.dag.new_jump(&label_start);
+        self.dag.place_label_node(&label_end);
+        self.last_node = branch_node;
+    }
+
     fn visit_binary_operator_expression(
             &mut self,
             binary_operator_expression: &'ast lang_c::ast::BinaryOperatorExpression,
