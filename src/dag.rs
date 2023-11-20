@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use lang_c::{visit::Visit as ParserVisit,
-    ast::{FunctionDefinition, Expression, CallExpression, Statement, BinaryOperator, BinaryOperatorExpression, Constant}, span::Span};
+    ast::{FunctionDefinition, Expression, CallExpression, Statement, 
+        BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
+        DeclarationSpecifier, TypeSpecifier, Initializer}, span::Span};
 
 use crate::utils::{GCed, new_gced};
 use crate::lang_defs::CaplanType;
 
+#[derive(Copy, Clone, Debug)]
 enum IRDAGNodeVType {
     Void,
     Int,
@@ -15,6 +18,7 @@ enum IRDAGNodeVType {
     Func
 }
 
+#[derive(Debug)]
 struct IRDAGNode {
     vtype: IRDAGNodeVType,
     cons: IRDAGNodeCons,
@@ -26,12 +30,14 @@ struct IRDAGNode {
     dep_count: u64
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum IRDAGNodeIntBinOpType {
-    Add, Sub, Mul, Div, Or, Xor, And, // TODO: more
+    Add, Sub, Mul, Div, Or, Xor, And,
+    Eq, LessThan, GreaterThan, LessEq, GreaterEq, NEq,
+    // TODO: more
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum IRDAGNodeIntUnOpType {
     NEG, NOT 
 }
@@ -50,9 +56,51 @@ enum IRDAGNodeCons {
     InDomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // domain call
     DomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
-    // parameter or global variable
-    Var(String),
-    Label
+    // in-domain return
+    InDomReturn,
+    // domain return, a capability needed
+    DomReturn(GCed<IRDAGNode>),
+    // local, parameter or global variable
+    Read(String),
+    // write to local, parameter or global variable
+    Write(String, GCed<IRDAGNode>),
+    // label of a specific basic block
+    // Label(None) is a label that has not been placed
+    Label(Option<usize>)
+}
+
+impl std::fmt::Debug for IRDAGNodeCons {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IntConst(arg0) => f.debug_tuple("IntConst").field(arg0).finish(),
+            Self::IntBinOp(arg0, _, _) => f.debug_tuple("IntBinOp").field(arg0).finish(),
+            Self::IntUnOp(arg0, _) => f.debug_tuple("IntUnOp").field(arg0).finish(),
+            Self::IncOffset(_, _) => write!(f, "IncOffset"),
+            Self::Branch(_, _) => write!(f, "Branch"),
+            Self::Jump(_) => write!(f, "Jump"),
+            Self::InDomCall(_, _) => write!(f, "InDomCall"),
+            Self::DomCall(_, _) => write!(f, "DomCall"),
+            Self::InDomReturn => write!(f, "InDomReturn"),
+            Self::DomReturn(_) => write!(f, "DomReturn"),
+            Self::Read(arg0) => f.debug_tuple("Read").field(arg0).finish(),
+            Self::Write(arg0, _) => f.debug_tuple("Write").field(arg0).finish(),
+            Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
+        }
+    }
+}
+
+impl IRDAGNodeCons {
+    fn is_control_flow(&self) -> bool {
+        match self {
+            IRDAGNodeCons::Branch(_, _) => true,
+            IRDAGNodeCons::Jump(_) => true,
+            IRDAGNodeCons::InDomCall(_, _) => true,
+            IRDAGNodeCons::DomCall(_, _) => true,
+            _ => {
+                false
+            }
+        }
+    }
 }
 
 impl IRDAGNode {
@@ -75,18 +123,28 @@ impl IRDAGNode {
     }
 }
 
+struct IRDAGBlock {
+    dag: Vec<GCed<IRDAGNode>>,
+    exit_node: Option<GCed<IRDAGNode>> /* the control flow node that jumps to another basic block */
+}
+
+impl IRDAGBlock {
+    fn new() -> Self {
+        Self {
+            dag: Vec::new(),
+            exit_node: None
+        }
+    }
+}
+
 pub struct IRDAG {
-    nodes: Vec<GCed<IRDAGNode>>,
-    last_label: Option<GCed<IRDAGNode>>,
-    last_label_node_n: usize
+    blocks: Vec<IRDAGBlock>, // DAGs are separate per basic block
 }
 
 impl IRDAG {
     pub fn new() -> Self {
         IRDAG {
-            nodes: Vec::new(),
-            last_label: None,
-            last_label_node_n: 0
+            blocks: vec![IRDAGBlock::new()],
         }
     }
 
@@ -96,20 +154,38 @@ impl IRDAG {
     }
 
     fn add_nonlabel_node(&mut self, node: &GCed<IRDAGNode>) {
-        self.nodes.push(node.clone());
-        if let Some(label) = self.last_label.as_ref() {
-            // the label must be scheduled before
-            Self::add_dep(&node, label);
+        let last_block = self.blocks.last_mut().unwrap();
+        assert!(last_block.exit_node.is_none()); // we should not have seen an exit node yet
+        last_block.dag.push(node.clone());
+        if node.borrow().cons.is_control_flow() {
+            last_block.exit_node = Some(node.clone());
+            self.new_block();
         }
     }
 
+    /* Returns the index of the new basic block */
+    fn new_block(&mut self) -> usize {
+        self.blocks.push(IRDAGBlock::new());
+        self.blocks.len() - 1
+    }
+
+    fn current_block_id(&self) -> usize {
+        assert!(!self.blocks.is_empty());
+        self.blocks.len() - 1
+    }
+
     fn place_label_node(&mut self, label_node: &GCed<IRDAGNode>) {
-        for prior_node in &self.nodes[self.last_label_node_n..self.nodes.len()] {
-            // the label must be scheduled after the prior nodes
-            Self::add_dep(label_node, prior_node);
+        let blk_id = 
+            if self.blocks.last().unwrap().dag.is_empty() {
+                self.current_block_id()
+            } else {
+                self.new_block()
+            };
+        assert!(self.blocks.last().unwrap().dag.is_empty()); // must be the first node to add
+        let mut label_node_ref = label_node.borrow_mut();
+        if let IRDAGNodeCons::Label(None) = label_node_ref.cons {
+            label_node_ref.cons = IRDAGNodeCons::Label(Some(blk_id));
         }
-        self.nodes.push(label_node.clone());
-        self.last_label_node_n = self.nodes.len();
     }
 
     fn new_int_const(&mut self, v: u64) -> GCed<IRDAGNode> {
@@ -118,7 +194,7 @@ impl IRDAG {
             IRDAGNodeCons::IntConst(v),
             false
         ));
-        self.nodes.push(res.clone());
+        self.add_nonlabel_node(&res);
         res
     }
 
@@ -145,13 +221,24 @@ impl IRDAG {
         res
     }
 
-    fn new_var(&mut self, name: &str) -> GCed<IRDAGNode> {
+    fn new_read(&mut self, name: String) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             // TODO: should be looked up, assuming int for now
             IRDAGNodeVType::Int,
-            IRDAGNodeCons::Var(String::from(name)),
+            IRDAGNodeCons::Read(name),
             false
         ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    fn new_write(&mut self, name: String, v: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            v.borrow().vtype,
+            IRDAGNodeCons::Write(name, v.clone()),
+            false
+        ));
+        Self::add_dep(&res, v);
         self.add_nonlabel_node(&res);
         res
     }
@@ -160,7 +247,7 @@ impl IRDAG {
         // label nodes are not added to the list until they are placed
         new_gced(IRDAGNode::new(
             IRDAGNodeVType::Label,
-            IRDAGNodeCons::Label,
+            IRDAGNodeCons::Label(None),
             true
         ))
     }
@@ -185,34 +272,62 @@ impl IRDAG {
         self.add_nonlabel_node(&res);
         res
     }
+
+    pub fn pretty_print(&self) {
+        eprintln!("IRDAG with {} blocks", self.blocks.len());
+        // output to dot format
+        println!("strict digraph {{");
+        for block in self.blocks.iter() {
+            for node in block.dag.iter() {
+                let node_addr = (&*node.borrow()) as *const IRDAGNode as *const () as usize;
+                let node_label = format!("{} ({:?}: {:?})", node_addr, node.borrow().cons, node.borrow().vtype).replace("\"", "\\\"");
+                println!("\"{}\";", node_label);
+                for rev_dep in node.borrow().rev_deps.iter() {
+                    let rev_dep_addr = (&*rev_dep.borrow()) as *const IRDAGNode as *const () as usize;
+                    let rev_dep_label = format!("{} ({:?}: {:?})", rev_dep_addr, rev_dep.borrow().cons, rev_dep.borrow().vtype).replace("\"", "\\\"");
+                    println!("\"{}\" -> \"{}\";", node_label, rev_dep_label);
+                }
+            }
+        }
+        println!("}}");
+    }
 }
 
 
 // a local variable
 struct IRDAGVar {
     ty: CaplanType, // do we need this
-    node: GCed<IRDAGNode>,
 }
 
 pub struct IRDAGBuilder {
     dag: IRDAG,
-    locals: Vec<HashMap<String, IRDAGVar>>, // TODO: brute-force implementation
+    locals: HashMap<String, CaplanType>, // TODO: brute-force implementation, no nested scope yet
     last_node: GCed<IRDAGNode>,
+    lval_id_name: Option<String>, // let's say the lvalue can only be an identifier for now
+    is_lval: bool, // currently in an lvalue
+    decl_type: Option<CaplanType>,
+    decl_id_name: Option<String>
 }
 
 impl IRDAGBuilder {
     pub fn new() -> Self {
         let mut dag = IRDAG::new();
-        let dummy_node = dag.new_int_const(0);
+        let init_label = dag.new_label();
+        dag.place_label_node(&init_label);
         Self {
             dag: dag,
-            locals: Vec::new(),
-            last_node: dummy_node
+            locals: HashMap::new(),
+            last_node: init_label,
+            lval_id_name: None,
+            is_lval: false,
+            decl_type: None,
+            decl_id_name: None
         }
     }
 
     pub fn build(&mut self, ast: &FunctionDefinition, span: &Span) {
         self.visit_function_definition(ast, span);
+        self.dag.pretty_print();
     }
 
     // consume the builder and get the dag
@@ -221,14 +336,8 @@ impl IRDAGBuilder {
     }
 
     // look up local variable
-    fn lookup_local<'a>(&'a self, v: &str) -> Option<&'a IRDAGVar> {
-        for local_scope in self.locals.iter().rev() {
-            let v = local_scope.get(v);
-            if v.is_some() {
-                return v;
-            }
-        }
-        None
+    fn lookup_local<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
+        self.locals.get(v)
     }
 
     // integer binary operator expression
@@ -244,22 +353,6 @@ impl IRDAGBuilder {
 }
 
 impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
-    fn visit_statement(&mut self, statement: &'ast lang_c::ast::Statement, span: &'ast Span) {
-        match statement {
-            Statement::Compound(compound_list) => {
-                for n in compound_list {
-                    self.visit_block_item(&n.node, &n.span);
-                }
-            }
-            Statement::Expression(expr) => {
-                if let Some(expr_inner) = expr {
-                    self.visit_expression(&expr_inner.node, &expr_inner.span);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn visit_if_statement(&mut self, if_statement: &'ast lang_c::ast::IfStatement, span: &'ast Span) {
         self.visit_expression(&if_statement.condition.node, &if_statement.condition.span);
         let cond = self.last_node.clone();
@@ -304,10 +397,16 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
         ) {
         match binary_operator_expression.operator.node {
             BinaryOperator::Assign => {
+                let old_is_lval = self.is_lval;
+                self.is_lval = true;
+                self.visit_expression(&binary_operator_expression.lhs.node,
+                    &binary_operator_expression.lhs.span);
+                self.is_lval = false;
                 self.visit_expression(&binary_operator_expression.rhs.node, 
                     &binary_operator_expression.rhs.span);
-                // TODO: should be either an actual write, or a simple rebind
-                // depending on whether we want to do this statically or not
+                self.is_lval = old_is_lval;
+                eprintln!("Assignment {}", self.lval_id_name.as_ref().unwrap());
+                self.last_node = self.dag.new_write(self.lval_id_name.take().unwrap(), &self.last_node);
             }
             BinaryOperator::Plus => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Add, binary_operator_expression);
@@ -330,6 +429,9 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
             BinaryOperator::BitwiseXor => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Xor, binary_operator_expression);
             }
+            BinaryOperator::Equals => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Eq, binary_operator_expression);
+            }
             _ => {
                 panic!("Unsupported binary operator {:?}", binary_operator_expression.operator.node);
             }
@@ -339,16 +441,10 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
             // check whether this is a local, param, or global
 
-        // TODO: currently these are assuming rvalue
-        if let Some(v) = self.lookup_local(&identifier.name) {
-            // found in local
-            self.last_node = v.node.clone();
+        if self.is_lval {
+            self.lval_id_name = Some(identifier.name.clone());
         } else {
-            // not found in local
-            // either parameter or global
-            // we don't need to decide now
-            // TODO: actually we need as we need to know the type
-            self.last_node = self.dag.new_var(&identifier.name);
+            self.last_node = self.dag.new_read(identifier.name.clone());
         }
     }
 
@@ -365,6 +461,84 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
                 panic!("Unsupported constant type {:?}", constant);
             }
         }
+    }
+
+    fn visit_declaration_specifier(
+            &mut self,
+            declaration_specifier: &'ast lang_c::ast::DeclarationSpecifier,
+            span: &'ast Span,
+        ) {
+        match declaration_specifier {
+            DeclarationSpecifier::TypeSpecifier(type_specifier) => {
+                assert!(self.decl_type.is_none()); // can't have multiple type specifiers
+                self.decl_type = match &type_specifier.node {
+                    TypeSpecifier::Void => Some(CaplanType::Void),
+                    TypeSpecifier::Bool => Some(CaplanType::Int),
+                    TypeSpecifier::Char => Some(CaplanType::Int),
+                    TypeSpecifier::Short => Some(CaplanType::Int),
+                    TypeSpecifier::Int => Some(CaplanType::Int),
+                    TypeSpecifier::Long => Some(CaplanType::Int),
+                    TypeSpecifier::Signed => Some(CaplanType::Int),
+                    TypeSpecifier::Unsigned => Some(CaplanType::Int),
+                    _ => None
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_declarator(&mut self, declarator: &'ast lang_c::ast::Declarator, span: &'ast Span) {
+        match &declarator.kind.node {
+            DeclaratorKind::Identifier(id_node) => {
+                assert!(self.decl_id_name.is_none()); // can't have multiple names
+                self.decl_id_name = Some(id_node.node.name.clone());
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_initializer(&mut self, initializer: &'ast lang_c::ast::Initializer, span: &'ast Span) {
+        match initializer {
+            Initializer::Expression(expr) => {
+                self.visit_expression(&expr.node, &expr.span);
+            }
+            _ => {
+                panic!("Unsupported initializer {:?}", initializer);
+            }
+        }
+    }
+
+    fn visit_init_declarator(&mut self, init_declarator: &'ast lang_c::ast::InitDeclarator, span: &'ast Span) {
+        assert!(self.decl_id_name.is_none());
+        self.visit_declarator(&init_declarator.declarator.node, &init_declarator.declarator.span);
+        assert!(self.decl_id_name.is_some());
+        // add this to local
+        self.locals.insert(self.decl_id_name.as_ref().unwrap().clone(), self.decl_type.as_ref().unwrap().clone());
+        if let Some(initializer_node) = init_declarator.initializer.as_ref() {
+            self.visit_initializer(&initializer_node.node, &initializer_node.span);
+            self.last_node = self.dag.new_write(self.decl_id_name.take().unwrap(), &self.last_node);
+        }
+        self.decl_id_name = None;
+    }
+
+    fn visit_declaration(&mut self, declaration: &'ast lang_c::ast::Declaration, span: &'ast Span) {
+        assert!(self.decl_type.is_none()); // not already in a declaration
+        for decl_specifier in declaration.specifiers.iter() {
+            self.visit_declaration_specifier(&decl_specifier.node, &decl_specifier.span);
+        }
+        assert!(self.decl_type.is_some()); // we should have got a type
+        for init_decl in declaration.declarators.iter() {
+            self.visit_init_declarator(&init_decl.node, &init_decl.span);
+        }
+        self.decl_type = None;
+    }
+
+    fn visit_function_definition(
+            &mut self,
+            function_definition: &'ast FunctionDefinition,
+            span: &'ast Span,
+        ) {
+        self.visit_statement(&function_definition.statement.node, &function_definition.statement.span);
     }
 
 }

@@ -47,6 +47,8 @@ struct Args {
     #[clap(long)]
     show_ast: bool,
     #[clap(long)]
+    dag_dot: bool,
+    #[clap(long)]
     print_comments: bool
 }
 
@@ -61,7 +63,7 @@ fn main() {
     match parse_c(&config, &cli_args.source) {
         Ok(parser_result)  => {
             if cli_args.show_ast {
-                println!("AST:\n{:#?}", &parser_result);
+                eprintln!("AST:\n{:#?}", &parser_result);
             } 
             generate_code(&parser_result.unit);
         }

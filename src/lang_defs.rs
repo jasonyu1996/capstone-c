@@ -1,6 +1,6 @@
 use lang_c::ast::TypeSpecifier as ASTTypeSpecifier;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CaplanType {
     Void,
     Int,
