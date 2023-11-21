@@ -12,14 +12,16 @@ use lang_c::{visit::Visit as ParserVisit,
 
 struct LocalVarInfo {
     ty: CaplanType,
-    last_access: Option<GCed<IRDAGNode>>
+    last_access: Option<GCed<IRDAGNode>>,
+    last_write: Option<GCed<IRDAGNode>>,
 }
 
 impl LocalVarInfo {
     fn new(ty: CaplanType) -> Self {
         Self {
             ty: ty,
-            last_access: None
+            last_access: None,
+            last_write: None
         }
     }
 }
@@ -52,7 +54,7 @@ impl IRDAGBuilder {
 
     pub fn build(&mut self, ast: &FunctionDefinition, span: &Span) {
         self.visit_function_definition(ast, span);
-        self.dag.pretty_print();
+        // self.dag.pretty_print();
     }
 
     // consume the builder and get the dag
@@ -83,10 +85,22 @@ impl IRDAGBuilder {
             IRDAG::add_dep(node, last_access);
         }
         v.last_access = Some(node.clone());
+        v.last_write = Some(node.clone());
     }
 
     fn read_var(&mut self, name: &str, node: &GCed<IRDAGNode>) {
-        self.lookup_local(name).unwrap().last_access = Some(node.clone());
+        let v = self.lookup_local(name).unwrap();
+        if let Some(last_write) = v.last_write.as_ref() {
+            IRDAG::add_dep(node, last_write);
+        }
+        v.last_access = Some(node.clone());
+    }
+
+    fn new_block_reset(&mut self) {
+        for (_, local_var_mut) in self.locals.iter_mut() {
+            local_var_mut.last_access = None;
+            local_var_mut.last_write = None;
+        }
     }
 }
 
@@ -97,12 +111,15 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
         let label_then = self.dag.new_label();
         let label_taken = self.dag.new_label();
         let branch_node = self.dag.new_branch(&label_taken, &cond);
+        self.new_block_reset();
         let _ = self.dag.new_jump(&label_then);
+        self.new_block_reset();
         self.dag.place_label_node(&label_taken);
         self.visit_statement(&if_statement.then_statement.node, &if_statement.then_statement.span);
         if let Some(else_statement_node) = if_statement.else_statement.as_ref() {
             let label_end = self.dag.new_label();
             let _ = self.dag.new_jump(&label_end);
+            self.new_block_reset();
             self.dag.place_label_node(&label_then);
             self.visit_statement(&else_statement_node.node, &else_statement_node.span);
             self.dag.place_label_node(&label_end);
@@ -120,10 +137,13 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
         self.dag.place_label_node(&label_start);
         let cond = self.last_node.clone();
         let branch_node = self.dag.new_branch(&cond, &label_taken);
+        self.new_block_reset();
         let _ = self.dag.new_jump(&label_end);
+        self.new_block_reset();
         self.dag.place_label_node(&label_taken);
         self.visit_statement(&while_statement.statement.node, &while_statement.statement.span);
         let _ = self.dag.new_jump(&label_start);
+        self.new_block_reset();
         self.dag.place_label_node(&label_end);
         self.last_node = branch_node;
     }

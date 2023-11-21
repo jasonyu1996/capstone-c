@@ -1,5 +1,7 @@
 use crate::utils::{GCed, new_gced};
 
+pub type IRDAGNodeId = u64;
+
 #[derive(Copy, Clone, Debug)]
 pub enum IRDAGNodeVType {
     Void,
@@ -13,6 +15,7 @@ pub enum IRDAGNodeVType {
 
 #[derive(Debug)]
 pub struct IRDAGNode {
+    pub id: IRDAGNodeId, // unique within basic block
     pub vtype: IRDAGNodeVType,
     pub cons: IRDAGNodeCons,
     // does evaluating this node have side effects?
@@ -97,8 +100,9 @@ impl IRDAGNodeCons {
 }
 
 impl IRDAGNode {
-    pub fn new(vtype: IRDAGNodeVType, cons: IRDAGNodeCons, side_effects: bool) -> Self {
+    pub fn new(id: u64, vtype: IRDAGNodeVType, cons: IRDAGNodeCons, side_effects: bool) -> Self {
         Self {
+            id: id,
             vtype: vtype,
             cons: cons,
             side_effects: side_effects,
@@ -132,12 +136,14 @@ impl IRDAGBlock {
 
 pub struct IRDAG {
     pub blocks: Vec<IRDAGBlock>, // DAGs are separate per basic block
+    id_counter: u64
 }
 
 impl IRDAG {
     pub fn new() -> Self {
         IRDAG {
             blocks: vec![IRDAGBlock::new()],
+            id_counter: 0
         }
     }
 
@@ -150,6 +156,7 @@ impl IRDAG {
         let last_block = self.blocks.last_mut().unwrap();
         assert!(last_block.exit_node.is_none()); // we should not have seen an exit node yet
         last_block.dag.push(node.clone());
+        self.id_counter += 1;
         if node.borrow().cons.is_control_flow() {
             last_block.exit_node = Some(node.clone());
             self.new_block();
@@ -183,6 +190,7 @@ impl IRDAG {
 
     pub fn new_int_const(&mut self, v: u64) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
+            self.id_counter,
             IRDAGNodeVType::Int,
             IRDAGNodeCons::IntConst(v),
             false
@@ -193,6 +201,7 @@ impl IRDAG {
 
     pub fn new_int_binop(&mut self, op_type: IRDAGNodeIntBinOpType, a: &GCed<IRDAGNode>, b: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
+            self.id_counter,
             IRDAGNodeVType::Int,
             IRDAGNodeCons::IntBinOp(op_type, a.clone(), b.clone()),
             false
@@ -205,6 +214,7 @@ impl IRDAG {
 
     pub fn new_int_unop(&mut self, op_type: IRDAGNodeIntUnOpType, a: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
+            self.id_counter,
             IRDAGNodeVType::Int,
             IRDAGNodeCons::IntUnOp(op_type, a.clone()),
             false
@@ -216,6 +226,7 @@ impl IRDAG {
 
     pub fn new_read(&mut self, name: String) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
+            self.id_counter,
             // TODO: should be looked up, assuming int for now
             IRDAGNodeVType::Int,
             IRDAGNodeCons::Read(name),
@@ -227,6 +238,7 @@ impl IRDAG {
 
     pub fn new_write(&mut self, name: String, v: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
+            self.id_counter,
             v.borrow().vtype,
             IRDAGNodeCons::Write(name, v.clone()),
             false
@@ -239,6 +251,7 @@ impl IRDAG {
     pub fn new_label(&mut self) -> GCed<IRDAGNode> {
         // label nodes are not added to the list until they are placed
         new_gced(IRDAGNode::new(
+            0, // not used
             IRDAGNodeVType::Label,
             IRDAGNodeCons::Label(None),
             true
@@ -247,6 +260,7 @@ impl IRDAG {
 
     pub fn new_branch(&mut self, target: &GCed<IRDAGNode>, cond: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
+            self.id_counter,
             IRDAGNodeVType::Void,
             IRDAGNodeCons::Branch(target.clone(), cond.clone()),
             true
@@ -258,6 +272,7 @@ impl IRDAG {
 
     pub fn new_jump(&mut self, target: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
+            self.id_counter,
             IRDAGNodeVType::Void,
             IRDAGNodeCons::Jump(target.clone()),
             true
@@ -272,12 +287,10 @@ impl IRDAG {
         println!("strict digraph {{");
         for block in self.blocks.iter() {
             for node in block.dag.iter() {
-                let node_addr = (&*node.borrow()) as *const IRDAGNode as *const () as usize;
-                let node_label = format!("{} ({:?}: {:?})", node_addr, node.borrow().cons, node.borrow().vtype).replace("\"", "\\\"");
+                let node_label = format!("{} ({:?}: {:?})", node.borrow().id, node.borrow().cons, node.borrow().vtype).replace("\"", "\\\"");
                 println!("\"{}\";", node_label);
                 for rev_dep in node.borrow().rev_deps.iter() {
-                    let rev_dep_addr = (&*rev_dep.borrow()) as *const IRDAGNode as *const () as usize;
-                    let rev_dep_label = format!("{} ({:?}: {:?})", rev_dep_addr, rev_dep.borrow().cons, rev_dep.borrow().vtype).replace("\"", "\\\"");
+                    let rev_dep_label = format!("{} ({:?}: {:?})", rev_dep.borrow().id, rev_dep.borrow().cons, rev_dep.borrow().vtype).replace("\"", "\\\"");
                     println!("\"{}\" -> \"{}\";", node_label, rev_dep_label);
                 }
             }
