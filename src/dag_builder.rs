@@ -122,21 +122,24 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
             self.new_block_reset();
             self.dag.place_label_node(&label_then);
             self.visit_statement(&else_statement_node.node, &else_statement_node.span);
+            self.new_block_reset();
             self.dag.place_label_node(&label_end);
         } else {
+            self.new_block_reset();
             self.dag.place_label_node(&label_then);
         }
         self.last_node = branch_node;
     }
 
     fn visit_while_statement(&mut self, while_statement: &'ast lang_c::ast::WhileStatement, span: &'ast Span) {
-        self.visit_expression(&while_statement.expression.node, &while_statement.expression.span);
         let label_start = self.dag.new_label();
         let label_taken = self.dag.new_label();
         let label_end = self.dag.new_label();
+        self.new_block_reset();
         self.dag.place_label_node(&label_start);
+        self.visit_expression(&while_statement.expression.node, &while_statement.expression.span);
         let cond = self.last_node.clone();
-        let branch_node = self.dag.new_branch(&cond, &label_taken);
+        let branch_node = self.dag.new_branch(&label_taken, &cond);
         self.new_block_reset();
         let _ = self.dag.new_jump(&label_end);
         self.new_block_reset();

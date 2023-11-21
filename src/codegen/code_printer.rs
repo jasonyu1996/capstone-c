@@ -1,4 +1,5 @@
 use super::arch_defs::*;
+use std::io::Write;
 
 const REG_NAMES : [&'static str; GPR_N] = [
     "x0", "ra", "sp", "gp", "tp",
@@ -13,79 +14,128 @@ const REG_NAMES : [&'static str; GPR_N] = [
 const INST_INDENT : &'static str = "  ";
 const STACK_SLOT_SIZE : usize = 8;
 
-pub fn print_li(rd: RegId, v: u64) {
-    println!("{}li {}, {}", INST_INDENT, REG_NAMES[rd], v);
+pub struct CodePrinter<T> where T: Write {
+    out: T
 }
 
-pub fn print_load_from_stack_slot(rd: RegId, slot: usize) {
-    println!("{}ld {}, {}(sp)", INST_INDENT, REG_NAMES[rd], STACK_SLOT_SIZE * slot);
-}
+impl<T> CodePrinter<T> where T: Write {
+    pub fn new(out: T) -> Self {
+        Self {
+            out: out
+        }
+    }
 
-pub fn print_store_to_stack_slot(rs: RegId, slot: usize) {
-    println!("{}sd {}, {}(sp)", INST_INDENT, REG_NAMES[rs], STACK_SLOT_SIZE * slot);
-}
+    pub fn print_li(&mut self, rd: RegId, v: u64) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}li {}, {}", INST_INDENT, REG_NAMES[rd], v)?;
+        Ok(())
+    }
 
-pub fn print_add(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}add {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_load_from_stack_slot(&mut self, rd: RegId, slot: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}ld {}, {}(sp)", INST_INDENT, REG_NAMES[rd], STACK_SLOT_SIZE * slot)?;
+        Ok(())
+    }
 
-pub fn print_sub(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_store_to_stack_slot(&mut self, rs: RegId, slot: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sd {}, {}(sp)", INST_INDENT, REG_NAMES[rs], STACK_SLOT_SIZE * slot)?;
+        Ok(())
+    }
 
-pub fn print_mul(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}mul {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_addi(&mut self, rd: RegId, rs1: RegId, offset: isize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}addi {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], offset)?;
+        Ok(())
+    }
 
-pub fn print_div(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}div {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_add(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}add {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_and(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}and {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_sub(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_or(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}or {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_mul(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}mul {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_xor(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}xjkor {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_div(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}div {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_eq(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-    println!("{}sltu {}, x0, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd]);
-    println!("{}xori {}, {}, 1", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd]);
-}
+    pub fn print_and(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}and {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_neq(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-    println!("{}sltu {}, x0, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd]);
-}
+    pub fn print_or(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}or {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_lt(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}sltu {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs1]);
-}
+    pub fn print_xor(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}xor {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_le(rd: RegId, rs1: RegId, rs2: RegId) {
-    println!("{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs2], REG_NAMES[rs1]);
-    println!("{}addi {}, {}, 1", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd]);
-    println!("{}slt {}, x0, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd]);
-}
+    pub fn print_eq(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        writeln!(&mut self.out, "{}sltu {}, x0, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd])?;
+        writeln!(&mut self.out, "{}xori {}, {}, 1", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd])?;
+        Ok(())
+    }
 
-pub fn print_mv(rd: RegId, rs: RegId) {
-    println!("{}mv {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs]);
-}
+    pub fn print_neq(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        writeln!(&mut self.out, "{}sltu {}, x0, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd])?;
+        Ok(())
+    }
 
-pub fn print_label(name: &str) {
-    println!("{}:", name);
-}
+    pub fn print_lt(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sltu {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
 
-pub fn print_jump_label(name: &str) {
-    println!("{}j {}", INST_INDENT, name);
-}
+    pub fn print_le(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sub {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs2], REG_NAMES[rs1])?;
+        writeln!(&mut self.out, "{}addi {}, {}, 1", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd])?;
+        writeln!(&mut self.out, "{}slt {}, x0, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rd])?;
+        Ok(())
+    }
 
-pub fn print_branch_label(name: &str, rs: RegId) {
-    println!("{}bnez {}, {}", INST_INDENT, REG_NAMES[rs], name);
+    pub fn print_mv(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}mv {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_label(&mut self, name: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}:", name)?;
+        Ok(())
+    }
+
+    pub fn print_jump_label(&mut self, name: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}j {}", INST_INDENT, name)?;
+        Ok(())
+    }
+
+    pub fn print_branch_label(&mut self, name: &str, rs: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}bnez {}, {}", INST_INDENT, REG_NAMES[rs], name)?;
+        Ok(())
+    }
+
+    pub fn print_global_symb(&mut self, name: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, ".global {}", name)?;
+        Ok(())
+    }
+
+    pub fn print_ret(&mut self) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}ret", INST_INDENT)?;
+        Ok(())
+    }
+
+    pub fn get_out(self) -> T {
+        self.out
+    }
 }
