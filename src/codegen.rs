@@ -265,6 +265,16 @@ impl FunctionCodeGen {
                     IRDAGNodeIntBinOpType::GreaterEq => code_printer.print_le(rd, rs1, rs1).unwrap()
                 }
             }
+            IRDAGNodeCons::IntUnOp(op_type, source) => {
+                let rs = self.prepare_source_reg(source.borrow().id, code_printer);
+                self.unpin_gpr(rs);
+                let rd = self.assign_reg(node.id, code_printer);
+                match op_type {
+                    IRDAGNodeIntUnOpType::Neg => code_printer.print_neg(rd, rs).unwrap(),
+                    IRDAGNodeIntUnOpType::Not => code_printer.print_not(rd, rs).unwrap(),
+                    IRDAGNodeIntUnOpType::Negate => code_printer.print_lt(rd, GPR_IDX_X0, rs).unwrap()
+                }
+            }
             IRDAGNodeCons::Write(var_name, source) => {
                 let var_id = *self.vars_to_ids.get(var_name).unwrap();
                 let rs = self.prepare_source_reg(source.borrow().id, code_printer);

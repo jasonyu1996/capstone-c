@@ -35,7 +35,7 @@ pub enum IRDAGNodeIntBinOpType {
 
 #[derive(Copy, Clone, Debug)]
 pub enum IRDAGNodeIntUnOpType {
-    NEG, NOT 
+    Neg, Not, Negate 
 }
 
 pub enum IRDAGNodeCons {

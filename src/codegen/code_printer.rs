@@ -110,6 +110,16 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
+    pub fn print_neg(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}neg {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_not(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}not {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
     pub fn print_label(&mut self, name: &str) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}:", name)?;
         Ok(())

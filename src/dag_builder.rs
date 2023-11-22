@@ -4,6 +4,7 @@ use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
 use crate::dag::*;
 
+use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer};
 use lang_c::{visit::Visit as ParserVisit,
     ast::{FunctionDefinition, Expression, CallExpression, Statement, 
         BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
@@ -26,6 +27,11 @@ impl LocalVarInfo {
     }
 }
 
+struct LoopInfo {
+    break_target: GCed<IRDAGNode>,
+    continue_target: GCed<IRDAGNode>
+}
+
 pub struct IRDAGBuilder {
     dag: IRDAG,
     locals: HashMap<String, LocalVarInfo>, // TODO: brute-force implementation, no nested scope yet
@@ -33,7 +39,8 @@ pub struct IRDAGBuilder {
     lval_id_name: Option<String>, // let's say the lvalue can only be an identifier for now
     is_lval: bool, // currently in an lvalue
     decl_type: Option<CaplanType>,
-    decl_id_name: Option<String>
+    decl_id_name: Option<String>,
+    loops: Vec<LoopInfo>
 }
 
 impl IRDAGBuilder {
@@ -48,7 +55,8 @@ impl IRDAGBuilder {
             lval_id_name: None,
             is_lval: false,
             decl_type: None,
-            decl_id_name: None
+            decl_id_name: None,
+            loops: Vec::new()
         }
     }
 
@@ -67,6 +75,13 @@ impl IRDAGBuilder {
         self.locals.get_mut(v)
     }
 
+    fn push_loop_info(&mut self, break_target: &GCed<IRDAGNode>, continue_target: &GCed<IRDAGNode>) {
+        self.loops.push(LoopInfo {
+            break_target: break_target.clone(),
+            continue_target: continue_target.clone()
+        });
+    }
+
     // integer binary operator expression
     fn process_int_bin_expr(&mut self, op_type: IRDAGNodeIntBinOpType, expr: &BinaryOperatorExpression) {
         self.visit_expression(&expr.lhs.node,
@@ -76,6 +91,12 @@ impl IRDAGBuilder {
             &expr.rhs.span);
         self.last_node = self.dag.new_int_binop(op_type, &l,
             &self.last_node);
+    }
+
+    // integer unary operator expression
+    fn process_int_un_expr(&mut self, op_type: IRDAGNodeIntUnOpType, expr: &UnaryOperatorExpression) {
+        self.visit_expression(&expr.operand.node, &expr.operand.span);
+        self.last_node = self.dag.new_int_unop(op_type, &self.last_node);
     }
 
     fn write_var(&mut self, name: &str, node: &GCed<IRDAGNode>) {
@@ -135,6 +156,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
         let label_start = self.dag.new_label();
         let label_taken = self.dag.new_label();
         let label_end = self.dag.new_label();
+        self.push_loop_info(&label_end, &label_start);
         self.new_block_reset();
         self.dag.place_label_node(&label_start);
         self.visit_expression(&while_statement.expression.node, &while_statement.expression.span);
@@ -149,6 +171,106 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
         self.new_block_reset();
         self.dag.place_label_node(&label_end);
         self.last_node = branch_node;
+        self.loops.pop().unwrap();
+    }
+
+    fn visit_static_assert(&mut self, static_assert: &'ast lang_c::ast::StaticAssert, span: &'ast Span) {
+        panic!("Static assertion not supported");
+    }
+
+    fn visit_for_statement(&mut self, for_statement: &'ast lang_c::ast::ForStatement, span: &'ast Span) {
+        let label_start = self.dag.new_label();
+        let label_end = self.dag.new_label();
+        let label_cont = self.dag.new_label();
+
+        self.push_loop_info(&label_end, &label_cont);
+
+        self.visit_for_initializer(&for_statement.initializer.node, &for_statement.initializer.span);
+        self.new_block_reset();
+        self.dag.place_label_node(&label_start);
+        if let Some(cond_node) = for_statement.condition.as_ref() {
+            self.visit_expression(&cond_node.node, &cond_node.span);
+            let label_taken = self.dag.new_label();
+            self.dag.new_branch(&label_taken, &self.last_node);
+            self.new_block_reset();
+            self.dag.new_jump(&label_end);
+            self.new_block_reset();
+            self.dag.place_label_node(&label_taken);
+        }
+
+        self.visit_statement(&for_statement.statement.node, &for_statement.statement.span);
+        self.new_block_reset();
+        self.dag.place_label_node(&label_cont);
+        if let Some(step_node) = for_statement.step.as_ref() {
+            self.visit_expression(&step_node.node, &step_node.span);
+        }
+        self.dag.new_jump(&label_start);
+        self.new_block_reset();
+        self.dag.place_label_node(&label_end);
+        
+        self.loops.pop().unwrap();
+    }
+
+    fn visit_do_while_statement(
+            &mut self,
+            do_while_statement: &'ast lang_c::ast::DoWhileStatement,
+            span: &'ast Span,
+        ) {
+        let label_start = self.dag.new_label();
+        let label_cont = self.dag.new_label();
+        let label_end = self.dag.new_label();
+
+        self.push_loop_info(&label_end, &label_cont);
+
+        self.new_block_reset();
+        self.dag.place_label_node(&label_start);
+        self.visit_statement(&do_while_statement.statement.node, &do_while_statement.statement.span);
+        self.new_block_reset();
+        self.dag.place_label_node(&label_cont);
+        self.visit_expression(&do_while_statement.expression.node, &do_while_statement.expression.span);
+        self.dag.new_branch(&label_start, &self.last_node);
+        self.new_block_reset();
+        self.dag.place_label_node(&label_end);
+
+        self.loops.pop().unwrap();
+    }
+
+    fn visit_statement(&mut self, statement: &'ast Statement, span: &'ast Span) {
+        match statement {
+            Statement::Continue => {
+                self.dag.new_jump(&self.loops.last().unwrap().continue_target);
+                self.new_block_reset();
+            }
+            Statement::Break => {
+                self.dag.new_jump(&self.loops.last().unwrap().break_target);
+                self.new_block_reset();
+            }
+            Statement::Expression(None) => (),
+            Statement::Expression(Some(expr_node)) => self.visit_expression(&expr_node.node, &expr_node.span),
+            Statement::If(if_stmt) => self.visit_if_statement(&if_stmt.node, &if_stmt.span),
+            Statement::For(for_stmt) => self.visit_for_statement(&for_stmt.node, &for_stmt.span),
+            Statement::While(while_stmt) => self.visit_while_statement(&while_stmt.node, &while_stmt.span),
+            Statement::DoWhile(do_while_stmt) => self.visit_do_while_statement(&do_while_stmt.node, &do_while_stmt.span),
+            Statement::Return(expr) => {
+                // TODO: implement
+            }
+            Statement::Compound(compound) =>
+                compound.iter().for_each(|block_item_node| self.visit_block_item(&block_item_node.node, &block_item_node.span)),
+            _ => panic!("Unsupported statement")
+        }
+    }
+
+    fn visit_unary_operator_expression(
+            &mut self,
+            unary_operator_expression: &'ast lang_c::ast::UnaryOperatorExpression,
+            span: &'ast Span,
+        ) {
+        match unary_operator_expression.operator.node {
+            UnaryOperator::Negate => self.process_int_un_expr(IRDAGNodeIntUnOpType::Negate, unary_operator_expression),
+            UnaryOperator::Minus => self.process_int_un_expr(IRDAGNodeIntUnOpType::Neg, unary_operator_expression),
+            UnaryOperator::Complement => self.process_int_un_expr(IRDAGNodeIntUnOpType::Not, unary_operator_expression),
+            _ => panic!("Unsupported unary operator {:?}", unary_operator_expression.operator.node)
+        }
     }
 
     fn visit_binary_operator_expression(
@@ -194,6 +316,25 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
             }
             BinaryOperator::Equals => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Eq, binary_operator_expression);
+            }
+            BinaryOperator::Less => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::LessThan, binary_operator_expression);
+            }
+            BinaryOperator::LessOrEqual => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::LessEq, binary_operator_expression);
+            }
+            BinaryOperator::Greater => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::GreaterThan, binary_operator_expression);
+            }
+            BinaryOperator::GreaterOrEqual => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::GreaterEq, binary_operator_expression);
+            }
+            // TODO: we use the same for bitwise ops for now
+            BinaryOperator::LogicalAnd => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::And, binary_operator_expression);
+            }
+            BinaryOperator::LogicalOr => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Or, binary_operator_expression);
             }
             _ => {
                 panic!("Unsupported binary operator {:?}", binary_operator_expression.operator.node);
