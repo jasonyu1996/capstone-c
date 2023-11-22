@@ -48,6 +48,8 @@ pub enum IRDAGNodeCons {
     Branch(GCed<IRDAGNode>, GCed<IRDAGNode>),
     // unconditional jump
     Jump(GCed<IRDAGNode>),
+    // switch (val, jump targets)
+    Switch(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // in-domain call
     InDomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // domain call
@@ -74,6 +76,7 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::IncOffset(_, _) => write!(f, "IncOffset"),
             Self::Branch(_, _) => write!(f, "Branch"),
             Self::Jump(_) => write!(f, "Jump"),
+            Self::Switch(_, _) => write!(f, "Switch"),
             Self::InDomCall(_, _) => write!(f, "InDomCall"),
             Self::DomCall(_, _) => write!(f, "DomCall"),
             Self::InDomReturn => write!(f, "InDomReturn"),
@@ -90,6 +93,7 @@ impl IRDAGNodeCons {
         match self {
             IRDAGNodeCons::Branch(_, _) => true,
             IRDAGNodeCons::Jump(_) => true,
+            IRDAGNodeCons::Switch(_, _) => true,
             IRDAGNodeCons::InDomCall(_, _) => true,
             IRDAGNodeCons::DomCall(_, _) => true,
             _ => {
@@ -122,6 +126,7 @@ impl IRDAGNode {
 
 pub struct IRDAGBlock {
     pub dag: Vec<GCed<IRDAGNode>>,
+    pub labeled: bool,
     pub exit_node: Option<GCed<IRDAGNode>> /* the control flow node that jumps to another basic block */
 }
 
@@ -129,6 +134,7 @@ impl IRDAGBlock {
     fn new() -> Self {
         Self {
             dag: Vec::new(),
+            labeled: false,
             exit_node: None
         }
     }
@@ -181,10 +187,14 @@ impl IRDAG {
             } else {
                 self.new_block()
             };
-        assert!(self.blocks.last().unwrap().dag.is_empty()); // must be the first node to add
+        let last_block = self.blocks.last_mut().unwrap();
+        assert!(last_block.dag.is_empty()); // must be the first node to add
+        last_block.labeled = true;
         let mut label_node_ref = label_node.borrow_mut();
         if let IRDAGNodeCons::Label(None) = label_node_ref.cons {
             label_node_ref.cons = IRDAGNodeCons::Label(Some(blk_id));
+        } else {
+            panic!("Label has been placed elsewhere!");
         }
     }
 
@@ -275,6 +285,17 @@ impl IRDAG {
             self.id_counter,
             IRDAGNodeVType::Void,
             IRDAGNodeCons::Jump(target.clone()),
+            true
+        ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_switch(&mut self, val: &GCed<IRDAGNode>, targets: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::Switch(val.clone(), targets),
             true
         ));
         self.add_nonlabel_node(&res);

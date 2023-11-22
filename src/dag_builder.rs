@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::default;
 
 use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
 use crate::dag::*;
 
-use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer};
+use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label};
 use lang_c::{visit::Visit as ParserVisit,
     ast::{FunctionDefinition, Expression, CallExpression, Statement, 
         BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
@@ -27,12 +28,27 @@ impl LocalVarInfo {
     }
 }
 
+// TODO: split this into two stacks to support breaking switch
 struct LoopInfo {
     break_target: GCed<IRDAGNode>,
     continue_target: GCed<IRDAGNode>
 }
 
-pub struct IRDAGBuilder {
+struct SwitchTargetInfo<'ast> {
+    targets: Vec<(&'ast Expression, &'ast Span, GCed<IRDAGNode>)>,
+    default_target: Option<GCed<IRDAGNode>>
+}
+
+impl<'ast> SwitchTargetInfo<'ast> {
+    fn new() -> Self {
+        Self {
+            targets: Vec::new(),
+            default_target: None
+        }
+    }
+}
+
+pub struct IRDAGBuilder<'ast> {
     dag: IRDAG,
     locals: HashMap<String, LocalVarInfo>, // TODO: brute-force implementation, no nested scope yet
     last_node: GCed<IRDAGNode>,
@@ -40,10 +56,11 @@ pub struct IRDAGBuilder {
     is_lval: bool, // currently in an lvalue
     decl_type: Option<CaplanType>,
     decl_id_name: Option<String>,
-    loops: Vec<LoopInfo>
+    loops: Vec<LoopInfo>,
+    switch_target_info: Vec<SwitchTargetInfo<'ast>>
 }
 
-impl IRDAGBuilder {
+impl<'ast> IRDAGBuilder<'ast> {
     pub fn new() -> Self {
         let mut dag = IRDAG::new();
         let init_label = dag.new_label();
@@ -56,11 +73,12 @@ impl IRDAGBuilder {
             is_lval: false,
             decl_type: None,
             decl_id_name: None,
-            loops: Vec::new()
+            loops: Vec::new(),
+            switch_target_info: Vec::new()
         }
     }
 
-    pub fn build(&mut self, ast: &FunctionDefinition, span: &Span) {
+    pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span) {
         self.visit_function_definition(ast, span);
         // self.dag.pretty_print();
     }
@@ -83,7 +101,7 @@ impl IRDAGBuilder {
     }
 
     // integer binary operator expression
-    fn process_int_bin_expr(&mut self, op_type: IRDAGNodeIntBinOpType, expr: &BinaryOperatorExpression) {
+    fn process_int_bin_expr(&mut self, op_type: IRDAGNodeIntBinOpType, expr: &'ast BinaryOperatorExpression) {
         self.visit_expression(&expr.lhs.node,
             &expr.lhs.span);
         let l = self.last_node.clone();
@@ -94,7 +112,7 @@ impl IRDAGBuilder {
     }
 
     // integer unary operator expression
-    fn process_int_un_expr(&mut self, op_type: IRDAGNodeIntUnOpType, expr: &UnaryOperatorExpression) {
+    fn process_int_un_expr(&mut self, op_type: IRDAGNodeIntUnOpType, expr: &'ast UnaryOperatorExpression) {
         self.visit_expression(&expr.operand.node, &expr.operand.span);
         self.last_node = self.dag.new_int_unop(op_type, &self.last_node);
     }
@@ -125,7 +143,7 @@ impl IRDAGBuilder {
     }
 }
 
-impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
+impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_if_statement(&mut self, if_statement: &'ast lang_c::ast::IfStatement, span: &'ast Span) {
         self.visit_expression(&if_statement.condition.node, &if_statement.condition.span);
         let cond = self.last_node.clone();
@@ -235,6 +253,69 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
         self.loops.pop().unwrap();
     }
 
+    // TODO: use switch node type instead and delay this to codegen
+    fn visit_switch_statement(
+            &mut self,
+            switch_statement: &'ast lang_c::ast::SwitchStatement,
+            span: &'ast Span,
+        ) {
+        // TODO: because the current basic block organisation is stupid, we do weird stuff here
+        let label_skip_expr = self.dag.new_label();
+        let label_skip_stmt = self.dag.new_label();
+
+        self.switch_target_info.push(SwitchTargetInfo::new());
+
+        self.dag.new_jump(&label_skip_stmt);
+        self.new_block_reset();
+        self.visit_statement(&switch_statement.statement.node, &switch_statement.statement.span);
+        self.dag.new_jump(&label_skip_expr);
+        self.new_block_reset();
+        self.dag.place_label_node(&label_skip_stmt);
+
+        let switch_targets = self.switch_target_info.pop().unwrap();
+        self.visit_expression(&switch_statement.expression.node, &switch_statement.expression.span);
+        let val = self.last_node.clone();
+
+        for (expr, expr_span, target) in switch_targets.targets.iter() {
+            self.visit_expression(expr, expr_span);
+            let cmp_res = self.dag.new_int_binop(IRDAGNodeIntBinOpType::Eq, &val, &self.last_node);
+            self.dag.new_branch(target, &cmp_res);
+            self.new_block_reset();
+        }
+
+        if let Some(default_target) = switch_targets.default_target.as_ref() {
+            self.dag.new_jump(default_target);
+            self.new_block_reset();
+        }
+
+        self.new_block_reset();
+        self.dag.place_label_node(&label_skip_expr);
+    }
+
+    fn visit_label(&mut self, label: &'ast lang_c::ast::Label, span: &'ast Span) {
+        match label {
+            Label::Case(expr) => {
+                let label = self.dag.new_label();
+                self.new_block_reset();
+                self.dag.place_label_node(&label);
+
+                self.switch_target_info.last_mut().unwrap().targets.push((&expr.node, &expr.span, label));
+            }
+            Label::Default => {
+                let label = self.dag.new_label();
+                self.new_block_reset();
+                self.dag.place_label_node(&label);
+
+                let last_switch_target_info = self.switch_target_info.last_mut().unwrap();
+                assert!(last_switch_target_info.default_target.is_none(), "Duplicate default");
+                last_switch_target_info.default_target = Some(label);
+            }
+            _ => {
+                panic!("Unsupported label type {:?}", label);
+            }
+        }
+    }
+
     fn visit_statement(&mut self, statement: &'ast Statement, span: &'ast Span) {
         match statement {
             Statement::Continue => {
@@ -256,7 +337,9 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder {
             }
             Statement::Compound(compound) =>
                 compound.iter().for_each(|block_item_node| self.visit_block_item(&block_item_node.node, &block_item_node.span)),
-            _ => panic!("Unsupported statement")
+            Statement::Labeled(labeled_stmt) => self.visit_labeled_statement(&labeled_stmt.node, &labeled_stmt.span),
+            Statement::Switch(switch_stmt) => self.visit_switch_statement(&switch_stmt.node, &switch_stmt.span),
+            _ => panic!("Unsupported statement {:?}", statement)
         }
     }
 

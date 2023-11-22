@@ -331,7 +331,7 @@ impl FunctionCodeGen {
                 if let IRDAGNodeCons::Label(Some(blk_id)) = target.borrow().cons {
                     code_printer.print_jump_label(&self.gen_func_block_label(func_name, blk_id)).unwrap();
                 } else {
-                    panic!("Invalid jump operation");
+                    panic!("Invalid jump operation with target {:?}", target.borrow().cons);
                 }
             }
             IRDAGNodeCons::Branch(target, cond) => {
@@ -349,8 +349,9 @@ impl FunctionCodeGen {
         }
     }
 
-    fn codegen_block_reset<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        self.temps.clear();
+    // reset for starting unlabeled basic block
+    fn codegen_block_unlabeled_reset<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        // unlabeled basic block can continue using the existing temporaries
         for node in block.dag.iter() {
             let node_ref = node.borrow();
             self.temps.insert(node_ref.id, TempState {
@@ -359,38 +360,53 @@ impl FunctionCodeGen {
                 rev_deps_to_eval: node_ref.rev_deps.len()
             });
         }
-        
+
+        for var_state in self.vars.iter() {
+            assert!(!var_state.dirty);
+            assert!(matches!(var_state.loc, VarLocation::StackSlot));
+        }
+    }
+
+    // reset for starting labeled basic block
+    fn codegen_block_labeled_reset<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        self.temps.clear();
         self.gpr_states.fill(GPRState::Free);
         // reserve some special registers
         for reserved_gpr in GPR_RESERVED_LIST {
             self.gpr_states[reserved_gpr] = GPRState::Reserved;
         }
-
-        for var_state in self.vars.iter_mut() {
-            var_state.dirty = false;
-            var_state.loc = VarLocation::StackSlot;
-        }
-
+        
         for spill_slot_state in self.spilled_stack_slots.iter_mut() {
             *spill_slot_state = SpilledStackSlotState::Free;
+        }
+
+        self.codegen_block_unlabeled_reset(func_name, block, code_printer);
+    }
+
+    fn codegen_block_reset<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        if block.labeled {
+            self.codegen_block_labeled_reset(func_name, block, code_printer);
+        } else {
+            self.codegen_block_unlabeled_reset(func_name, block, code_printer);
         }
     }
 
     fn codegen_block_end_cleanup<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // write back all dirty variables
         for var_state in self.vars.iter_mut() {
-            if var_state.dirty {
-                match var_state.loc {
-                    VarLocation::GPR(reg_id) => {
+            match var_state.loc {
+                VarLocation::GPR(reg_id) => {
+                    if var_state.dirty {
                         code_printer.print_store_to_stack_slot(reg_id, var_state.stack_slot).unwrap();
-                        var_state.loc = VarLocation::StackSlot;
-                        if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
-                            self.temps.get_mut(&node_id).unwrap().var = None;
-                        }
-                    },
-                    VarLocation::StackSlot => {
-                        panic!("Variable dirty but already on stack");
+                        var_state.dirty = false;
                     }
+                    if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
+                        self.temps.get_mut(&node_id).unwrap().var = None;
+                    }
+                    var_state.loc = VarLocation::StackSlot;
+                },
+                VarLocation::StackSlot => {
+                    assert!(!var_state.dirty);
                 }
             }
         }
