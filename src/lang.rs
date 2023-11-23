@@ -1,4 +1,6 @@
-use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator}, span::Span};
+use std::collections::HashSet;
+
+use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator, DeclarationSpecifier}, span::Span};
 use crate::dag::IRDAG;
 use crate::dag_builder::IRDAGBuilder;
 use crate::lang_defs::CaplanType;
@@ -58,12 +60,25 @@ pub struct CaplanFunction {
     pub dag: IRDAG
 }
 
+pub struct CaplanGlobalContext {
+    pub func_decls: HashSet<String>
+}
+
+impl CaplanGlobalContext {
+    fn new() -> Self {
+        Self {
+            func_decls: HashSet::new()
+        }
+    }
+}
+
 pub struct CaplanTranslationUnit {
+    pub globals: CaplanGlobalContext,
     pub functions: Vec<CaplanFunction>
 }
 
 impl CaplanFunction {
-    fn from_ast(ast: &FunctionDefinition, span: &Span) -> Self {
+    fn from_ast(ast: &FunctionDefinition, span: &Span, globals: &mut CaplanGlobalContext) -> Self {
         let mut res = CaplanFunction {
             name: String::new(),
             ret_type: CaplanType::Int, // default is int
@@ -74,12 +89,13 @@ impl CaplanFunction {
         let func_identifier = &ast.declarator.node.kind.node;
         match func_identifier {
             DeclaratorKind::Identifier(id_node) => {
-                res.name = id_node.node.name.clone()
+                res.name = id_node.node.name.clone();
+                globals.func_decls.insert(id_node.node.name.clone());
             },
             _ => {}
         }
         res.visit_function_definition(ast, span);
-        let mut dag_builder = IRDAGBuilder::new();
+        let mut dag_builder = IRDAGBuilder::new(&*globals);
         dag_builder.build(ast, span, &res.params);
         res.dag = dag_builder.into_dag();
         eprintln!("Function name: {}", res.name);
@@ -103,6 +119,7 @@ impl<'ast> ParserVisit<'ast> for CaplanFunction {
 impl CaplanTranslationUnit {
     pub fn from_ast(ast: &TranslationUnit) -> Self {
         let mut res = CaplanTranslationUnit {
+            globals: CaplanGlobalContext::new(),
             functions: Vec::new()
         };
         res.visit_translation_unit(ast);
@@ -117,7 +134,31 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
             span: &'ast lang_c::span::Span,
         ) {
         self.functions.push(
-            CaplanFunction::from_ast(function_definition, span)
+            CaplanFunction::from_ast(function_definition, span, &mut self.globals)
         );
+    }
+
+    // fn visit_declaration(
+    //         &mut self,
+    //         declaration: &'ast lang_c::ast::Declaration,
+    //         span: &'ast lang_c::span::Span,
+    //     ) {
+        // let is_function_decl = declaration.specifiers.iter()
+        //     .find(|x| matches!(x.node, DeclarationSpecifier::Function(_))).is_some();
+    // }
+
+    fn visit_derived_declarator(
+            &mut self,
+            derived_declarator: &'ast DerivedDeclarator,
+            span: &'ast Span,
+        ) {
+        match derived_declarator {
+            DerivedDeclarator::KRFunction(identifiers) => {
+                for ident in identifiers.iter() {
+                    self.globals.func_decls.insert(ident.node.name.clone());
+                }
+            }
+            _ => panic!("Unsupported declarator")
+        }
     }
 }

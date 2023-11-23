@@ -134,6 +134,11 @@ impl<T> CodePrinter<T> where T: Write {
         writeln!(&mut self.out, "{}bnez {}, {}", INST_INDENT, REG_NAMES[rs], name)?;
         Ok(())
     }
+    
+    pub fn print_call(&mut self, name: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}call {}", INST_INDENT, name)?;
+        Ok(())
+    }
 
     pub fn print_global_symb(&mut self, name: &str) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, ".global {}", name)?;

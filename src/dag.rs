@@ -51,7 +51,7 @@ pub enum IRDAGNodeCons {
     // switch (val, jump targets)
     Switch(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // in-domain call
-    InDomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
+    InDomCall(String, Vec<GCed<IRDAGNode>>),
     // domain call
     DomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // in-domain return
@@ -304,6 +304,7 @@ impl IRDAG {
             IRDAGNodeCons::Switch(val.clone(), targets),
             true
         ));
+        Self::add_dep(&res, val);
         self.add_nonlabel_node(&res);
         res
     }
@@ -317,6 +318,20 @@ impl IRDAG {
         ));
         if let Some(ret_val_node) = ret_val {
             Self::add_dep(&res, &ret_val_node);
+        }
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_indom_call(&mut self, callee: &str, args: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::InDomCall(String::from(callee), args.clone()),
+            true
+        ));
+        for arg in args.iter() {
+            Self::add_dep(&res, arg);
         }
         self.add_nonlabel_node(&res);
         res

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::default;
 
-use crate::lang::CaplanParam;
+use crate::lang::{CaplanParam, CaplanGlobalContext};
 use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
 use crate::dag::*;
@@ -53,11 +53,13 @@ pub struct IRDAGBuilder<'ast> {
     decl_id_name: Option<String>,
     break_targets: Vec<GCed<IRDAGNode>>,
     continue_targets: Vec<GCed<IRDAGNode>>,
-    switch_target_info: Vec<SwitchTargetInfo<'ast>>
+    switch_target_info: Vec<SwitchTargetInfo<'ast>>,
+    globals: &'ast CaplanGlobalContext,
+    last_func_ident: Option<String>
 }
 
 impl<'ast> IRDAGBuilder<'ast> {
-    pub fn new() -> Self {
+    pub fn new(globals: &'ast CaplanGlobalContext) -> Self {
         let mut dag = IRDAG::new();
         let init_label = dag.new_label();
         dag.place_label_node(&init_label);
@@ -71,11 +73,14 @@ impl<'ast> IRDAGBuilder<'ast> {
             decl_id_name: None,
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
-            switch_target_info: Vec::new()
+            switch_target_info: Vec::new(),
+            globals: globals,
+            last_func_ident: None
         }
     }
 
-    pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span, params: &[CaplanParam]) {
+    pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span, 
+                params: &[CaplanParam]) {
         for param in params.iter() {
             self.locals.insert(param.name.clone(), LocalVarInfo::new(param.ty.clone()));
         }
@@ -439,10 +444,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     }
 
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
-            // check whether this is a local, param, or global
-
+        // check whether this is a local, param, or global
         if self.is_lval {
             self.lval_id_name = Some(identifier.name.clone());
+        } else if self.globals.func_decls.contains(&identifier.name) {
+            assert!(self.last_func_ident.is_none());
+            self.last_func_ident = Some(identifier.name.clone());
         } else {
             self.last_node = self.dag.new_read(identifier.name.clone());
             self.read_var(&identifier.name, &self.last_node.clone());
@@ -450,7 +457,16 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     }
 
     fn visit_call_expression(&mut self, call_expression: &'ast CallExpression, span: &'ast Span) {
-        panic!("Call expression unsupported");
+        self.visit_expression(&call_expression.callee.node, &call_expression.callee.span);
+        let func_name = self.last_func_ident.take().unwrap();
+        let args = Vec::from_iter(call_expression.arguments.iter().map(
+            |arg_node| {
+                self.visit_expression(&arg_node.node, &arg_node.span);
+                self.last_node.clone()
+            }
+        ));
+        self.last_node = self.dag.new_indom_call(&func_name, args);
+        self.new_block_reset();
     }
 
     fn visit_constant(&mut self, constant: &'ast lang_c::ast::Constant, span: &'ast Span) {
