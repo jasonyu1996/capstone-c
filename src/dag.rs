@@ -55,7 +55,7 @@ pub enum IRDAGNodeCons {
     // domain call
     DomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // in-domain return
-    InDomReturn,
+    InDomReturn(Option<GCed<IRDAGNode>>),
     // domain return, a capability needed
     DomReturn(GCed<IRDAGNode>),
     // local, parameter or global variable
@@ -79,7 +79,7 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::Switch(_, _) => write!(f, "Switch"),
             Self::InDomCall(_, _) => write!(f, "InDomCall"),
             Self::DomCall(_, _) => write!(f, "DomCall"),
-            Self::InDomReturn => write!(f, "InDomReturn"),
+            Self::InDomReturn(_) => write!(f, "InDomReturn"),
             Self::DomReturn(_) => write!(f, "DomReturn"),
             Self::Read(arg0) => f.debug_tuple("Read").field(arg0).finish(),
             Self::Write(arg0, _) => f.debug_tuple("Write").field(arg0).finish(),
@@ -96,6 +96,8 @@ impl IRDAGNodeCons {
             IRDAGNodeCons::Switch(_, _) => true,
             IRDAGNodeCons::InDomCall(_, _) => true,
             IRDAGNodeCons::DomCall(_, _) => true,
+            IRDAGNodeCons::InDomReturn(_) => true,
+            IRDAGNodeCons::DomReturn(_) => true,
             _ => {
                 false
             }
@@ -137,6 +139,10 @@ impl IRDAGBlock {
             labeled: false,
             exit_node: None
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.dag.is_empty() && !self.labeled && self.exit_node.is_none()
     }
 }
 
@@ -298,6 +304,20 @@ impl IRDAG {
             IRDAGNodeCons::Switch(val.clone(), targets),
             true
         ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_indom_return(&mut self, ret_val: Option<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::InDomReturn(ret_val.clone()),
+            true
+        ));
+        if let Some(ret_val_node) = ret_val {
+            Self::add_dep(&res, &ret_val_node);
+        }
         self.add_nonlabel_node(&res);
         res
     }

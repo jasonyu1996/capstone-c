@@ -334,7 +334,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             Statement::While(while_stmt) => self.visit_while_statement(&while_stmt.node, &while_stmt.span),
             Statement::DoWhile(do_while_stmt) => self.visit_do_while_statement(&do_while_stmt.node, &do_while_stmt.span),
             Statement::Return(expr) => {
-                // TODO: implement
+                let ret_val_node = expr.as_ref().map(|ret_val_expr| {
+                    self.visit_expression(&ret_val_expr.node, &ret_val_expr.span);
+                    self.last_node.clone()
+                });
+                self.dag.new_indom_return(ret_val_node);
+                self.new_block_reset();
             }
             Statement::Compound(compound) =>
                 compound.iter().for_each(|block_item_node| self.visit_block_item(&block_item_node.node, &block_item_node.span)),

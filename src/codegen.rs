@@ -73,7 +73,9 @@ struct FunctionCodeGen {
     temps: HashMap<IRDAGNodeId, TempState>,
     spilled_stack_slots: Vec<SpilledStackSlotState>,
     op_topo_stack: Vec<GCed<IRDAGNode>>,
-    gpr_states: [GPRState; GPR_N]
+    gpr_states: [GPRState; GPR_N],
+    // if each GPR is used at all in the function
+    gpr_clobbered: [bool; GPR_N]
 }
 
 impl FunctionCodeGen {
@@ -85,7 +87,8 @@ impl FunctionCodeGen {
             temps: HashMap::new(),
             spilled_stack_slots: Vec::new(),
             op_topo_stack: Vec::new(),
-            gpr_states: [GPRState::Free; GPR_N]
+            gpr_states: [GPRState::Free; GPR_N],
+            gpr_clobbered: [false; GPR_N]
         }
     }
 
@@ -95,14 +98,29 @@ impl FunctionCodeGen {
         code_printer.print_label(&func_label).unwrap();
 
         // now we know how much stack space is needed
-        let tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len() + 1; // we always store ra on stack immediately, hence + 1
+        let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len(); 
+
+        for reg_id in GPRCalleeSavedIter::new().filter(|idx| self.gpr_clobbered[*idx]) {
+            // clobbered callee-saved registers need saving here
+            assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
+            code_printer.print_store_to_stack_slot(reg_id, tot_stack_slot_n).unwrap();
+            tot_stack_slot_n += 1;
+        }
+
         code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -(tot_stack_slot_n as isize * 8)).unwrap();
-        code_printer.print_store_to_stack_slot(GPR_IDX_RA, tot_stack_slot_n - 1).unwrap();
     }
 
     fn generate_epilogue<T>(&mut self, func_name: &str, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        let tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len() + 1; // we always store ra on stack immediately, hence + 1
-        code_printer.print_load_from_stack_slot(GPR_IDX_RA, tot_stack_slot_n - 1).unwrap();
+        code_printer.print_label(&self.gen_func_ret_label(func_name)).unwrap();
+
+        let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len();
+
+        for reg_id in GPRCalleeSavedIter::new().filter(|idx| self.gpr_clobbered[*idx]) {
+            // clobbered callee-saved registers need restoring here
+            code_printer.print_load_from_stack_slot(reg_id, tot_stack_slot_n).unwrap();
+            tot_stack_slot_n += 1;
+        }
+
         code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, tot_stack_slot_n as isize * 8).unwrap();
         code_printer.print_ret().unwrap();
     }
@@ -162,6 +180,7 @@ impl FunctionCodeGen {
         self.gpr_states.iter_mut().enumerate().find(|(_, s)| matches!(**s, GPRState::Free)).map(
             |(idx, s)| {
                 *s = GPRState::Taken(node_id);
+                self.gpr_clobbered[idx] = true;
                 self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(idx);
                 idx
             }
@@ -175,6 +194,10 @@ impl FunctionCodeGen {
     fn gen_func_block_label(&self, func_name: &str, blk_id: usize) -> String {
         format!("_{}.{}", func_name, blk_id)
     }
+
+    fn gen_func_ret_label(&self, func_name: &str) -> String {
+        format!("_{}.ret", func_name)
+    }
     
     fn assign_reg<T>(&mut self, node_id: IRDAGNodeId, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
         if let Some(reg_id) = self.try_assign_reg_no_spill(node_id) {
@@ -182,6 +205,7 @@ impl FunctionCodeGen {
         } else {
             let reg_id = self.spill_any_reg(code_printer);
             self.gpr_states[reg_id] = GPRState::Taken(node_id); // initially it is pinned to prevent immediate spilling
+            self.gpr_clobbered[reg_id] = true;
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(reg_id);
             reg_id
         }
@@ -343,6 +367,16 @@ impl FunctionCodeGen {
                     panic!("Invalid branching operation");
                 }
             }
+            IRDAGNodeCons::InDomReturn(ret_val) => {
+                if let Some(ret_val_node) = ret_val.as_ref() {
+                    let rs = self.prepare_source_reg(ret_val_node.borrow().id, code_printer);
+                    self.unpin_gpr(rs);
+                    if rs != GPR_IDX_A0 {
+                        code_printer.print_mv(GPR_IDX_A0, rs).unwrap();
+                    }
+                }
+                code_printer.print_jump_label(&self.gen_func_ret_label(func_name)).unwrap();
+            }
             _ => {
                 panic!("Unrecognised node {:?}", node.cons);
             }
@@ -450,6 +484,9 @@ impl FunctionCodeGen {
 
         // for each basic block, do a topo sort
         for (blk_id, block) in func.dag.blocks.iter().enumerate() {
+            if block.is_empty() {
+                continue;
+            }
             eprintln!("Codegen for basic block {}", blk_id);
             self.codegen_block_reset(&func.name, block, &mut main_code_printer);
             main_code_printer.print_label(&self.gen_func_block_label(&func.name, blk_id)).unwrap();
