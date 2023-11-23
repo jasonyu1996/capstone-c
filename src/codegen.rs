@@ -92,32 +92,39 @@ impl FunctionCodeGen {
         }
     }
 
-    fn generate_prologue<T>(&mut self, func_name: &str, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        let func_label = self.gen_func_label(func_name);
+    fn generate_prologue<T>(&mut self, func: &CaplanFunction, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        let func_label = self.gen_func_label(&func.name);
         code_printer.print_global_symb(&func_label).unwrap();
         code_printer.print_label(&func_label).unwrap();
 
         // now we know how much stack space is needed
-        let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len(); 
+        let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len();
+        let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
+        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -((tot_stack_slot_n + clobbered_callee_saved_n) as isize * 8)).unwrap();
 
-        for reg_id in GPRCalleeSavedIter::new().filter(|idx| self.gpr_clobbered[*idx]) {
+
+        for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
             // clobbered callee-saved registers need saving here
-            assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
-            code_printer.print_store_to_stack_slot(reg_id, tot_stack_slot_n).unwrap();
+            assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
+            code_printer.print_store_to_stack_slot(*reg_id, tot_stack_slot_n).unwrap();
             tot_stack_slot_n += 1;
         }
 
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -(tot_stack_slot_n as isize * 8)).unwrap();
+        // shift params to stack
+        for (param_idx, param) in func.params.iter().enumerate() {
+            let var_id = *self.vars_to_ids.get(&param.name).unwrap();
+            code_printer.print_store_to_stack_slot(GPR_PARAMS[param_idx], self.vars[var_id].stack_slot).unwrap();
+        }
     }
 
-    fn generate_epilogue<T>(&mut self, func_name: &str, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        code_printer.print_label(&self.gen_func_ret_label(func_name)).unwrap();
+    fn generate_epilogue<T>(&mut self, func: &CaplanFunction, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        code_printer.print_label(&self.gen_func_ret_label(&func.name)).unwrap();
 
         let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len();
 
-        for reg_id in GPRCalleeSavedIter::new().filter(|idx| self.gpr_clobbered[*idx]) {
+        for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
             // clobbered callee-saved registers need restoring here
-            code_printer.print_load_from_stack_slot(reg_id, tot_stack_slot_n).unwrap();
+            code_printer.print_load_from_stack_slot(*reg_id, tot_stack_slot_n).unwrap();
             tot_stack_slot_n += 1;
         }
 
@@ -456,8 +463,20 @@ impl FunctionCodeGen {
         let mut prologue_code_printer: CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new());
         let mut main_code_printer : CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new());
 
-        // TODO: let's not worry about arguments for now
         // for all variables that ever appear, allocate one stack slot
+        // we handle parameters in the same way
+        for param in func.params.iter() {
+            let var_id = self.vars.len();
+            self.vars_to_ids.insert(param.name.clone(), var_id);
+            // TODO: passing params through stack is not supported
+            eprintln!("Allocated slot {} to param {}", self.stack_slots.len(), param.name);
+            self.vars.push(VarState {
+                loc: VarLocation::StackSlot,
+                stack_slot: self.stack_slots.len(),
+                dirty: false
+            });
+            self.stack_slots.push(var_id);
+        }
         for block in func.dag.blocks.iter() {
             for node in block.dag.iter() {
                 let var_name_op: Option<String> = match &node.borrow().cons {
@@ -511,8 +530,8 @@ impl FunctionCodeGen {
             self.codegen_block_end_cleanup(&func.name, block, &mut main_code_printer);
         }
         
-        self.generate_prologue(&func.name, &mut prologue_code_printer);
-        self.generate_epilogue(&func.name, &mut main_code_printer);
+        self.generate_prologue(&func, &mut prologue_code_printer);
+        self.generate_epilogue(&func, &mut main_code_printer);
 
         let mut stdout = std::io::stdout();
         stdout.write_all(&prologue_code_printer.get_out()).unwrap();

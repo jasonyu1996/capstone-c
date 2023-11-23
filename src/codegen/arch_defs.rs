@@ -10,51 +10,6 @@ pub const GPR_IDX_GP : RegId = 3;
 pub const GPR_IDX_TP : RegId = 4;
 pub const GPR_IDX_A0 : RegId = 10;
 pub const GPR_RESERVED_LIST : [RegId; 5] = [GPR_IDX_X0, GPR_IDX_RA, GPR_IDX_SP, GPR_IDX_GP, GPR_IDX_TP];
-pub const GPR_CALLEE_SAVED_LIST_BELOW16 : [RegId; 6] = [2, 6, 7, 8, 9, 14];
-pub const GPR_CALLER_SAVED_LIST : [RegId; 9] = [1, 3, 4, 5, 10, 11, 12, 13, 15];
-
-
-pub struct GPRCalleeSavedIter {
-    below16_iter: Iter<'static, RegId>,
-    above16_cursor: RegId
-}
-
-impl GPRCalleeSavedIter {
-    pub fn new() -> Self {
-        Self {
-            below16_iter: GPR_CALLEE_SAVED_LIST_BELOW16.iter(),
-            above16_cursor: 16
-        }
-    }
-}
-
-impl Iterator for GPRCalleeSavedIter {
-    type Item = RegId;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.below16_iter.next().copied().or_else(
-            || {
-                if self.above16_cursor < GPR_N {
-                    self.above16_cursor += 1;
-                    Some(self.above16_cursor - 1)
-                } else {
-                    None
-                }
-            }
-        )
-    }
-}
-
-pub struct GPRCallerSavedIter(Iter<'static, RegId>);
-
-impl GPRCallerSavedIter {
-    pub fn new() -> Self {
-        Self(GPR_CALLER_SAVED_LIST.iter())
-    }
-}
-
-impl Iterator for GPRCallerSavedIter {
-    type Item = RegId;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().copied()
-    }
-}
+pub const GPR_CALLEE_SAVED_LIST : [RegId; 13] = [2, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+pub const GPR_CALLER_SAVED_LIST : [RegId; 16] = [1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31];
+pub const GPR_PARAMS : [RegId; 8] = [10, 11, 12, 13, 14, 15, 16, 17];

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::default;
 
+use crate::lang::CaplanParam;
 use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
 use crate::dag::*;
@@ -74,7 +75,10 @@ impl<'ast> IRDAGBuilder<'ast> {
         }
     }
 
-    pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span) {
+    pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span, params: &[CaplanParam]) {
+        for param in params.iter() {
+            self.locals.insert(param.name.clone(), LocalVarInfo::new(param.ty.clone()));
+        }
         self.visit_function_definition(ast, span);
         // self.dag.pretty_print();
     }
@@ -405,6 +409,9 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             }
             BinaryOperator::Equals => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Eq, binary_operator_expression);
+            }
+            BinaryOperator::NotEquals => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::NEq, binary_operator_expression);
             }
             BinaryOperator::Less => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::LessThan, binary_operator_expression);

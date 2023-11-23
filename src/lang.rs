@@ -8,8 +8,8 @@ use crate::lang_defs::CaplanType;
  */
 #[derive(Debug)]
 pub struct CaplanParam {
-    name: String,
-    ty: CaplanType
+    pub name: String,
+    pub ty: CaplanType
 }
 
 impl CaplanParam {
@@ -64,13 +64,11 @@ pub struct CaplanTranslationUnit {
 
 impl CaplanFunction {
     fn from_ast(ast: &FunctionDefinition, span: &Span) -> Self {
-        let mut dag_builder = IRDAGBuilder::new();
-        dag_builder.build(ast, span);
         let mut res = CaplanFunction {
             name: String::new(),
             ret_type: CaplanType::Int, // default is int
             params: Vec::new(),
-            dag: dag_builder.into_dag()
+            dag: IRDAG::new()
         };
         // check function signature
         let func_identifier = &ast.declarator.node.kind.node;
@@ -81,6 +79,9 @@ impl CaplanFunction {
             _ => {}
         }
         res.visit_function_definition(ast, span);
+        let mut dag_builder = IRDAGBuilder::new();
+        dag_builder.build(ast, span, &res.params);
+        res.dag = dag_builder.into_dag();
         eprintln!("Function name: {}", res.name);
         eprintln!("Function parameters: {:?}", res.params);
         res
