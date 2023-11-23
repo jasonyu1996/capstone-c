@@ -28,12 +28,6 @@ impl LocalVarInfo {
     }
 }
 
-// TODO: split this into two stacks to support breaking switch
-struct LoopInfo {
-    break_target: GCed<IRDAGNode>,
-    continue_target: GCed<IRDAGNode>
-}
-
 struct SwitchTargetInfo<'ast> {
     targets: Vec<(&'ast Expression, &'ast Span, GCed<IRDAGNode>)>,
     default_target: Option<GCed<IRDAGNode>>
@@ -56,7 +50,8 @@ pub struct IRDAGBuilder<'ast> {
     is_lval: bool, // currently in an lvalue
     decl_type: Option<CaplanType>,
     decl_id_name: Option<String>,
-    loops: Vec<LoopInfo>,
+    break_targets: Vec<GCed<IRDAGNode>>,
+    continue_targets: Vec<GCed<IRDAGNode>>,
     switch_target_info: Vec<SwitchTargetInfo<'ast>>
 }
 
@@ -73,7 +68,8 @@ impl<'ast> IRDAGBuilder<'ast> {
             is_lval: false,
             decl_type: None,
             decl_id_name: None,
-            loops: Vec::new(),
+            break_targets: Vec::new(),
+            continue_targets: Vec::new(),
             switch_target_info: Vec::new()
         }
     }
@@ -94,10 +90,13 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     fn push_loop_info(&mut self, break_target: &GCed<IRDAGNode>, continue_target: &GCed<IRDAGNode>) {
-        self.loops.push(LoopInfo {
-            break_target: break_target.clone(),
-            continue_target: continue_target.clone()
-        });
+        self.break_targets.push(break_target.clone());
+        self.continue_targets.push(continue_target.clone());
+    }
+
+    fn pop_loop_info(&mut self) {
+        self.break_targets.pop().unwrap();
+        self.continue_targets.pop().unwrap();
     }
 
     // integer binary operator expression
@@ -189,7 +188,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.new_block_reset();
         self.dag.place_label_node(&label_end);
         self.last_node = branch_node;
-        self.loops.pop().unwrap();
+        self.pop_loop_info();
     }
 
     fn visit_static_assert(&mut self, static_assert: &'ast lang_c::ast::StaticAssert, span: &'ast Span) {
@@ -226,7 +225,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.new_block_reset();
         self.dag.place_label_node(&label_end);
         
-        self.loops.pop().unwrap();
+        self.pop_loop_info();
     }
 
     fn visit_do_while_statement(
@@ -250,7 +249,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.new_block_reset();
         self.dag.place_label_node(&label_end);
 
-        self.loops.pop().unwrap();
+        self.pop_loop_info();
     }
 
     // TODO: use switch node type instead and delay this to codegen
@@ -264,6 +263,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let label_skip_stmt = self.dag.new_label();
 
         self.switch_target_info.push(SwitchTargetInfo::new());
+        self.break_targets.push(label_skip_expr.clone());
 
         self.dag.new_jump(&label_skip_stmt);
         self.new_block_reset();
@@ -272,6 +272,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.new_block_reset();
         self.dag.place_label_node(&label_skip_stmt);
 
+        self.break_targets.pop().unwrap();
         let switch_targets = self.switch_target_info.pop().unwrap();
         self.visit_expression(&switch_statement.expression.node, &switch_statement.expression.span);
         let val = self.last_node.clone();
@@ -319,11 +320,11 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_statement(&mut self, statement: &'ast Statement, span: &'ast Span) {
         match statement {
             Statement::Continue => {
-                self.dag.new_jump(&self.loops.last().unwrap().continue_target);
+                self.dag.new_jump(&self.continue_targets.last().unwrap());
                 self.new_block_reset();
             }
             Statement::Break => {
-                self.dag.new_jump(&self.loops.last().unwrap().break_target);
+                self.dag.new_jump(&self.break_targets.last().unwrap());
                 self.new_block_reset();
             }
             Statement::Expression(None) => (),
