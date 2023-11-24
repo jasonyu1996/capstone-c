@@ -38,6 +38,14 @@ pub enum IRDAGNodeIntUnOpType {
     Neg, Not, Negate 
 }
 
+
+#[derive(Clone)]
+pub enum IRDAGLVal {
+    Identifier(String),
+    AddressIndirection(GCed<IRDAGNode>)
+}
+
+
 pub enum IRDAGNodeCons {
     // simple operations on integers; output is also integer
     IntConst(u64),
@@ -60,11 +68,15 @@ pub enum IRDAGNodeCons {
     DomReturn(GCed<IRDAGNode>),
     // local, parameter or global variable
     Read(String),
+    // read through address indirection
+    ReadIndirection(GCed<IRDAGNode>),
     // write to local, parameter or global variable
-    Write(String, GCed<IRDAGNode>),
+    Write(IRDAGLVal, GCed<IRDAGNode>),
     // label of a specific basic block
     // Label(None) is a label that has not been placed
-    Label(Option<usize>)
+    Label(Option<usize>),
+    // take the address of a symbol
+    AddressOf(IRDAGLVal)
 }
 
 impl std::fmt::Debug for IRDAGNodeCons {
@@ -82,8 +94,10 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::InDomReturn(_) => write!(f, "InDomReturn"),
             Self::DomReturn(_) => write!(f, "DomReturn"),
             Self::Read(arg0) => f.debug_tuple("Read").field(arg0).finish(),
-            Self::Write(arg0, _) => f.debug_tuple("Write").field(arg0).finish(),
+            Self::ReadIndirection(_) => write!(f, "ReadIndirection"),
+            Self::Write(_, _) => write!(f, "Write"),
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
+            Self::AddressOf(_) => write!(f, "AddressOf")
         }
     }
 }
@@ -252,14 +266,17 @@ impl IRDAG {
         res
     }
 
-    pub fn new_write(&mut self, name: String, v: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+    pub fn new_write(&mut self, lval: IRDAGLVal, v: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
             v.borrow().vtype,
-            IRDAGNodeCons::Write(name, v.clone()),
+            IRDAGNodeCons::Write(lval.clone(), v.clone()),
             false
         ));
         Self::add_dep(&res, v);
+        if let IRDAGLVal::AddressIndirection(addr) = lval {
+            Self::add_dep(&res, &addr);
+        }
         self.add_nonlabel_node(&res);
         res
     }
@@ -333,6 +350,29 @@ impl IRDAG {
         for arg in args.iter() {
             Self::add_dep(&res, arg);
         }
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_address_of(&mut self, lval: IRDAGLVal) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::AddressOf(lval),
+            false
+        ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_read_indirection(&mut self, addr: GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::ReadIndirection(addr.clone()),
+            false
+        ));
+        Self::add_dep(&res, &addr);
         self.add_nonlabel_node(&res);
         res
     }

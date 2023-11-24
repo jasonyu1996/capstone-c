@@ -47,7 +47,7 @@ pub struct IRDAGBuilder<'ast> {
     dag: IRDAG,
     locals: HashMap<String, LocalVarInfo>, // TODO: brute-force implementation, no nested scope yet
     last_node: GCed<IRDAGNode>,
-    lval_id_name: Option<String>, // let's say the lvalue can only be an identifier for now
+    last_lval: Option<IRDAGLVal>, // let's say the lvalue can only be an identifier for now
     is_lval: bool, // currently in an lvalue
     decl_type: Option<CaplanType>,
     decl_id_name: Option<String>,
@@ -67,7 +67,7 @@ impl<'ast> IRDAGBuilder<'ast> {
             dag: dag,
             locals: HashMap::new(),
             last_node: init_label,
-            lval_id_name: None,
+            last_lval: None,
             is_lval: false,
             decl_type: None,
             decl_id_name: None,
@@ -367,6 +367,28 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             UnaryOperator::Negate => self.process_int_un_expr(IRDAGNodeIntUnOpType::Negate, unary_operator_expression),
             UnaryOperator::Minus => self.process_int_un_expr(IRDAGNodeIntUnOpType::Neg, unary_operator_expression),
             UnaryOperator::Complement => self.process_int_un_expr(IRDAGNodeIntUnOpType::Not, unary_operator_expression),
+            UnaryOperator::Address => {
+                let old_is_lval = self.is_lval;
+                self.is_lval = true;
+                self.visit_expression(&unary_operator_expression.operand.node, &unary_operator_expression.operand.span);
+                self.is_lval = old_is_lval;
+
+                self.last_node = self.dag.new_address_of(self.last_lval.take().unwrap());
+            }
+            UnaryOperator::Indirection => {
+                let old_is_lval = self.is_lval;
+                self.is_lval = false;
+                self.visit_expression(&unary_operator_expression.operand.node, &unary_operator_expression.operand.span);
+                self.is_lval = old_is_lval;
+
+                if self.is_lval {
+                    assert!(self.last_lval.is_none(), "last_lval already taken");
+                    self.last_lval = Some(IRDAGLVal::AddressIndirection(self.last_node.clone()));
+                } else {
+                    // not lval, just read
+                    self.last_node = self.dag.new_read_indirection(self.last_node.clone());
+                }
+            }
             _ => panic!("Unsupported unary operator {:?}", unary_operator_expression.operator.node)
         }
     }
@@ -386,10 +408,11 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 self.visit_expression(&binary_operator_expression.rhs.node, 
                     &binary_operator_expression.rhs.span);
                 self.is_lval = old_is_lval;
-                let name = self.lval_id_name.take().unwrap();
-                eprintln!("Assignment {}", name);
-                self.last_node = self.dag.new_write(name.clone(), &self.last_node);
-                self.write_var(&name, &self.last_node.clone());
+                let lval = self.last_lval.take().unwrap();
+                self.last_node = self.dag.new_write(lval.clone(), &self.last_node);
+                if let IRDAGLVal::Identifier(ident) = lval {
+                    self.write_var(&ident, &self.last_node.clone());
+                }
             }
             BinaryOperator::Plus => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Add, binary_operator_expression);
@@ -446,7 +469,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
         // check whether this is a local, param, or global
         if self.is_lval {
-            self.lval_id_name = Some(identifier.name.clone());
+            self.last_lval = Some(IRDAGLVal::Identifier(identifier.name.clone()));
         } else if self.globals.func_decls.contains(&identifier.name) {
             assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(identifier.name.clone());
@@ -534,7 +557,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             LocalVarInfo::new(self.decl_type.as_ref().unwrap().clone()));
         if let Some(initializer_node) = init_declarator.initializer.as_ref() {
             self.visit_initializer(&initializer_node.node, &initializer_node.span);
-            self.last_node = self.dag.new_write(name.clone(), &self.last_node);
+            self.last_node = self.dag.new_write(IRDAGLVal::Identifier(name.clone()), &self.last_node);
             self.write_var(&name, &self.last_node.clone());
         }
         self.decl_id_name = None;

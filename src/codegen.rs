@@ -335,9 +335,9 @@ impl FunctionCodeGen {
             IRDAGNodeCons::IntBinOp(op_type, s1, s2) => {
                 let rs1 = self.prepare_source_reg(s1.borrow().id, code_printer);
                 let rs2 = self.prepare_source_reg(s2.borrow().id, code_printer);
+                let rd = self.assign_reg(node.id, code_printer);
                 self.unpin_gpr(rs1);
                 self.unpin_gpr(rs2);
-                let rd = self.assign_reg(node.id, code_printer);
                 match op_type {
                     IRDAGNodeIntBinOpType::Add => code_printer.print_add(rd, rs1, rs2).unwrap(),
                     IRDAGNodeIntBinOpType::Sub => code_printer.print_sub(rd, rs1, rs2).unwrap(),
@@ -356,34 +356,63 @@ impl FunctionCodeGen {
             }
             IRDAGNodeCons::IntUnOp(op_type, source) => {
                 let rs = self.prepare_source_reg(source.borrow().id, code_printer);
-                self.unpin_gpr(rs);
                 let rd = self.assign_reg(node.id, code_printer);
+                self.unpin_gpr(rs); // FIXME: unpin before assignment?
                 match op_type {
                     IRDAGNodeIntUnOpType::Neg => code_printer.print_neg(rd, rs).unwrap(),
                     IRDAGNodeIntUnOpType::Not => code_printer.print_not(rd, rs).unwrap(),
                     IRDAGNodeIntUnOpType::Negate => code_printer.print_lt(rd, GPR_IDX_X0, rs).unwrap()
                 }
             }
-            IRDAGNodeCons::Write(var_name, source) => {
-                let var_id = *self.vars_to_ids.get(var_name).unwrap();
-                let rs = self.prepare_source_reg(source.borrow().id, code_printer);
-                self.unpin_gpr(rs);
-                let rd = self.assign_reg(node.id, code_printer);
-                let var_state = self.vars.get_mut(var_id).unwrap();
-                // look at current location of the variable
-                if let VarLocation::GPR(old_reg_id) = var_state.loc {
-                    // disassociate the old reg and node
-                    if let GPRState::Taken(node_id) = self.gpr_states[old_reg_id] {
-                        self.temps.get_mut(&node_id).unwrap().var = None;
+            IRDAGNodeCons::AddressOf(lval) => {
+                match lval {
+                    IRDAGLVal::AddressIndirection(addr) => {
+                        let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
+                        let rd = self.assign_reg(node.id, code_printer);
+                        self.unpin_gpr(rs);
+                        if rs != rd {
+                            code_printer.print_mv(rd, rs).unwrap();
+                        }
+                    }
+                    IRDAGLVal::Identifier(var_name) => {
+                        let var_id = *self.vars_to_ids.get(var_name).unwrap();
+                        let rd = self.assign_reg(node.id, code_printer);
+                        code_printer.print_addi(rd, GPR_IDX_SP, 
+                            (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
                     }
                 }
-                
-                var_state.loc = VarLocation::GPR(rd);
-                var_state.dirty = true;
-                self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
+            }
+            IRDAGNodeCons::Write(lval, source) => {
+                match lval {
+                    IRDAGLVal::Identifier(var_name) => {
+                        let var_id = *self.vars_to_ids.get(var_name).unwrap();
+                        let rs = self.prepare_source_reg(source.borrow().id, code_printer);
+                        self.unpin_gpr(rs);
+                        let rd = self.assign_reg(node.id, code_printer);
+                        let var_state = self.vars.get_mut(var_id).unwrap();
+                        // look at current location of the variable
+                        if let VarLocation::GPR(old_reg_id) = var_state.loc {
+                            // disassociate the old reg and node
+                            if let GPRState::Taken(node_id) = self.gpr_states[old_reg_id] {
+                                self.temps.get_mut(&node_id).unwrap().var = None;
+                            }
+                        }
+                        
+                        var_state.loc = VarLocation::GPR(rd);
+                        var_state.dirty = true;
+                        self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
 
-                if rd != rs {
-                    code_printer.print_mv(rd, rs).unwrap();
+                        if rd != rs {
+                            code_printer.print_mv(rd, rs).unwrap();
+                        }
+                    }
+                    IRDAGLVal::AddressIndirection(addr) => {
+                        let rs1 = self.prepare_source_reg(source.borrow().id, code_printer);
+                        let rs2 = self.prepare_source_reg(addr.borrow().id, code_printer);
+                        self.unpin_gpr(rs1);
+                        self.unpin_gpr(rs2);
+                        code_printer.print_sd(rs1, rs2, 0).unwrap();
+                    }
                 }
             }
             IRDAGNodeCons::Read(var_name) => {
@@ -415,6 +444,12 @@ impl FunctionCodeGen {
                     }
                 };
                 self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
+            }
+            IRDAGNodeCons::ReadIndirection(addr) => {
+                let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
+                let reg_id = self.assign_reg(node.id, code_printer);
+                self.unpin_gpr(rs);
+                code_printer.print_ld(reg_id, rs, 0).unwrap();
             }
             IRDAGNodeCons::Jump(target) => {
                 if let IRDAGNodeCons::Label(Some(blk_id)) = target.borrow().cons {
@@ -573,7 +608,7 @@ impl FunctionCodeGen {
             for node in block.dag.iter() {
                 let var_name_op: Option<String> = match &node.borrow().cons {
                     IRDAGNodeCons::Read(name) => Some(name.clone()),
-                    IRDAGNodeCons::Write(name, _) => Some(name.clone()),
+                    IRDAGNodeCons::Write(IRDAGLVal::Identifier(name), _) => Some(name.clone()),
                     _ => None
                 };
                 if let Some(var_name_op) = var_name_op {

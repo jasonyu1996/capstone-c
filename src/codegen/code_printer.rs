@@ -40,6 +40,16 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
+    pub fn print_ld(&mut self, rd: RegId, rs: RegId, offset: isize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}ld {}, {}({})", INST_INDENT, REG_NAMES[rd], offset, REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_sd(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sd {}, {}({})", INST_INDENT, REG_NAMES[rs1], offset, REG_NAMES[rs2])?;
+        Ok(())
+    }
+
     pub fn print_addi(&mut self, rd: RegId, rs1: RegId, offset: isize) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}addi {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], offset)?;
         Ok(())
