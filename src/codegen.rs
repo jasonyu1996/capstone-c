@@ -67,7 +67,7 @@ type VarId = usize;
 
 // this just generates code for a single function
 struct FunctionCodeGen {
-    vars_to_ids: HashMap<String, VarId>,
+    vars_to_ids: HashMap<IRDAGNamedMemLoc, VarId>,
     vars: Vec<VarState>,
     stack_slots: Vec<VarId>,
     temps: HashMap<IRDAGNodeId, TempState>,
@@ -112,7 +112,11 @@ impl FunctionCodeGen {
 
         // shift params to stack
         for (param_idx, param) in func.params.iter().enumerate() {
-            let var_id = *self.vars_to_ids.get(&param.name).unwrap();
+            let named_mem_loc = IRDAGNamedMemLoc {
+                var_name: param.name.clone(),
+                offset: 0
+            };
+            let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
             code_printer.print_store_to_stack_slot(GPR_PARAMS[param_idx], self.vars[var_id].stack_slot).unwrap();
         }
     }
@@ -364,28 +368,16 @@ impl FunctionCodeGen {
                     IRDAGNodeIntUnOpType::Negate => code_printer.print_lt(rd, GPR_IDX_X0, rs).unwrap()
                 }
             }
-            IRDAGNodeCons::AddressOf(lval) => {
-                match &lval.loc {
-                    IRDAGLValLoc::AddressIndirection(addr) => {
-                        let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
-                        let rd = self.assign_reg(node.id, code_printer);
-                        self.unpin_gpr(rs);
-                        if rs != rd {
-                            code_printer.print_mv(rd, rs).unwrap();
-                        }
-                    }
-                    IRDAGLValLoc::Identifier(var_name, _) => { // FIXME: handle offset
-                        let var_id = *self.vars_to_ids.get(var_name).unwrap();
-                        let rd = self.assign_reg(node.id, code_printer);
-                        code_printer.print_addi(rd, GPR_IDX_SP, 
-                            (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
-                    }
-                }
+            IRDAGNodeCons::AddressOf(named_mem_loc) => {
+                let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
+                let rd = self.assign_reg(node.id, code_printer);
+                code_printer.print_addi(rd, GPR_IDX_SP, 
+                    (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
             }
-            IRDAGNodeCons::Write(lval, source) => {
-                match &lval.loc {
-                    IRDAGLValLoc::Identifier(var_name, _) => { // FIXME: handle offset
-                        let var_id = *self.vars_to_ids.get(var_name).unwrap();
+            IRDAGNodeCons::Write(loc, source) => {
+                match &loc {
+                    IRDAGMemLoc::Named(named_mem_loc) => {
+                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
                         self.unpin_gpr(rs);
                         let rd = self.assign_reg(node.id, code_printer);
@@ -406,7 +398,7 @@ impl FunctionCodeGen {
                             code_printer.print_mv(rd, rs).unwrap();
                         }
                     }
-                    IRDAGLValLoc::AddressIndirection(addr) => {
+                    IRDAGMemLoc::Addr(addr) => {
                         let rs1 = self.prepare_source_reg(source.borrow().id, code_printer);
                         let rs2 = self.prepare_source_reg(addr.borrow().id, code_printer);
                         self.unpin_gpr(rs1);
@@ -415,41 +407,45 @@ impl FunctionCodeGen {
                     }
                 }
             }
-            IRDAGNodeCons::Read(var_name) => {
+            IRDAGNodeCons::Read(mem_loc) => {
                 // see where it is right now
-                let var_id = *self.vars_to_ids.get(var_name).unwrap();
-                let var_state = self.vars.get(var_id).unwrap();
+                match mem_loc {
+                    IRDAGMemLoc::Named(named_mem_loc) => {
+                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
+                        let var_state = self.vars.get(var_id).unwrap();
 
-                // look at current location of the variable
-                let _ = match var_state.loc {
-                    VarLocation::GPR(reg_id) => {
-                        // already in a register
-                        // just grab the register
-                        if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
-                            self.temps.get_mut(&node_id).unwrap().var = None; // disassociate with old node
-                        }
-                        self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(reg_id);
-                        self.gpr_states[reg_id] = GPRState::Taken(node.id);
-                        reg_id
+                        // look at current location of the variable
+                        let _ = match var_state.loc {
+                            VarLocation::GPR(reg_id) => {
+                                // already in a register
+                                // just grab the register
+                                if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
+                                    self.temps.get_mut(&node_id).unwrap().var = None; // disassociate with old node
+                                }
+                                self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(reg_id);
+                                self.gpr_states[reg_id] = GPRState::Taken(node.id);
+                                reg_id
+                            }
+                            VarLocation::StackSlot => {
+                                // need to load from stack
+                                let stack_slot = var_state.stack_slot;
+                                let reg_id = self.assign_reg(node.id, code_printer);
+                                let var_state_mut = self.vars.get_mut(var_id).unwrap();
+                                var_state_mut.dirty = false; // just loaded, not dirty
+                                var_state_mut.loc = VarLocation::GPR(reg_id);
+                                code_printer.print_load_from_stack_slot(reg_id, stack_slot).unwrap();
+                                reg_id
+                            }
+                        };
+                        self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
                     }
-                    VarLocation::StackSlot => {
-                        // need to load from stack
-                        let stack_slot = var_state.stack_slot;
+                    IRDAGMemLoc::Addr(addr) => {
+                        let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
                         let reg_id = self.assign_reg(node.id, code_printer);
-                        let var_state_mut = self.vars.get_mut(var_id).unwrap();
-                        var_state_mut.dirty = false; // just loaded, not dirty
-                        var_state_mut.loc = VarLocation::GPR(reg_id);
-                        code_printer.print_load_from_stack_slot(reg_id, stack_slot).unwrap();
-                        reg_id
+                        self.unpin_gpr(rs);
+                        code_printer.print_ld(reg_id, rs, 0).unwrap();
                     }
-                };
-                self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
-            }
-            IRDAGNodeCons::ReadIndirection(addr) => {
-                let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
-                let reg_id = self.assign_reg(node.id, code_printer);
-                self.unpin_gpr(rs);
-                code_printer.print_ld(reg_id, rs, 0).unwrap();
+                }
             }
             IRDAGNodeCons::Jump(target) => {
                 if let IRDAGNodeCons::Label(Some(blk_id)) = target.borrow().cons {
@@ -594,7 +590,11 @@ impl FunctionCodeGen {
         // we handle parameters in the same way
         for param in func.params.iter() {
             let var_id = self.vars.len();
-            self.vars_to_ids.insert(param.name.clone(), var_id);
+            let mem_loc = IRDAGNamedMemLoc {
+                var_name: param.name.clone(),
+                offset: 0
+            }; // TODO: param's can only be 8 bytes
+            self.vars_to_ids.insert(mem_loc, var_id);
             // TODO: passing params through stack is not supported
             eprintln!("Allocated slot {} to param {}", self.stack_slots.len(), param.name);
             self.vars.push(VarState {
@@ -604,33 +604,22 @@ impl FunctionCodeGen {
             });
             self.stack_slots.push(var_id);
         }
-        for block in func.dag.blocks.iter() {
-            for node in block.dag.iter() {
-                let var_name_op: Option<String> = match &node.borrow().cons {
-                    IRDAGNodeCons::Read(name) => Some(name.clone()),
-                    IRDAGNodeCons::Write(lval, _) => {
-                        if let IRDAGLValLoc::Identifier(name, _) = &lval.loc { // FIXME: handle offset
-                            Some(name.clone())
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None
+
+        for (local_name, local_type) in func.locals.iter() {
+            let size = local_type.size();
+            for offset in (0..size).step_by(8) {
+                let mem_loc = IRDAGNamedMemLoc {
+                    var_name: local_name.clone(),
+                    offset: offset
                 };
-                if let Some(var_name_op) = var_name_op {
-                    if !self.vars_to_ids.contains_key(&var_name_op) {
-                        let var_id = self.vars.len();
-                        self.vars_to_ids.insert(var_name_op.clone(), var_id);
-                        // initially the variables are not stored anywhere
-                        eprintln!("Allocated slot {} to variable {}", self.stack_slots.len(), var_name_op);
-                        self.vars.push(VarState {
-                            loc: VarLocation::StackSlot,
-                            stack_slot: self.stack_slots.len(),
-                            dirty: false
-                        });
-                        self.stack_slots.push(var_id);
-                    }
-                }
+                let var_id = self.vars.len();
+                self.vars_to_ids.insert(mem_loc, var_id);
+                self.vars.push(VarState {
+                    loc: VarLocation::StackSlot,
+                    stack_slot: self.stack_slots.len(),
+                    dirty: false
+                });
+                self.stack_slots.push(var_id);
             }
         }
 

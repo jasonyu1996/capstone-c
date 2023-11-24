@@ -21,6 +21,7 @@ pub enum CaplanType {
     Dom,
     LinPtr(Box<CaplanType>),
     NonlinPtr(Box<CaplanType>),
+    RawPtr(Box<CaplanType>),
     Struct(Box<CaplanStruct>), // TODO: this is not supported for now
     StructRef(GCed<CaplanStruct>) // referencing a struct def elsewhere
 }
@@ -75,7 +76,8 @@ impl CaplanType {
         *self = if linear {
             CaplanType::LinPtr(Box::new(t))
         } else {
-            CaplanType::NonlinPtr(Box::new(t))
+            // CaplanType::NonlinPtr(Box::new(t))
+            CaplanType::RawPtr(Box::new(t))
         };
     }
 
@@ -86,6 +88,7 @@ impl CaplanType {
             CaplanType::Dom => 16,
             CaplanType::LinPtr(_) => 16,
             CaplanType::NonlinPtr(_) => 16,
+            CaplanType::RawPtr(_) => 8,
             CaplanType::Struct(s) => s.size,
             CaplanType::StructRef(s_ref) => s_ref.borrow().size
         }

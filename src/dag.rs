@@ -2,13 +2,15 @@ use crate::{utils::{GCed, new_gced}, lang_defs::CaplanType};
 
 pub type IRDAGNodeId = u64;
 
-#[derive(Copy, Clone, Debug)]
+// here the values of all these types can be held in 8/16 bytes
+#[derive(Clone, Debug)]
 pub enum IRDAGNodeVType {
     Void,
     Int,
     Dom,
-    LinPtr,
-    NonlinPtr,
+    RawPtr(CaplanType), // TODO: probably we don't need this info here
+    LinPtr(CaplanType),
+    NonlinPtr(CaplanType),
     Label,
     Func
 }
@@ -33,21 +35,58 @@ pub enum IRDAGNodeIntBinOpType {
     // TODO: more
 }
 
+
+#[derive(Debug,PartialEq,Eq,Hash,Clone)]
+pub struct IRDAGNamedMemLoc {
+    pub var_name: String,
+    pub offset: usize
+}
+
+impl IRDAGNamedMemLoc {
+    pub fn apply_offset(self, offset: isize) -> Self {
+        Self {
+            var_name: self.var_name,
+            offset: self.offset.checked_add_signed(offset).unwrap()
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum IRDAGMemLoc {
+    Named(IRDAGNamedMemLoc),
+    Addr(GCed<IRDAGNode>)
+}
+
+impl IRDAGMemLoc {
+    pub fn apply_offset(self, offset: isize, dag: &mut IRDAG) -> Self {
+        match self {
+            IRDAGMemLoc::Addr(addr) => {
+                let const_node = dag.new_int_const(offset as u64);
+                IRDAGMemLoc::Addr(dag.new_int_binop(IRDAGNodeIntBinOpType::Add,
+                    &addr, &const_node))
+            }
+            IRDAGMemLoc::Named(named_mem_loc) =>
+                IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset))
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum IRDAGNodeIntUnOpType {
     Neg, Not, Negate 
 }
 
+
 #[derive(Clone)]
-pub enum IRDAGLValLoc {
-    Identifier(String, usize), // offset in identifier
-    AddressIndirection(GCed<IRDAGNode>)
+pub enum IRDAGNodeTempResult {
+    LVal(IRDAGLVal),
+    Word(GCed<IRDAGNode>) 
 }
 
 #[derive(Clone)]
 pub struct IRDAGLVal {
     pub ty: CaplanType,
-    pub loc: IRDAGLValLoc
+    pub loc: IRDAGMemLoc
 }
 
 
@@ -72,16 +111,14 @@ pub enum IRDAGNodeCons {
     // domain return, a capability needed
     DomReturn(GCed<IRDAGNode>),
     // local, parameter or global variable
-    Read(String),
-    // read through address indirection
-    ReadIndirection(GCed<IRDAGNode>),
+    Read(IRDAGMemLoc),
     // write to local, parameter or global variable
-    Write(IRDAGLVal, GCed<IRDAGNode>),
+    Write(IRDAGMemLoc, GCed<IRDAGNode>),
     // label of a specific basic block
     // Label(None) is a label that has not been placed
     Label(Option<usize>),
     // take the address of a symbol
-    AddressOf(IRDAGLVal)
+    AddressOf(IRDAGNamedMemLoc)
 }
 
 impl std::fmt::Debug for IRDAGNodeCons {
@@ -98,8 +135,7 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::DomCall(_, _) => write!(f, "DomCall"),
             Self::InDomReturn(_) => write!(f, "InDomReturn"),
             Self::DomReturn(_) => write!(f, "DomReturn"),
-            Self::Read(arg0) => f.debug_tuple("Read").field(arg0).finish(),
-            Self::ReadIndirection(_) => write!(f, "ReadIndirection"),
+            Self::Read(_) => write!(f, "Read"),
             Self::Write(_, _) => write!(f, "Write"),
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
             Self::AddressOf(_) => write!(f, "AddressOf")
@@ -259,28 +295,28 @@ impl IRDAG {
         res
     }
 
-    pub fn new_read(&mut self, name: String) -> GCed<IRDAGNode> {
+    pub fn new_read(&mut self, mem_loc: IRDAGMemLoc) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
             // TODO: should be looked up, assuming int for now
             IRDAGNodeVType::Int,
-            IRDAGNodeCons::Read(name),
+            IRDAGNodeCons::Read(mem_loc),
             false
         ));
         self.add_nonlabel_node(&res);
         res
     }
 
-    pub fn new_write(&mut self, lval: IRDAGLVal, v: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+    pub fn new_write(&mut self, mem_loc: IRDAGMemLoc, v: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
-            v.borrow().vtype,
-            IRDAGNodeCons::Write(lval.clone(), v.clone()),
+            v.borrow().vtype.clone(),
+            IRDAGNodeCons::Write(mem_loc.clone(), v.clone()),
             false
         ));
         Self::add_dep(&res, v);
-        if let IRDAGLValLoc::AddressIndirection(addr) = &lval.loc {
-            Self::add_dep(&res, &addr);
+        if let IRDAGMemLoc::Addr(addr) = &mem_loc {
+            Self::add_dep(&res, addr);
         }
         self.add_nonlabel_node(&res);
         res
@@ -359,25 +395,13 @@ impl IRDAG {
         res
     }
 
-    pub fn new_address_of(&mut self, lval: IRDAGLVal) -> GCed<IRDAGNode> {
+    pub fn new_address_of(&mut self, named_mem_loc: IRDAGNamedMemLoc, ty: CaplanType) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
-            IRDAGNodeVType::Int,
-            IRDAGNodeCons::AddressOf(lval),
+            IRDAGNodeVType::RawPtr(ty),
+            IRDAGNodeCons::AddressOf(named_mem_loc),
             false
         ));
-        self.add_nonlabel_node(&res);
-        res
-    }
-
-    pub fn new_read_indirection(&mut self, addr: GCed<IRDAGNode>) -> GCed<IRDAGNode> {
-        let res = new_gced(IRDAGNode::new(
-            self.id_counter,
-            IRDAGNodeVType::Int,
-            IRDAGNodeCons::ReadIndirection(addr.clone()),
-            false
-        ));
-        Self::add_dep(&res, &addr);
         self.add_nonlabel_node(&res);
         res
     }

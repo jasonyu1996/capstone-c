@@ -72,6 +72,7 @@ pub struct CaplanFunction {
     pub name: String,
     pub ret_type: CaplanType,
     pub params: Vec<CaplanParam>,
+    pub locals: HashMap<String, CaplanType>,
     pub dag: IRDAG
 }
 
@@ -101,7 +102,8 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
                 name: String::new(),
                 ret_type: CaplanType::Int, // default is int
                 params: Vec::new(),
-                dag: IRDAG::new()
+                dag: IRDAG::new(),
+                locals: HashMap::new()
             },
             globals: globals
         }
@@ -120,7 +122,7 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
         self.visit_function_definition(ast, span);
         let mut dag_builder = IRDAGBuilder::new(&*self.globals);
         dag_builder.build(ast, span, &self.func.params);
-        self.func.dag = dag_builder.into_dag();
+        (self.func.dag, self.func.locals) = dag_builder.into_dag();
         eprintln!("Function name: {}", self.func.name);
         eprintln!("Function parameters: {:?}", self.func.params);
     }
@@ -135,7 +137,7 @@ pub struct CaplanTranslationUnit {
     pub functions: Vec<CaplanFunction>,
     in_global_context: bool,
     last_type: Option<CaplanType>,
-    last_ident_name: Option<String>
+    last_ident_names: Vec<String>
 }
 
 impl<'ast> ParserVisit<'ast> for CaplanFunctionBuilder<'ast> {
@@ -159,7 +161,7 @@ impl CaplanTranslationUnit {
             functions: Vec::new(),
             in_global_context: true,
             last_type: None,
-            last_ident_name: None
+            last_ident_names: Vec::new()
         };
         res.visit_translation_unit(ast);
         res
@@ -211,8 +213,13 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
         self.in_global_context = false;
         for struct_decl in struct_decls.iter() {
             if let StructDeclaration::Field(field) = &struct_decl.node {
+                self.last_ident_names.clear();
                 self.visit_struct_field(&field.node, &field.span);
-                struct_def.borrow_mut().add_field(self.last_ident_name.as_ref().unwrap(), self.last_type.take().unwrap());
+                let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
+                let last_type = self.last_type.take().unwrap();
+                for ident_name in ident_names {
+                    struct_def.borrow_mut().add_field(&ident_name, last_type.clone());
+                }
             } else {
                 panic!("Static assertion not supported");
             }
@@ -223,7 +230,7 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
     }
 
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
-        self.last_ident_name = Some(identifier.name.clone());
+        self.last_ident_names.push(identifier.name.clone());
     }
 
     fn visit_type_specifier(&mut self, type_specifier: &'ast TypeSpecifier, span: &'ast Span) {
