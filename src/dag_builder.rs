@@ -511,17 +511,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         match declaration_specifier {
             DeclarationSpecifier::TypeSpecifier(type_specifier) => {
                 assert!(self.decl_type.is_none()); // can't have multiple type specifiers
-                self.decl_type = match &type_specifier.node {
-                    TypeSpecifier::Void => Some(CaplanType::Void),
-                    TypeSpecifier::Bool => Some(CaplanType::Int),
-                    TypeSpecifier::Char => Some(CaplanType::Int),
-                    TypeSpecifier::Short => Some(CaplanType::Int),
-                    TypeSpecifier::Int => Some(CaplanType::Int),
-                    TypeSpecifier::Long => Some(CaplanType::Int),
-                    TypeSpecifier::Signed => Some(CaplanType::Int),
-                    TypeSpecifier::Unsigned => Some(CaplanType::Int),
-                    _ => None
-                }
+                self.decl_type = CaplanType::from_ast_type(&type_specifier.node, self.globals);
             }
             _ => {}
         }
