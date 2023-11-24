@@ -18,20 +18,20 @@ pub struct CaplanParam {
 impl CaplanParam {
 }
 
-struct CaplanParamBuilder<'ast> {
+struct CaplanParamBuilder<'ctx> {
     param: CaplanParam,
-    globals: &'ast CaplanGlobalContext
+    globals: &'ctx CaplanGlobalContext
 }
 
-impl<'ast> CaplanParamBuilder<'ast> {
-    fn new(globals: &'ast CaplanGlobalContext) -> Self {
+impl<'ctx> CaplanParamBuilder<'ctx> {
+    fn new(globals: &'ctx CaplanGlobalContext) -> Self {
         Self {
             param: CaplanParam { name: String::new(), ty: CaplanType::Void },
             globals: globals
         }
     }
 
-    fn build(&mut self, ast: &'ast ParameterDeclaration, span: &'ast Span) {
+    fn build(&mut self, ast: &'ctx ParameterDeclaration, span: &'ctx Span) {
         self.visit_parameter_declaration(ast, span);
     }
 
@@ -89,13 +89,13 @@ impl CaplanGlobalContext {
     }
 }
 
-struct CaplanFunctionBuilder<'ast> {
+struct CaplanFunctionBuilder<'ctx> {
     func: CaplanFunction,
-    globals: &'ast mut CaplanGlobalContext
+    globals: &'ctx mut CaplanGlobalContext
 }
 
-impl<'ast> CaplanFunctionBuilder<'ast> {
-    fn new(globals: &'ast mut CaplanGlobalContext) -> Self {
+impl<'ctx> CaplanFunctionBuilder<'ctx> {
+    fn new(globals: &'ctx mut CaplanGlobalContext) -> Self {
         Self {
             func: CaplanFunction {
                 name: String::new(),
@@ -107,7 +107,7 @@ impl<'ast> CaplanFunctionBuilder<'ast> {
         }
     }
 
-    fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span) {
+    fn build(&mut self, ast: &'ctx FunctionDefinition, span: &'ctx Span) {
         // check function signature
         let func_identifier = &ast.declarator.node.kind.node;
         match func_identifier {

@@ -365,8 +365,8 @@ impl FunctionCodeGen {
                 }
             }
             IRDAGNodeCons::AddressOf(lval) => {
-                match lval {
-                    IRDAGLVal::AddressIndirection(addr) => {
+                match &lval.loc {
+                    IRDAGLValLoc::AddressIndirection(addr) => {
                         let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
                         let rd = self.assign_reg(node.id, code_printer);
                         self.unpin_gpr(rs);
@@ -374,7 +374,7 @@ impl FunctionCodeGen {
                             code_printer.print_mv(rd, rs).unwrap();
                         }
                     }
-                    IRDAGLVal::Identifier(var_name) => {
+                    IRDAGLValLoc::Identifier(var_name, _) => { // FIXME: handle offset
                         let var_id = *self.vars_to_ids.get(var_name).unwrap();
                         let rd = self.assign_reg(node.id, code_printer);
                         code_printer.print_addi(rd, GPR_IDX_SP, 
@@ -383,8 +383,8 @@ impl FunctionCodeGen {
                 }
             }
             IRDAGNodeCons::Write(lval, source) => {
-                match lval {
-                    IRDAGLVal::Identifier(var_name) => {
+                match &lval.loc {
+                    IRDAGLValLoc::Identifier(var_name, _) => { // FIXME: handle offset
                         let var_id = *self.vars_to_ids.get(var_name).unwrap();
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
                         self.unpin_gpr(rs);
@@ -406,7 +406,7 @@ impl FunctionCodeGen {
                             code_printer.print_mv(rd, rs).unwrap();
                         }
                     }
-                    IRDAGLVal::AddressIndirection(addr) => {
+                    IRDAGLValLoc::AddressIndirection(addr) => {
                         let rs1 = self.prepare_source_reg(source.borrow().id, code_printer);
                         let rs2 = self.prepare_source_reg(addr.borrow().id, code_printer);
                         self.unpin_gpr(rs1);
@@ -608,7 +608,13 @@ impl FunctionCodeGen {
             for node in block.dag.iter() {
                 let var_name_op: Option<String> = match &node.borrow().cons {
                     IRDAGNodeCons::Read(name) => Some(name.clone()),
-                    IRDAGNodeCons::Write(IRDAGLVal::Identifier(name), _) => Some(name.clone()),
+                    IRDAGNodeCons::Write(lval, _) => {
+                        if let IRDAGLValLoc::Identifier(name, _) = &lval.loc { // FIXME: handle offset
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }
                     _ => None
                 };
                 if let Some(var_name_op) = var_name_op {

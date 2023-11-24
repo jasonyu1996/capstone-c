@@ -1,4 +1,4 @@
-use crate::utils::{GCed, new_gced};
+use crate::{utils::{GCed, new_gced}, lang_defs::CaplanType};
 
 pub type IRDAGNodeId = u64;
 
@@ -38,11 +38,16 @@ pub enum IRDAGNodeIntUnOpType {
     Neg, Not, Negate 
 }
 
+#[derive(Clone)]
+pub enum IRDAGLValLoc {
+    Identifier(String, usize), // offset in identifier
+    AddressIndirection(GCed<IRDAGNode>)
+}
 
 #[derive(Clone)]
-pub enum IRDAGLVal {
-    Identifier(String),
-    AddressIndirection(GCed<IRDAGNode>)
+pub struct IRDAGLVal {
+    pub ty: CaplanType,
+    pub loc: IRDAGLValLoc
 }
 
 
@@ -274,7 +279,7 @@ impl IRDAG {
             false
         ));
         Self::add_dep(&res, v);
-        if let IRDAGLVal::AddressIndirection(addr) = lval {
+        if let IRDAGLValLoc::AddressIndirection(addr) = &lval.loc {
             Self::add_dep(&res, &addr);
         }
         self.add_nonlabel_node(&res);

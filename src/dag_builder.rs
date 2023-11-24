@@ -6,7 +6,7 @@ use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
 use crate::dag::*;
 
-use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label};
+use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator};
 use lang_c::{visit::Visit as ParserVisit,
     ast::{FunctionDefinition, Expression, CallExpression, Statement, 
         BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
@@ -383,7 +383,18 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
 
                 if self.is_lval {
                     assert!(self.last_lval.is_none(), "last_lval already taken");
-                    self.last_lval = Some(IRDAGLVal::AddressIndirection(self.last_node.clone()));
+                    let last_node= &*self.last_node.borrow();
+                    match &last_node.cons {
+                        IRDAGNodeCons::AddressOf(parent_lval) => {
+                            self.last_lval = Some(parent_lval.clone());
+                        }
+                        _ => {
+                            self.last_lval = Some(IRDAGLVal {
+                                ty: CaplanType::Int, // FIXME: should record the type
+                                loc: IRDAGLValLoc::AddressIndirection(self.last_node.clone())
+                            });
+                        }
+                    }
                 } else {
                     // not lval, just read
                     self.last_node = self.dag.new_read_indirection(self.last_node.clone());
@@ -410,7 +421,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 self.is_lval = old_is_lval;
                 let lval = self.last_lval.take().unwrap();
                 self.last_node = self.dag.new_write(lval.clone(), &self.last_node);
-                if let IRDAGLVal::Identifier(ident) = lval {
+                if let IRDAGLValLoc::Identifier(ident, _) = &lval.loc { // FIXME: handle offset
                     self.write_var(&ident, &self.last_node.clone());
                 }
             }
@@ -469,7 +480,11 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
         // check whether this is a local, param, or global
         if self.is_lval {
-            self.last_lval = Some(IRDAGLVal::Identifier(identifier.name.clone()));
+            let local_ref = self.locals.get(&identifier.name).unwrap();
+            self.last_lval = Some(IRDAGLVal {
+                ty: local_ref.ty.clone(),
+                loc: IRDAGLValLoc::Identifier(identifier.name.clone(), 0) // FIXME: set proper offset
+            });
         } else if self.globals.func_decls.contains(&identifier.name) {
             assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(identifier.name.clone());
@@ -490,6 +505,18 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         ));
         self.last_node = self.dag.new_indom_call(&func_name, args);
         self.new_block_reset();
+    }
+
+    fn visit_member_expression(
+            &mut self,
+            member_expression: &'ast lang_c::ast::MemberExpression,
+            span: &'ast Span,
+        ) {
+        assert!(matches!(member_expression.operator.node, MemberOperator::Direct), "Only direct member operator (.) is supported");
+        let old_is_lval = self.is_lval;
+        self.is_lval = true;
+        self.visit_expression(&member_expression.expression.node, &member_expression.expression.span);
+        self.is_lval = old_is_lval;
     }
 
     fn visit_constant(&mut self, constant: &'ast lang_c::ast::Constant, span: &'ast Span) {
@@ -543,11 +570,15 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.visit_declarator(&init_declarator.declarator.node, &init_declarator.declarator.span);
         // add this to local
         let name = self.decl_id_name.take().unwrap();
+        let ty = self.decl_type.as_ref().unwrap().clone();
         self.locals.insert(name.clone(),
-            LocalVarInfo::new(self.decl_type.as_ref().unwrap().clone()));
+            LocalVarInfo::new(ty.clone()));
         if let Some(initializer_node) = init_declarator.initializer.as_ref() {
             self.visit_initializer(&initializer_node.node, &initializer_node.span);
-            self.last_node = self.dag.new_write(IRDAGLVal::Identifier(name.clone()), &self.last_node);
+            self.last_node = self.dag.new_write(IRDAGLVal {
+                ty: ty,
+                loc: IRDAGLValLoc::Identifier(name.clone(), 0) // FIXME: set proper offset
+            }, &self.last_node);
             self.write_var(&name, &self.last_node.clone());
         }
         self.decl_id_name = None;
