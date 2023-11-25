@@ -53,7 +53,8 @@ impl IRDAGNamedMemLoc {
 
 #[derive(Debug, Clone)]
 pub enum IRDAGMemLoc {
-    Named(IRDAGNamedMemLoc),
+    // static location + dynamic offset
+    Named(IRDAGNamedMemLoc, Option<GCed<IRDAGNode>>),
     Addr(GCed<IRDAGNode>)
 }
 
@@ -65,8 +66,8 @@ impl IRDAGMemLoc {
                 IRDAGMemLoc::Addr(dag.new_int_binop(IRDAGNodeIntBinOpType::Add,
                     &addr, &const_node))
             }
-            IRDAGMemLoc::Named(named_mem_loc) =>
-                IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset))
+            IRDAGMemLoc::Named(named_mem_loc, offset_dyn) =>
+                IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset), offset_dyn)
         }
     }
 }

@@ -76,7 +76,7 @@ impl CaplanType {
             DerivedDeclarator::Pointer(_) => self.make_pointer(false),
             DerivedDeclarator::Array(arr_declarator) => {
                 let length_opt = match &arr_declarator.node.size {
-                    ArraySize::StaticExpression(expr) => {
+                    ArraySize::VariableExpression(expr) => {
                         match &expr.node {
                             Expression::Constant(constant) => {
                                 match &constant.node {
@@ -92,6 +92,7 @@ impl CaplanType {
                     _ => None
                 };
                 if let Some(length) = length_opt {
+                    eprintln!("Make array of length {}", length);
                     self.make_array(length);
                 } else {
                     panic!("Invalid array size");

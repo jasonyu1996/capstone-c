@@ -376,7 +376,7 @@ impl FunctionCodeGen {
             }
             IRDAGNodeCons::Write(loc, source) => {
                 match &loc {
-                    IRDAGMemLoc::Named(named_mem_loc) => {
+                    IRDAGMemLoc::Named(named_mem_loc, _) => { // FIXME: handle the dynamic offset
                         let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
                         self.unpin_gpr(rs);
@@ -410,7 +410,7 @@ impl FunctionCodeGen {
             IRDAGNodeCons::Read(mem_loc) => {
                 // see where it is right now
                 match mem_loc {
-                    IRDAGMemLoc::Named(named_mem_loc) => {
+                    IRDAGMemLoc::Named(named_mem_loc, _) => { // FIXME: handle the dynamic offset
                         let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
                         let var_state = self.vars.get(var_id).unwrap();
 
