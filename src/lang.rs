@@ -59,12 +59,7 @@ impl<'ast> ParserVisit<'ast> for CaplanParamBuilder<'ast> {
             derived_declarator: &'ast lang_c::ast::DerivedDeclarator,
             span: &'ast Span,
         ) {
-        match derived_declarator {
-            DerivedDeclarator::Pointer(_) => {
-                self.param.ty.make_pointer(false); // TODO: for now we only have nonlinear pointers
-            },
-            _ => {}
-        }
+        self.param.ty.decorate_from_ast(derived_declarator);
     }
 }
 

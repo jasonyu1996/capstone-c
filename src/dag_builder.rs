@@ -591,6 +591,16 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         }
     }
 
+    fn visit_sizeofval(&mut self, sizeofval: &'ast lang_c::ast::SizeOfVal, span: &'ast Span) {
+        self.visit_expression(&sizeofval.0.node, &sizeofval.0.span);
+        let r = self.last_temp_res.take().unwrap();
+        let size = match r {
+            IRDAGNodeTempResult::LVal(lval) => lval.ty.size(),
+            IRDAGNodeTempResult::Word(_) => 8
+        };
+        self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.dag.new_int_const(size as u64)));
+    }
+
     fn visit_constant(&mut self, constant: &'ast lang_c::ast::Constant, span: &'ast Span) {
         match constant {
             Constant::Integer(integer) => {
@@ -616,6 +626,14 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             }
             _ => {}
         }
+    }
+
+    fn visit_derived_declarator(
+            &mut self,
+            derived_declarator: &'ast lang_c::ast::DerivedDeclarator,
+            span: &'ast Span,
+        ) {
+        self.decl_type.as_mut().map(|x| x.decorate_from_ast(derived_declarator));
     }
 
     fn visit_declarator(&mut self, declarator: &'ast lang_c::ast::Declarator, span: &'ast Span) {
