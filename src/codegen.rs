@@ -376,7 +376,7 @@ impl FunctionCodeGen {
             }
             IRDAGNodeCons::Write(loc, source) => {
                 match &loc {
-                    IRDAGMemLoc::Named(named_mem_loc, _) => { // FIXME: handle the dynamic offset
+                    IRDAGMemLoc::Named(named_mem_loc) => {
                         let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
                         self.unpin_gpr(rs);
@@ -398,6 +398,19 @@ impl FunctionCodeGen {
                             code_printer.print_mv(rd, rs).unwrap();
                         }
                     }
+                    IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
+                        // FIXME: invalidate all variables in register covered in offset range
+
+                        let r_val = self.prepare_source_reg(source.borrow().id, code_printer);
+                        let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
+                        self.unpin_gpr(r_offset);
+                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
+                        let rd = self.assign_reg(node.id, code_printer);
+                        self.unpin_gpr(r_val);
+
+                        code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
+                        code_printer.print_sd(r_val, rd, (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                    }
                     IRDAGMemLoc::Addr(addr) => {
                         let rs1 = self.prepare_source_reg(source.borrow().id, code_printer);
                         let rs2 = self.prepare_source_reg(addr.borrow().id, code_printer);
@@ -410,7 +423,7 @@ impl FunctionCodeGen {
             IRDAGNodeCons::Read(mem_loc) => {
                 // see where it is right now
                 match mem_loc {
-                    IRDAGMemLoc::Named(named_mem_loc, _) => { // FIXME: handle the dynamic offset
+                    IRDAGMemLoc::Named(named_mem_loc) => {
                         let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
                         let var_state = self.vars.get(var_id).unwrap();
 
@@ -438,6 +451,18 @@ impl FunctionCodeGen {
                             }
                         };
                         self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
+                    }
+                    IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
+                        // FIXME: write back everything dirty in offset range
+
+                        let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
+                        self.unpin_gpr(r_offset);
+                        // get address
+                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
+                        let rd = self.assign_reg(node.id, code_printer);
+                        code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
+                        code_printer.print_ld(rd, rd,
+                            (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
                     }
                     IRDAGMemLoc::Addr(addr) => {
                         let rs = self.prepare_source_reg(addr.borrow().id, code_printer);

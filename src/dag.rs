@@ -49,16 +49,27 @@ impl IRDAGNamedMemLoc {
             offset: self.offset.checked_add_signed(offset).unwrap()
         }
     }
+
+    pub fn with_offset(self, offset: usize) -> Self {
+        Self {
+            var_name: self.var_name,
+            offset: offset
+        }
+    }
 }
+
+pub type OffsetRange = std::ops::Range<usize>;
 
 #[derive(Debug, Clone)]
 pub enum IRDAGMemLoc {
-    // static location + dynamic offset
-    Named(IRDAGNamedMemLoc, Option<GCed<IRDAGNode>>),
+    Named(IRDAGNamedMemLoc),
+    // static location + dynamic offset with possible range recorded
+    NamedWithDynOffset(IRDAGNamedMemLoc, GCed<IRDAGNode>, OffsetRange),
     Addr(GCed<IRDAGNode>)
 }
 
 impl IRDAGMemLoc {
+    // only for static offset
     pub fn apply_offset(self, offset: isize, dag: &mut IRDAG) -> Self {
         match self {
             IRDAGMemLoc::Addr(addr) => {
@@ -66,8 +77,10 @@ impl IRDAGMemLoc {
                 IRDAGMemLoc::Addr(dag.new_int_binop(IRDAGNodeIntBinOpType::Add,
                     &addr, &const_node))
             }
-            IRDAGMemLoc::Named(named_mem_loc, offset_dyn) =>
-                IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset), offset_dyn)
+            IRDAGMemLoc::Named(named_mem_loc) =>
+                IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset)),
+            IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) =>
+                IRDAGMemLoc::NamedWithDynOffset(named_mem_loc.apply_offset(offset), dyn_offset, offset_range)
         }
     }
 }
@@ -216,6 +229,7 @@ impl IRDAG {
     }
 
     pub fn add_dep(a: &GCed<IRDAGNode>, dep: &GCed<IRDAGNode>) {
+        eprintln!("Depends: {} depends on {}", a.borrow().id, dep.borrow().id);
         (**dep).borrow_mut().add_to_rev_deps(a);
         (**a).borrow_mut().inc_dep_count();
     }
@@ -301,9 +315,14 @@ impl IRDAG {
             self.id_counter,
             // TODO: should be looked up, assuming int for now
             IRDAGNodeVType::Int,
-            IRDAGNodeCons::Read(mem_loc),
+            IRDAGNodeCons::Read(mem_loc.clone()),
             false
         ));
+        match &mem_loc {
+            IRDAGMemLoc::Addr(addr) => Self::add_dep(&res, addr),
+            IRDAGMemLoc::Named(_) => (),
+            IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&res, dyn_offset)
+        }
         self.add_nonlabel_node(&res);
         res
     }
@@ -316,8 +335,10 @@ impl IRDAG {
             false
         ));
         Self::add_dep(&res, v);
-        if let IRDAGMemLoc::Addr(addr) = &mem_loc {
-            Self::add_dep(&res, addr);
+        match &mem_loc {
+            IRDAGMemLoc::Addr(addr) => Self::add_dep(&res, addr),
+            IRDAGMemLoc::Named(_) => (),
+            IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&res, dyn_offset)
         }
         self.add_nonlabel_node(&res);
         res

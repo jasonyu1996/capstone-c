@@ -111,15 +111,18 @@ impl<'ast> IRDAGBuilder<'ast> {
 
     fn read_location(&mut self, loc: &IRDAGMemLoc) -> GCed<IRDAGNode> {
         match loc {
-            IRDAGMemLoc::Addr(addr) => self.dag.new_read(loc.clone()),
-            IRDAGMemLoc::Named(named_mem_loc, None) => {
+            IRDAGMemLoc::Addr(_) => self.dag.new_read(loc.clone()),
+            IRDAGMemLoc::Named(named_mem_loc) => {
                 let read_node = self.dag.new_read(loc.clone());
                 self.read_named_mem_loc(named_mem_loc, &read_node);
                 read_node
             }
-            IRDAGMemLoc::Named(named_mem_loc, Some(dyn_offset)) => {
+            IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
                 let read_node = self.dag.new_read(loc.clone());
-                // FIXME: record any potential dependencies
+                for offset in offset_range.clone().step_by(8) {
+                    let covered_loc = named_mem_loc.clone().with_offset(offset); // TODO: very brute force
+                    self.read_named_mem_loc(&covered_loc, &read_node);
+                }
                 read_node
             }
         }
@@ -127,15 +130,18 @@ impl<'ast> IRDAGBuilder<'ast> {
 
     fn write_location(&mut self, loc: &IRDAGMemLoc, val: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         match loc {
-            IRDAGMemLoc::Addr(addr) => self.dag.new_write(loc.clone(), val),
-            IRDAGMemLoc::Named(named_mem_loc, None) => {
+            IRDAGMemLoc::Addr(_) => self.dag.new_write(loc.clone(), val),
+            IRDAGMemLoc::Named(named_mem_loc) => {
                 let write_node = self.dag.new_write(loc.clone(), val);
                 self.write_named_mem_loc(named_mem_loc, &write_node);
                 write_node
             }
-            IRDAGMemLoc::Named(named_mem_loc, Some(dyn_offset)) => {
+            IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
                 let write_node = self.dag.new_write(loc.clone(), val);
-                // FIXME: record any potential dependencies
+                for offset in offset_range.clone().step_by(8) {
+                    let covered_loc = named_mem_loc.clone().with_offset(offset);
+                    self.write_named_mem_loc(&covered_loc, &write_node);
+                }
                 write_node
             }
         }
@@ -487,8 +493,8 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 self.last_temp_res = if let IRDAGNodeTempResult::LVal(lval) = r {
                     match lval.loc {
                         IRDAGMemLoc::Addr(addr) => Some(IRDAGNodeTempResult::Word(addr)),
-                        IRDAGMemLoc::Named(named, None) => Some(IRDAGNodeTempResult::Word(self.dag.new_address_of(named, lval.ty))),
-                        IRDAGMemLoc::Named(named, Some(dyn_offset)) => {
+                        IRDAGMemLoc::Named(named) => Some(IRDAGNodeTempResult::Word(self.dag.new_address_of(named, lval.ty))),
+                        IRDAGMemLoc::NamedWithDynOffset(named, dyn_offset, offset_range) => {
                             let base_addr = self.dag.new_address_of(named, lval.ty);
                             let addr = self.dag.new_int_binop(IRDAGNodeIntBinOpType::Add, &base_addr, &dyn_offset);
                             Some(IRDAGNodeTempResult::Word(addr))
@@ -590,11 +596,16 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                     &elem_size_const, &rhs);
                 let loc = match lhs.loc {
                     IRDAGMemLoc::Addr(addr) => IRDAGMemLoc::Addr(self.dag.new_int_binop(IRDAGNodeIntBinOpType::Add, &addr, &offset)),
-                    IRDAGMemLoc::Named(named, None) => IRDAGMemLoc::Named(named, Some(offset)),
-                    IRDAGMemLoc::Named(named, Some(dyn_offset)) =>
-                        IRDAGMemLoc::Named(named, Some(self.dag.new_int_binop(IRDAGNodeIntBinOpType::Add, &dyn_offset, &offset)))
+                    IRDAGMemLoc::Named(named) => {
+                        let addr_range = named.offset..(named.offset + self.lookup_local(&named.var_name).unwrap().size());
+                        IRDAGMemLoc::NamedWithDynOffset(named, offset, addr_range)
+                    }
+                    IRDAGMemLoc::NamedWithDynOffset(named, dyn_offset, offset_range) =>
+                        IRDAGMemLoc::NamedWithDynOffset(named, self.dag.new_int_binop(IRDAGNodeIntBinOpType::Add, &dyn_offset, &offset), offset_range)
                 };
-                // TODO: record dynamic part of offset in NamedMemLoc instead; need to record dirty range as well
+                self.last_temp_res = Some(IRDAGNodeTempResult::LVal(
+                    IRDAGLVal { ty: elem_ty, loc: loc }
+                ))
             }
             _ => {
                 panic!("Unsupported binary operator {:?}", binary_operator_expression.operator.node);
@@ -608,7 +619,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         if let Some(ty) = loc_info {
             self.last_temp_res = Some(IRDAGNodeTempResult::LVal(IRDAGLVal {
                 ty: ty.clone(),
-                loc: IRDAGMemLoc::Named(IRDAGNamedMemLoc { var_name: identifier.name.clone(), offset: 0 }, None)
+                loc: IRDAGMemLoc::Named(IRDAGNamedMemLoc { var_name: identifier.name.clone(), offset: 0 })
             }));
         } else if self.globals.func_decls.contains(&identifier.name) {
             assert!(self.last_func_ident.is_none());
@@ -740,7 +751,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             self.visit_initializer(&initializer_node.node, &initializer_node.span);
             let rhs = self.last_temp_res.take().unwrap();
             let lhs = IRDAGNodeTempResult::LVal(
-                IRDAGLVal { ty: ty, loc: IRDAGMemLoc::Named(IRDAGNamedMemLoc { var_name: name, offset: 0 }, None) }
+                IRDAGLVal { ty: ty, loc: IRDAGMemLoc::Named(IRDAGNamedMemLoc { var_name: name, offset: 0 }) }
             );
             self.gen_assign(lhs, rhs);
         }
