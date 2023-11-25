@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::exit;
 
 use crate::dag::*;
-use crate::lang::{CaplanFunction, CaplanTranslationUnit};
+use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanArray};
 use crate::utils::GCed;
 
 mod code_printer;
@@ -426,25 +426,26 @@ impl FunctionCodeGen {
         // for all variables that ever appear, allocate one stack slot
         for block in func.dag.blocks.iter() {
             for node in block.dag.iter() {
+                eprintln!("Node value: {:?}", node);
                 let var_name_op: Option<String> = match &node.borrow().cons {
                     IRDAGNodeCons::Read(name) => Some(name.clone()),
                     IRDAGNodeCons::Write(name, _) => Some(name.clone()),
                     _ => None
                 };
-                if let Some(var_name_op) = var_name_op {
-                    if !self.vars_to_ids.contains_key(&var_name_op) {
-                        let var_id = self.vars.len();
-                        self.vars_to_ids.insert(var_name_op.clone(), var_id);
-                        // initially the variables are not stored anywhere
-                        eprintln!("Allocated slot {} to variable {}", self.stack_slots.len(), var_name_op);
-                        self.vars.push(VarState {
-                            loc: VarLocation::StackSlot,
-                            stack_slot: self.stack_slots.len(),
-                            dirty: false
-                        });
-                        self.stack_slots.push(var_id);
-                    }
-                }
+                // if let Some(var_name_op) = var_name_op {
+                //     if !self.vars_to_ids.contains_key(&var_name_op) {
+                //         let var_id = self.vars.len();
+                //         self.vars_to_ids.insert(var_name_op.clone(), var_id);
+                //         // initially the variables are not stored anywhere
+                //         eprintln!("Allocated slot {} to variable {}", self.stack_slots.len(), var_name_op);
+                //         self.vars.push(VarState {
+                //             loc: VarLocation::StackSlot,
+                //             stack_slot: self.stack_slots.len(),
+                //             dirty: false
+                //         });
+                //         self.stack_slots.push(var_id);
+                //     }
+                // }
             }
         }
 

@@ -58,6 +58,8 @@ pub enum IRDAGNodeCons {
     InDomReturn,
     // domain return, a capability needed
     DomReturn(GCed<IRDAGNode>),
+    // variable initialization
+    Declare(String),
     // local, parameter or global variable
     Read(String),
     // write to local, parameter or global variable
@@ -81,6 +83,7 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::DomCall(_, _) => write!(f, "DomCall"),
             Self::InDomReturn => write!(f, "InDomReturn"),
             Self::DomReturn(_) => write!(f, "DomReturn"),
+            Self::Declare(arg0) => f.debug_tuple("Declare").field(arg0).finish(),
             Self::Read(arg0) => f.debug_tuple("Read").field(arg0).finish(),
             Self::Write(arg0, _) => f.debug_tuple("Write").field(arg0).finish(),
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),

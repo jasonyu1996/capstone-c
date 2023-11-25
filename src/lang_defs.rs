@@ -6,7 +6,8 @@ pub enum CaplanType {
     Int,
     Dom,
     LinPtr(Box<CaplanType>),
-    NonlinPtr(Box<CaplanType>)
+    NonlinPtr(Box<CaplanType>),
+    Array
 }
 
 impl CaplanType {
