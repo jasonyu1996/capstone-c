@@ -204,28 +204,31 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
         assert!(self.in_global_context);
         assert!(matches!(struct_type.kind.node, StructKind::Struct), "Union is not supported");
         let struct_name = struct_type.identifier.as_ref().expect("Anonymous struct not supported").node.name.clone();
-        let struct_def = new_gced(CaplanStruct::new());
-        assert!(self.globals.struct_defs.insert(struct_name, struct_def.clone()).is_none(), "Duplicate struct defs");
-        let struct_decls = struct_type.declarations.as_ref().expect("Struct decl cannot be empty");
-        self.in_global_context = false;
-        for struct_decl in struct_decls.iter() {
-            if let StructDeclaration::Field(field) = &struct_decl.node {
-                assert!(self.last_ident_names.is_empty());
-                self.visit_struct_field(&field.node, &field.span);
-                let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
-                let last_type = self.last_type.take().unwrap();
-                for ident_name in ident_names {
-                    struct_def.borrow_mut().add_field(&ident_name, last_type.clone());
+        if let Some(struct_decls) = struct_type.declarations.as_ref() {
+            let struct_def = new_gced(CaplanStruct::new());
+            assert!(self.globals.struct_defs.insert(struct_name, struct_def.clone()).is_none(), "Duplicate struct defs");
+            self.in_global_context = false;
+            for struct_decl in struct_decls.iter() {
+                if let StructDeclaration::Field(field) = &struct_decl.node {
+                    assert!(self.last_ident_names.is_empty());
+                    self.visit_struct_field(&field.node, &field.span);
+                    let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
+                    let last_type = self.last_type.take().unwrap();
+                    for ident_name in ident_names {
+                        struct_def.borrow_mut().add_field(&ident_name, last_type.clone());
+                    }
+                } else {
+                    panic!("Static assertion not supported");
                 }
-            } else {
-                panic!("Static assertion not supported");
             }
+            self.in_global_context = true;
+
+            eprintln!("Struct added with {} fields", struct_def.borrow().fields.len());
+
+            self.last_type = Some(CaplanType::StructRef(struct_def));
+        } else {
+            self.last_type = Some(CaplanType::StructRef(self.globals.struct_defs.get(&struct_name).unwrap().clone()));
         }
-        self.in_global_context = true;
-
-        eprintln!("Struct added with {} fields", struct_def.borrow().fields.len());
-
-        self.last_type = Some(CaplanType::StructRef(struct_def));
     }
 
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
