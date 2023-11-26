@@ -57,7 +57,7 @@ struct Args {
 
 
 fn generate_code(translation_unit: &TranslationUnit) {
-    let codegen = CodeGen::new(CaplanTranslationUnit::from_ast(translation_unit));
+    let codegen = CodeGen::new(CaplanTranslationUnit::from_ast(translation_unit), std::io::stdout());
     codegen.codegen()
 }
 

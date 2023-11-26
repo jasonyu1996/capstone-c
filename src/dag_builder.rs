@@ -99,6 +99,10 @@ impl<'ast> IRDAGBuilder<'ast> {
         self.locals.get_mut(v)
     }
 
+    fn lookup_local_imm<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
+        self.locals.get(v)
+    }
+
     fn push_loop_info(&mut self, break_target: &GCed<IRDAGNode>, continue_target: &GCed<IRDAGNode>) {
         self.break_targets.push(break_target.clone());
         self.continue_targets.push(continue_target.clone());
@@ -233,22 +237,24 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     fn write_named_mem_loc(&mut self, mem_loc: &IRDAGNamedMemLoc, node: &GCed<IRDAGNode>) {
-        let v = self.local_named_locs.get_mut(mem_loc).unwrap();
-        if let Some(last_access) = v.last_access.as_ref() {
-            // this current access must wait until after the previous access completes
-            IRDAG::add_dep(node, last_access);
+        if let Some(v) = self.local_named_locs.get_mut(mem_loc) {
+            if let Some(last_access) = v.last_access.as_ref() {
+                // this current access must wait until after the previous access completes
+                IRDAG::add_dep(node, last_access);
+            }
+            v.last_access = Some(node.clone());
+            v.last_write = Some(node.clone());
         }
-        v.last_access = Some(node.clone());
-        v.last_write = Some(node.clone());
     }
 
     fn read_named_mem_loc(&mut self, mem_loc: &IRDAGNamedMemLoc, node: &GCed<IRDAGNode>) {
         // eprintln!("{:?}", mem_loc);
-        let v = self.local_named_locs.get_mut(mem_loc).unwrap();
-        if let Some(last_write) = v.last_write.as_ref() {
-            IRDAG::add_dep(node, last_write);
+        if let Some(v) = self.local_named_locs.get_mut(mem_loc) {
+            if let Some(last_write) = v.last_write.as_ref() {
+                IRDAG::add_dep(node, last_write);
+            }
+            v.last_access = Some(node.clone());
         }
-        v.last_access = Some(node.clone());
     }
 
     fn new_block_reset(&mut self) {
@@ -640,12 +646,17 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
 
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
         // check whether this is a local, param, or global
-        let loc_info = self.lookup_local(&identifier.name);
+        let loc_info = self.lookup_local_imm(&identifier.name).or_else(
+            || self.globals.global_vars.get(&identifier.name)
+        );
+        // local or global variable
         if let Some(ty) = loc_info {
             self.last_temp_res = Some(IRDAGNodeTempResult::LVal(IRDAGLVal {
                 ty: ty.clone(),
                 loc: IRDAGMemLoc::Named(IRDAGNamedMemLoc { var_name: identifier.name.clone(), offset: 0 })
             }));
+        } else if let Some(g_var_type) = self.globals.global_vars.get(&identifier.name) {
+            
         } else if self.globals.func_decls.contains(&identifier.name) {
             assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(identifier.name.clone());

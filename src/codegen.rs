@@ -373,33 +373,45 @@ impl FunctionCodeGen {
                 }
             }
             IRDAGNodeCons::AddressOf(named_mem_loc) => {
-                let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
                 let rd = self.assign_reg(node.id, code_printer);
-                code_printer.print_addi(rd, GPR_IDX_SP, 
-                    (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                    code_printer.print_addi(rd, GPR_IDX_SP, 
+                        (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                } else {
+                    code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
+                    if named_mem_loc.offset != 0 {
+                        code_printer.print_addi(rd, rd, named_mem_loc.offset as isize).unwrap();
+                    }
+                }
             }
             IRDAGNodeCons::Write(loc, source) => {
                 match &loc {
                     IRDAGMemLoc::Named(named_mem_loc) => {
-                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
-                        self.unpin_gpr(rs);
-                        let rd = self.assign_reg(node.id, code_printer);
-                        let var_state = self.vars.get_mut(var_id).unwrap();
-                        // look at current location of the variable
-                        if let VarLocation::GPR(old_reg_id) = var_state.loc {
-                            // disassociate the old reg and node
-                            if let GPRState::Taken(node_id) = self.gpr_states[old_reg_id] {
-                                self.temps.get_mut(&node_id).unwrap().var = None;
+                        if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                            self.unpin_gpr(rs);
+                            let rd = self.assign_reg(node.id, code_printer);
+                            let var_state = self.vars.get_mut(var_id).unwrap();
+                            // look at current location of the variable
+                            if let VarLocation::GPR(old_reg_id) = var_state.loc {
+                                // disassociate the old reg and node
+                                if let GPRState::Taken(node_id) = self.gpr_states[old_reg_id] {
+                                    self.temps.get_mut(&node_id).unwrap().var = None;
+                                }
                             }
-                        }
-                        
-                        var_state.loc = VarLocation::GPR(rd);
-                        var_state.dirty = true;
-                        self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
+                            
+                            var_state.loc = VarLocation::GPR(rd);
+                            var_state.dirty = true;
+                            self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
 
-                        if rd != rs {
-                            code_printer.print_mv(rd, rs).unwrap();
+                            if rd != rs {
+                                code_printer.print_mv(rd, rs).unwrap();
+                            }
+                        } else {
+                            let rd = self.assign_reg(node.id, code_printer); // FIXME: the result doesn't actually reside here
+                            self.unpin_gpr(rs);
+                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
+                            code_printer.print_sd(rs, rd, named_mem_loc.offset as isize).unwrap();
                         }
                     }
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
@@ -408,12 +420,19 @@ impl FunctionCodeGen {
                         let r_val = self.prepare_source_reg(source.borrow().id, code_printer);
                         let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
                         self.unpin_gpr(r_offset);
-                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
-                        let rd = self.assign_reg(node.id, code_printer);
-                        self.unpin_gpr(r_val);
+                        if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                            let rd = self.assign_reg(node.id, code_printer);
+                            self.unpin_gpr(r_val);
 
-                        code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
-                        code_printer.print_sd(r_val, rd, (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                            code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
+                            code_printer.print_sd(r_val, rd, (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                        } else {
+                            let rd = self.assign_reg(node.id, code_printer); // FIXME: need to set the result reg correctly
+                            self.unpin_gpr(r_val);
+                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
+                            code_printer.print_add(rd, rd, r_offset).unwrap();
+                            code_printer.print_sd(r_val, rd, named_mem_loc.offset as isize).unwrap();
+                        }
                     }
                     IRDAGMemLoc::Addr(addr) => {
                         let rs1 = self.prepare_source_reg(source.borrow().id, code_printer);
@@ -428,45 +447,59 @@ impl FunctionCodeGen {
                 // see where it is right now
                 match mem_loc {
                     IRDAGMemLoc::Named(named_mem_loc) => {
-                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
-                        let var_state = self.vars.get(var_id).unwrap();
+                        if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                            let var_state = self.vars.get(var_id).unwrap();
+                            // local variable
 
-                        // look at current location of the variable
-                        let _ = match var_state.loc {
-                            VarLocation::GPR(reg_id) => {
-                                // already in a register
-                                // just grab the register
-                                if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
-                                    self.temps.get_mut(&node_id).unwrap().var = None; // disassociate with old node
+                            // look at current location of the variable
+                            let _ = match var_state.loc {
+                                VarLocation::GPR(reg_id) => {
+                                    // already in a register
+                                    // just grab the register
+                                    if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
+                                        self.temps.get_mut(&node_id).unwrap().var = None; // disassociate with old node
+                                    }
+                                    self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(reg_id);
+                                    self.gpr_states[reg_id] = GPRState::Taken(node.id);
+                                    reg_id
                                 }
-                                self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(reg_id);
-                                self.gpr_states[reg_id] = GPRState::Taken(node.id);
-                                reg_id
-                            }
-                            VarLocation::StackSlot => {
-                                // need to load from stack
-                                let stack_slot = var_state.stack_slot;
-                                let reg_id = self.assign_reg(node.id, code_printer);
-                                let var_state_mut = self.vars.get_mut(var_id).unwrap();
-                                var_state_mut.dirty = false; // just loaded, not dirty
-                                var_state_mut.loc = VarLocation::GPR(reg_id);
-                                code_printer.print_load_from_stack_slot(reg_id, stack_slot).unwrap();
-                                reg_id
-                            }
-                        };
-                        self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
+                                VarLocation::StackSlot => {
+                                    // need to load from stack
+                                    let stack_slot = var_state.stack_slot;
+                                    let reg_id = self.assign_reg(node.id, code_printer);
+                                    let var_state_mut = self.vars.get_mut(var_id).unwrap();
+                                    var_state_mut.dirty = false; // just loaded, not dirty
+                                    var_state_mut.loc = VarLocation::GPR(reg_id);
+                                    code_printer.print_load_from_stack_slot(reg_id, stack_slot).unwrap();
+                                    reg_id
+                                }
+                            };
+                            self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
+                        } else {
+                            // global variable
+                            let rd = self.assign_reg(node.id, code_printer);
+                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
+                            code_printer.print_ld(rd, rd, named_mem_loc.offset as isize).unwrap();
+                        }
                     }
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
                         // FIXME: write back everything dirty in offset range
 
                         let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
-                        self.unpin_gpr(r_offset);
                         // get address
-                        let var_id = *self.vars_to_ids.get(named_mem_loc).unwrap();
-                        let rd = self.assign_reg(node.id, code_printer);
-                        code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
-                        code_printer.print_ld(rd, rd,
-                            (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                        if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                            self.unpin_gpr(r_offset);
+                            let rd = self.assign_reg(node.id, code_printer);
+                            code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
+                            code_printer.print_ld(rd, rd,
+                                (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                        } else {
+                            let rd = self.assign_reg(node.id, code_printer);
+                            self.unpin_gpr(r_offset);
+                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
+                            code_printer.print_add(rd, rd, r_offset).unwrap();
+                            code_printer.print_ld(rd, rd, named_mem_loc.offset as isize).unwrap();
+                        }
                     }
                     IRDAGMemLoc::Addr(addr) => {
                         let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
@@ -609,7 +642,7 @@ impl FunctionCodeGen {
     }
 
     // this consumes codegen itself as codegen can only happen once
-    fn codegen(mut self, func: CaplanFunction, ctx: &mut GlobalCodeGenContext) {
+    fn codegen<Out>(mut self, func: CaplanFunction, ctx: &mut GlobalCodeGenContext, out: &mut Out) where Out: std::io::Write {
         eprintln!("Codegen for function {}", func.name);
 
         let mut prologue_code_printer: CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new());
@@ -690,30 +723,37 @@ impl FunctionCodeGen {
         self.generate_prologue(&func, &mut prologue_code_printer);
         self.generate_epilogue(&func, &mut main_code_printer);
 
-        let mut stdout = std::io::stdout();
-        stdout.write_all(&prologue_code_printer.get_out()).unwrap();
-        stdout.write_all(&main_code_printer.get_out()).unwrap();
-        writeln!(&mut stdout).unwrap();
+        out.write_all(&prologue_code_printer.get_out()).unwrap();
+        out.write_all(&main_code_printer.get_out()).unwrap();
+        writeln!(out).unwrap();
     }
 }
 
-pub struct CodeGen {
+pub struct CodeGen<Out> where Out: std::io::Write {
     translation_unit: CaplanTranslationUnit,
-    ctx: GlobalCodeGenContext
+    ctx: GlobalCodeGenContext,
+    out: Out
 }
 
-impl CodeGen {
-    pub fn new(translation_unit: CaplanTranslationUnit) -> Self {
+impl<Out> CodeGen<Out> where Out: std::io::Write {
+    pub fn new(translation_unit: CaplanTranslationUnit, out: Out) -> Self {
         Self {
             translation_unit: translation_unit,
-            ctx: GlobalCodeGenContext::new()
+            ctx: GlobalCodeGenContext::new(),
+            out: out
         }
     }
 
     pub fn codegen(mut self) {
         for func in self.translation_unit.functions {
             let func_codegen = FunctionCodeGen::new();
-            func_codegen.codegen(func,&mut self.ctx);
+            func_codegen.codegen(func, &mut self.ctx, &mut self.out);
+        }
+
+        // bss declaration
+        for global_var in self.translation_unit.globals.global_vars.iter() {
+            // TODO: throw the io error out
+            writeln!(&mut self.out, ".comm {}, {}", global_var.0, global_var.1.size()).unwrap();
         }
     }
 }

@@ -25,6 +25,11 @@ impl<T> CodePrinter<T> where T: Write {
         }
     }
 
+    pub fn print_la(&mut self, rd: RegId, symbol: &str) ->  Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}la {}, {}", INST_INDENT, REG_NAMES[rd], symbol)?;
+        Ok(())
+    }
+
     pub fn print_li(&mut self, rd: RegId, v: u64) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}li {}, {}", INST_INDENT, REG_NAMES[rd], v)?;
         Ok(())

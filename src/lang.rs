@@ -73,14 +73,16 @@ pub struct CaplanFunction {
 
 pub struct CaplanGlobalContext {
     pub func_decls: HashSet<String>,
-    pub struct_defs: HashMap<String, GCed<CaplanStruct>>
+    pub struct_defs: HashMap<String, GCed<CaplanStruct>>,
+    pub global_vars: HashMap<String, CaplanType>
 }
 
 impl CaplanGlobalContext {
     fn new() -> Self {
         Self {
             func_decls: HashSet::new(),
-            struct_defs: HashMap::new()
+            struct_defs: HashMap::new(),
+            global_vars: HashMap::new()
         }
     }
 }
@@ -194,7 +196,7 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
                     self.globals.func_decls.insert(ident.node.name.clone());
                 }
             }
-            _ => panic!("Unsupported declarator")
+            _ => self.last_type.as_mut().unwrap().decorate_from_ast(derived_declarator)
         }
     }
 
@@ -208,7 +210,7 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
         self.in_global_context = false;
         for struct_decl in struct_decls.iter() {
             if let StructDeclaration::Field(field) = &struct_decl.node {
-                self.last_ident_names.clear();
+                assert!(self.last_ident_names.is_empty());
                 self.visit_struct_field(&field.node, &field.span);
                 let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
                 let last_type = self.last_type.take().unwrap();
@@ -222,6 +224,8 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
         self.in_global_context = true;
 
         eprintln!("Struct added with {} fields", struct_def.borrow().fields.len());
+
+        self.last_type = Some(CaplanType::StructRef(struct_def));
     }
 
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
@@ -238,6 +242,23 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
                 }
             }
             _ => self.last_type = CaplanType::from_ast_type(type_specifier, &self.globals)
+        }
+    }
+
+    fn visit_declaration(&mut self, declaration: &'ast lang_c::ast::Declaration, span: &'ast Span) {
+        for specifier in declaration.specifiers.iter() {
+            self.visit_declaration_specifier(&specifier.node, &specifier.span);
+        }
+        assert!(self.last_ident_names.is_empty());
+        for declarator in declaration.declarators.iter() {
+            self.visit_init_declarator(&declarator.node, &declarator.span);
+        }
+        let ty = self.last_type.take().unwrap();
+        let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
+        // ident_names might be empty in the case of struct
+        for ident_name in ident_names {
+            eprintln!("Global variable {} with type {:?}", ident_name, ty);
+            assert!(self.globals.global_vars.insert(ident_name, ty.clone()).is_none(), "Duplicate global variable declaration");
         }
     }
     
