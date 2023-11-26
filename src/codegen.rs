@@ -331,6 +331,10 @@ impl FunctionCodeGen {
 
     fn generate_node<T>(&mut self, func_name: &str, node: &IRDAGNode, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         eprintln!("Codegen for node {} ({:?})", node.id, node.cons);
+        if node.rev_deps.is_empty() && !node.side_effects {
+            eprintln!("Skipped");
+            return;
+        }
         match &node.cons {
             IRDAGNodeCons::IntConst(val) => {
                 let reg_id = self.assign_reg(node.id, code_printer);

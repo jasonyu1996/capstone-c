@@ -332,7 +332,7 @@ impl IRDAG {
             self.id_counter,
             v.borrow().vtype.clone(),
             IRDAGNodeCons::Write(mem_loc.clone(), v.clone()),
-            false
+            true
         ));
         Self::add_dep(&res, v);
         match &mem_loc {
