@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use std::default;
 
 use crate::lang::{CaplanParam, CaplanGlobalContext};
 use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
-use crate::dag::*;
+use crate::dag::{*, self};
 
 use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator};
 use lang_c::{visit::Visit as ParserVisit,
@@ -226,14 +225,28 @@ impl<'ast> IRDAGBuilder<'ast> {
         self.visit_expression(&expr.rhs.node,
             &expr.rhs.span);
         let r = self.last_temp_res_to_word().unwrap();
-        self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.dag.new_int_binop(op_type, &l, &r)));
+        let l_ref = l.borrow();
+        let r_ref = r.borrow();
+        let res_word = 
+            if let (IRDAGNodeCons::IntConst(l_const), IRDAGNodeCons::IntConst(r_const)) = (&l_ref.cons, &r_ref.cons) {
+                self.dag.new_int_const(dag::static_bin_op(op_type, *l_const, *r_const))
+            } else {
+                drop(l_ref);
+                drop(r_ref); // somehow Rust is stupid
+                self.dag.new_int_binop(op_type, &l, &r)
+            };
+        self.last_temp_res = Some(IRDAGNodeTempResult::Word(res_word));
     }
 
     // integer unary operator expression
     fn process_int_un_expr(&mut self, op_type: IRDAGNodeIntUnOpType, expr: &'ast UnaryOperatorExpression) {
         self.visit_expression(&expr.operand.node, &expr.operand.span);
         let r = self.last_temp_res_to_word().unwrap();
-        self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.dag.new_int_unop(op_type, &r)));
+        let res_word = match &r.borrow().cons {
+            IRDAGNodeCons::IntConst(r_const) => self.dag.new_int_const(dag::static_un_op(op_type, *r_const)),
+            _ => self.dag.new_int_unop(op_type, &r)
+        };
+        self.last_temp_res = Some(IRDAGNodeTempResult::Word(res_word));
     }
 
     fn write_named_mem_loc(&mut self, mem_loc: &IRDAGNamedMemLoc, node: &GCed<IRDAGNode>) {

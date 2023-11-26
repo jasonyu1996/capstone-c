@@ -445,3 +445,31 @@ impl IRDAG {
         println!("}}");
     }
 }
+
+/* Static operations */
+
+pub fn static_bin_op(op: IRDAGNodeIntBinOpType, a: u64, b: u64) -> u64 {
+    match op {
+        IRDAGNodeIntBinOpType::Add => a + b,
+        IRDAGNodeIntBinOpType::Sub => a - b,
+        IRDAGNodeIntBinOpType::Mul => a * b,
+        IRDAGNodeIntBinOpType::Div => a / b,
+        IRDAGNodeIntBinOpType::And => a & b,
+        IRDAGNodeIntBinOpType::Or => a | b,
+        IRDAGNodeIntBinOpType::Xor => a ^ b,
+        IRDAGNodeIntBinOpType::Eq => if a == b { 1 } else { 0 },
+        IRDAGNodeIntBinOpType::NEq => if a == b { 0 } else { 1 },
+        IRDAGNodeIntBinOpType::GreaterThan => if a > b { 1 } else { 0 },
+        IRDAGNodeIntBinOpType::GreaterEq => if a >= b { 1 } else { 0 },
+        IRDAGNodeIntBinOpType::LessThan => if a < b { 1 } else { 0 },
+        IRDAGNodeIntBinOpType::LessEq => if a <= b { 1 } else { 0 },
+    }
+}
+
+pub fn static_un_op(op: IRDAGNodeIntUnOpType, v: u64) -> u64 {
+    match op {
+        IRDAGNodeIntUnOpType::Not => !v,
+        IRDAGNodeIntUnOpType::Negate => if v == 0 { 1 } else { 0 },
+        IRDAGNodeIntUnOpType::Neg => v.wrapping_neg()
+    }
+}
