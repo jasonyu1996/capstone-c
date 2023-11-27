@@ -11,7 +11,8 @@ pub struct CaplanTargetConf {
     pub abi: CaplanABI,
     // width of each register in bytes
     pub register_width: usize,
-    pub min_alignment: usize // TODO: suboptimal
+    pub min_alignment: usize, // TODO: suboptimal
+    pub min_alignment_log: usize
 }
 
 impl CaplanTargetConf {
@@ -23,7 +24,8 @@ impl CaplanTargetConf {
         Self {
             abi: abi,
             register_width: clen,
-            min_alignment: clen
+            min_alignment: clen,
+            min_alignment_log: if clen == 8 { 3 } else { 4 }
         }
     }
 

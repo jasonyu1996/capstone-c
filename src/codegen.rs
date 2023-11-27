@@ -5,7 +5,7 @@ use std::process::exit;
 
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
-use crate::utils::GCed;
+use crate::utils::{GCed, align_up_to};
 
 mod code_printer;
 mod arch_defs;
@@ -206,19 +206,16 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         code_printer.print_label(&func_label).unwrap();
 
         // now we know how much stack space is needed
-        let mut stack_frame_size = self.stack_frame.size();
+        let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log); // this makes sure that all stack frames are aligned
         let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
-        if clobbered_callee_saved_n > 0 && stack_frame_size % 16 != 0 {
-            stack_frame_size += 8;
-        }
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + 16 * clobbered_callee_saved_n) as isize)).unwrap();
+        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_callee_saved_n) as isize)).unwrap();
 
 
         for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
             // clobbered callee-saved registers need saving here
             assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
             code_printer.print_store_to_stack(*reg_id, stack_frame_size).unwrap();
-            stack_frame_size += 16;
+            stack_frame_size += self.globals.target_conf.min_alignment;
         }
 
         // shift params to stack
@@ -235,16 +232,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     fn generate_epilogue<T>(&mut self, func: &CaplanFunction, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         code_printer.print_label(&self.gen_func_ret_label(&func.name)).unwrap();
 
-        let mut stack_frame_size = self.stack_frame.size();
+        let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log);
 
         for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
-            if stack_frame_size % 16 != 0  {
-                stack_frame_size += 8;
-            }
             // clobbered callee-saved registers need restoring here
             // TODO: 16 byte loading
             code_printer.print_load_from_stack(*reg_id, stack_frame_size).unwrap();
-            stack_frame_size += 16;
+            stack_frame_size += self.globals.target_conf.min_alignment;
         }
 
         code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, stack_frame_size as isize).unwrap();
@@ -779,11 +773,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
 
         for (local_name, local_type) in func.locals.iter() {
-            let base_offset = if local_type.alignment(&self.globals.target_conf) == 8 || self.stack_frame.tot_stack_slot_size % 16 == 0 {
-                self.stack_frame.tot_stack_slot_size
-            } else {
-                self.stack_frame.tot_stack_slot_size + 8
-            };
+            let align_log = if local_type.alignment(&self.globals.target_conf) == 8 { 3 } else { 4 };
+            let base_offset = align_up_to(self.stack_frame.tot_stack_slot_size, align_log);
             local_type.visit_offset(&mut|offset, size| {
                 let mem_loc = IRDAGNamedMemLoc {
                     var_name: local_name.clone(),

@@ -35,6 +35,18 @@ impl IRDAGNodeVType {
             _ => false
         }
     }
+
+    pub fn from_caplan_type(caplan_type: &CaplanType) -> Option<Self> {
+        match caplan_type {
+            CaplanType::Void => Some(IRDAGNodeVType::Void),
+            CaplanType::Dom => Some(IRDAGNodeVType::Dom),
+            CaplanType::Int => Some(IRDAGNodeVType::Int),
+            CaplanType::RawPtr(inner_type) => Some(IRDAGNodeVType::RawPtr(*inner_type.clone())),
+            CaplanType::LinPtr(inner_type) => Some(IRDAGNodeVType::LinPtr(*inner_type.clone())),
+            CaplanType::NonlinPtr(inner_type) => Some(IRDAGNodeVType::NonlinPtr(*inner_type.clone())),
+            _ => None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -105,6 +117,13 @@ impl IRDAGMemLoc {
                 IRDAGMemLoc::NamedWithDynOffset(named_mem_loc.apply_offset(offset), dyn_offset, offset_range)
         }
     }
+
+    // type of the value stored at the memory location
+    // pub fn get_type(&self) -> &CaplanType {
+        // match self {
+        //     IRDAGMemLoc::Named(mem_loc)
+        // }
+    // }
 }
 
 #[derive(Copy, Clone, Debug)]

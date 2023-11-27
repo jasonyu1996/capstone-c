@@ -59,7 +59,7 @@ pub struct IRDAGBuilder<'ast> {
 
 impl<'ast> IRDAGBuilder<'ast> {
     pub fn new(globals: &'ast CaplanGlobalContext) -> Self {
-        let mut dag = IRDAG::new();
+        let dag = IRDAG::new();
         let mut res = Self {
             dag: dag,
             locals: HashMap::new(),
@@ -163,11 +163,11 @@ impl<'ast> IRDAGBuilder<'ast> {
         res
     }
 
-    pub fn new_read(&mut self, mem_loc: IRDAGMemLoc) -> GCed<IRDAGNode> {
+    pub fn new_read(&mut self, mem_loc: IRDAGMemLoc, ty: IRDAGNodeVType) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
             // TODO: should be looked up, assuming int for now
-            IRDAGNodeVType::Int,
+            ty,
             IRDAGNodeCons::Read(mem_loc.clone()),
             false
         ));
@@ -320,6 +320,14 @@ impl<'ast> IRDAGBuilder<'ast> {
         self.locals.get(v)
     }
 
+    fn lookup_identifier_type<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
+        self.lookup_local_imm(v).or_else(
+            || {
+                self.globals.global_vars.get(v)
+            }
+        )
+    }
+
     fn push_loop_info(&mut self, break_target: &GCed<IRDAGNode>, continue_target: &GCed<IRDAGNode>) {
         self.break_targets.push(break_target.clone());
         self.continue_targets.push(continue_target.clone());
@@ -330,16 +338,16 @@ impl<'ast> IRDAGBuilder<'ast> {
         self.continue_targets.pop().unwrap();
     }
 
-    fn read_location(&mut self, loc: &IRDAGMemLoc) -> GCed<IRDAGNode> {
+    fn read_location(&mut self, loc: &IRDAGMemLoc, ty: IRDAGNodeVType) -> GCed<IRDAGNode> {
         match loc {
-            IRDAGMemLoc::Addr(_) => self.new_read(loc.clone()),
+            IRDAGMemLoc::Addr(_) => self.new_read(loc.clone(), ty),
             IRDAGMemLoc::Named(named_mem_loc) => {
-                let read_node = self.new_read(loc.clone());
+                let read_node = self.new_read(loc.clone(), ty);
                 self.read_named_mem_loc(named_mem_loc, &read_node);
                 read_node
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
-                let read_node = self.new_read(loc.clone());
+                let read_node = self.new_read(loc.clone(), ty);
                 for offset in offset_range.clone().step_by(self.globals.target_conf.register_width) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset); // TODO: very brute force
                     self.read_named_mem_loc(&covered_loc, &read_node);
@@ -394,7 +402,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                         let size = lval.ty.size(&self.globals.target_conf);
                         if size <= 8 {
                             // read the variable location
-                            Some(self.read_location(&lval.loc))
+                            Some(self.read_location(&lval.loc, IRDAGNodeVType::from_caplan_type(&lval.ty).unwrap()))
                         } else if size <= 16 {
                             // TODO: implement: loading a capability
                             None
@@ -423,7 +431,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                             CaplanType::Array(inner_type, _) =>
                                 Some(IRDAGLVal { ty: *inner_type, loc: loc }),
                             CaplanType::RawPtr(inner_type) =>
-                                Some(IRDAGLVal { ty: *inner_type, loc: IRDAGMemLoc::Addr(self.read_location(&loc)) }),
+                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::RawPtr(*inner_type))) }),
                             _ => None
                         }
                     }
@@ -517,7 +525,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                             for (elem_offset, elem_size) in offset_collection {
                                 let lhs_loc = lhs_loc_base.clone().apply_offset(elem_offset as isize, self);
                                 let rhs_loc = rhs_loc_base.clone().apply_offset(elem_offset as isize, self);
-                                let read_res = self.read_location(&rhs_loc);
+                                let read_res = self.read_location(&rhs_loc, IRDAGNodeVType::Int); // FIXME: this type should be looked up in type def
                                 if elem_size <= 8 {
                                     self.write_location(&lhs_loc, &read_res);
                                 } else {
