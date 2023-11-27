@@ -53,7 +53,7 @@ struct Args {
 fn target_conf_from_args(args: &Args) -> Option<CaplanTargetConf> {
     let abi_op = match args.abi.as_str() {
         "riscv64" => Some(CaplanABI::RISCV64),
-        "capstone" => Some(CaplanABI::CAPSTONE_CG_NL_SD),
+        "capstone" => Some(CaplanABI::CapstoneCGNLSD),
         _ => None
     };
     abi_op.map(|abi| CaplanTargetConf::new(abi))

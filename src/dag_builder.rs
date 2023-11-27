@@ -287,7 +287,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                 params: &[CaplanParam]) {
         for param in params.iter() {
             self.locals.insert(param.name.clone(), param.ty.clone());
-            for offset in (0..param.ty.size(&self.globals.target_conf)).step_by(8) {
+            for offset in (0..param.ty.size(&self.globals.target_conf)).step_by(self.globals.target_conf.register_width) {
                 self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: param.name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());
             }
         }
@@ -329,7 +329,7 @@ impl<'ast> IRDAGBuilder<'ast> {
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
                 let read_node = self.new_read(loc.clone());
-                for offset in offset_range.clone().step_by(8) {
+                for offset in offset_range.clone().step_by(self.globals.target_conf.register_width) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset); // TODO: very brute force
                     self.read_named_mem_loc(&covered_loc, &read_node);
                 }
@@ -361,7 +361,7 @@ impl<'ast> IRDAGBuilder<'ast> {
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
                 let write_node = self.new_write(loc.clone(), val);
-                for offset in offset_range.clone().step_by(8) {
+                for offset in offset_range.clone().step_by(self.globals.target_conf.register_width) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset);
                     self.write_named_mem_loc(&covered_loc, &write_node);
                 }
@@ -380,11 +380,16 @@ impl<'ast> IRDAGBuilder<'ast> {
                         Some(self.get_address(elem_lval))
                     }
                     _ => {
-                        if lval.ty.size(&self.globals.target_conf) > 8 {
-                            None
-                        } else {
+                        let size = lval.ty.size(&self.globals.target_conf);
+                        if size <= 8 {
                             // read the variable location
                             Some(self.read_location(&lval.loc))
+                        } else if size <= 16 {
+                            // TODO: implement: loading a capability
+                            None
+                            // Some(self.read_location_cap(&lval.loc))
+                        } else {
+                            None
                         }
                     }
                 }
@@ -497,11 +502,11 @@ impl<'ast> IRDAGBuilder<'ast> {
                         } else {
                             let mut lhs_loc = lval.loc;
                             let mut rhs_loc = rhs_lval.loc;
-                            for _ in (0..size).step_by(8) {
+                            for _ in (0..size).step_by(self.globals.target_conf.register_width) {
                                 let read_res = self.read_location(&rhs_loc);
                                 self.write_location(&lhs_loc, &read_res);
-                                lhs_loc = lhs_loc.apply_offset(8, self);
-                                rhs_loc = rhs_loc.apply_offset(8, self);
+                                lhs_loc = lhs_loc.apply_offset(self.globals.target_conf.register_width as isize, self);
+                                rhs_loc = rhs_loc.apply_offset(self.globals.target_conf.register_width as isize, self);
                             }
                         }
                     }
@@ -524,7 +529,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let cond = self.last_temp_res_to_word().unwrap();
         let label_then = self.new_label();
         let label_taken = self.new_label();
-        let branch_node = self.new_branch(&label_taken, &cond);
+        let _ = self.new_branch(&label_taken, &cond);
         self.new_block_reset();
         let _ = self.new_jump(&label_then);
         self.new_block_reset();
@@ -929,7 +934,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let r = self.last_temp_res.take().unwrap();
         let size = match r {
             IRDAGNodeTempResult::LVal(lval) => lval.ty.size(&self.globals.target_conf),
-            IRDAGNodeTempResult::Word(_) => 8
+            IRDAGNodeTempResult::Word(wd) => wd.borrow().vtype.size()
         };
         self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.new_int_const(size as u64)));
     }
@@ -1000,7 +1005,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let name = self.decl_id_name.take().unwrap();
         let ty = self.decl_type.as_ref().unwrap().clone();
         self.locals.insert(name.clone(),ty.clone());
-        for offset in (0..ty.size(&self.globals.target_conf)).step_by(8) {
+        for offset in (0..ty.size(&self.globals.target_conf)).step_by(self.globals.target_conf.register_width) {
             self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());
         }
         if let Some(initializer_node) = init_declarator.initializer.as_ref() {

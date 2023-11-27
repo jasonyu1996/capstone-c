@@ -1,3 +1,5 @@
+use crate::target_conf::{CaplanTargetConf, self};
+
 use super::arch_defs::*;
 use std::io::Write;
 
@@ -12,16 +14,17 @@ const REG_NAMES : [&'static str; GPR_N] = [
 ];
 
 const INST_INDENT : &'static str = "  ";
-const STACK_SLOT_SIZE : usize = 8;
 
 pub struct CodePrinter<T> where T: Write {
-    out: T
+    out: T,
+    target_conf: CaplanTargetConf
 }
 
 impl<T> CodePrinter<T> where T: Write {
-    pub fn new(out: T) -> Self {
+    pub fn new(out: T, target_conf: CaplanTargetConf) -> Self {
         Self {
-            out: out
+            out: out,
+            target_conf: target_conf
         }
     }
 
@@ -36,12 +39,12 @@ impl<T> CodePrinter<T> where T: Write {
     }
 
     pub fn print_load_from_stack_slot(&mut self, rd: RegId, slot: usize) -> Result<(), std::io::Error> {
-        writeln!(&mut self.out, "{}ld {}, {}(sp)", INST_INDENT, REG_NAMES[rd], STACK_SLOT_SIZE * slot)?;
+        writeln!(&mut self.out, "{}ld {}, {}(sp)", INST_INDENT, REG_NAMES[rd], self.target_conf.register_width * slot)?;
         Ok(())
     }
 
     pub fn print_store_to_stack_slot(&mut self, rs: RegId, slot: usize) -> Result<(), std::io::Error> {
-        writeln!(&mut self.out, "{}sd {}, {}(sp)", INST_INDENT, REG_NAMES[rs], STACK_SLOT_SIZE * slot)?;
+        writeln!(&mut self.out, "{}sd {}, {}(sp)", INST_INDENT, REG_NAMES[rs], self.target_conf.register_width * slot)?;
         Ok(())
     }
 

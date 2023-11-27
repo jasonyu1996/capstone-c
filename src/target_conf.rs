@@ -3,7 +3,7 @@ use crate::lang_defs::CaplanType;
 #[derive(Clone, Debug)]
 pub enum CaplanABI {
     RISCV64,
-    CAPSTONE_CG_NL_SD
+    CapstoneCGNLSD
 }
 
 #[derive(Clone, Debug)]
@@ -18,7 +18,7 @@ impl CaplanTargetConf {
     pub fn new(abi: CaplanABI) -> Self {
         let clen = match &abi {
             CaplanABI::RISCV64 => 8,
-            CaplanABI::CAPSTONE_CG_NL_SD => 16
+            CaplanABI::CapstoneCGNLSD => 16
         };
         Self {
             abi: abi,
@@ -31,7 +31,7 @@ impl CaplanTargetConf {
         let t = std::mem::replace(ty, CaplanType::Void);
         *ty = match &self.abi {
             CaplanABI::RISCV64 => CaplanType::RawPtr(Box::new(t)),
-            CaplanABI::CAPSTONE_CG_NL_SD => CaplanType::NonlinPtr(Box::new(t))
+            CaplanABI::CapstoneCGNLSD => CaplanType::NonlinPtr(Box::new(t))
         };
     }
 }

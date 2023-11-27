@@ -102,7 +102,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         // now we know how much stack space is needed
         let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len();
         let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -((tot_stack_slot_n + clobbered_callee_saved_n) as isize * 8)).unwrap();
+        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -(((tot_stack_slot_n + clobbered_callee_saved_n) * self.globals.target_conf.register_width) as isize)).unwrap();
 
 
         for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
@@ -134,7 +134,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             tot_stack_slot_n += 1;
         }
 
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, tot_stack_slot_n as isize * 8).unwrap();
+        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, (tot_stack_slot_n * self.globals.target_conf.register_width) as isize).unwrap();
         code_printer.print_ret().unwrap();
     }
 
@@ -378,7 +378,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let rd = self.assign_reg(node.id, code_printer);
                 if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                     code_printer.print_addi(rd, GPR_IDX_SP, 
-                        (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                        (self.vars.get(var_id).unwrap().stack_slot * self.globals.target_conf.register_width) as isize).unwrap();
                 } else {
                     code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                     if named_mem_loc.offset != 0 {
@@ -427,7 +427,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.unpin_gpr(r_val);
 
                             code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
-                            code_printer.print_sd(r_val, rd, (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                            code_printer.print_sd(r_val, rd, (self.vars.get(var_id).unwrap().stack_slot * self.globals.target_conf.register_width) as isize).unwrap();
                         } else {
                             let rd = self.assign_reg(node.id, code_printer); // FIXME: need to set the result reg correctly
                             self.unpin_gpr(r_val);
@@ -494,7 +494,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             let rd = self.assign_reg(node.id, code_printer);
                             code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
                             code_printer.print_ld(rd, rd,
-                                (self.vars.get(var_id).unwrap().stack_slot * 8) as isize).unwrap();
+                                (self.vars.get(var_id).unwrap().stack_slot * self.globals.target_conf.register_width) as isize).unwrap();
                         } else {
                             let rd = self.assign_reg(node.id, code_printer);
                             self.unpin_gpr(r_offset);
@@ -647,8 +647,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     fn codegen<Out>(mut self, func: CaplanFunction, ctx: &mut GlobalCodeGenContext, out: &mut Out) where Out: std::io::Write {
         eprintln!("Codegen for function {}", func.name);
 
-        let mut prologue_code_printer: CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new());
-        let mut main_code_printer : CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new());
+        let mut prologue_code_printer: CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new(), self.globals.target_conf.clone());
+        let mut main_code_printer : CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new(), self.globals.target_conf.clone());
 
         // for all variables that ever appear, allocate one stack slot
         // we handle parameters in the same way
@@ -671,7 +671,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
         for (local_name, local_type) in func.locals.iter() {
             let size = local_type.size(&self.globals.target_conf);
-            for offset in (0..size).step_by(8) {
+            for offset in (0..size).step_by(self.globals.target_conf.register_width) {
                 let mem_loc = IRDAGNamedMemLoc {
                     var_name: local_name.clone(),
                     offset: offset

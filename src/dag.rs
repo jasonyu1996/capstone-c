@@ -11,8 +11,30 @@ pub enum IRDAGNodeVType {
     RawPtr(CaplanType), // TODO: probably we don't need this info here
     LinPtr(CaplanType),
     NonlinPtr(CaplanType),
-    Label,
-    Func
+    Label
+}
+
+impl IRDAGNodeVType {
+    pub fn size(&self) -> usize {
+        match self {
+            IRDAGNodeVType::Void => 8,
+            IRDAGNodeVType::Int => 8,
+            IRDAGNodeVType::Dom => 16,
+            IRDAGNodeVType::RawPtr(_) => 8,
+            IRDAGNodeVType::LinPtr(_) => 16,
+            IRDAGNodeVType::NonlinPtr(_) => 16,
+            IRDAGNodeVType::Label => 8 // TODO: labels don't really have a size
+        }
+    }
+
+    // returns if the type is linear (i.e., it cannot be duplicated)
+    pub fn is_linear(&self) -> bool {
+        match self {
+            IRDAGNodeVType::LinPtr(_) => true,
+            IRDAGNodeVType::Dom => true,
+            _ => false
+        }
+    }
 }
 
 #[derive(Debug)]
