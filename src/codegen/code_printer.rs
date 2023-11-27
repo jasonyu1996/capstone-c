@@ -168,6 +168,11 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
+    pub fn print_asm(&mut self, asm: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}{}", INST_INDENT, asm)?;
+        Ok(())
+    }
+
     pub fn get_out(self) -> T {
         self.out
     }

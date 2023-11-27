@@ -154,7 +154,9 @@ pub enum IRDAGNodeCons {
     // Label(None) is a label that has not been placed
     Label(Option<usize>),
     // take the address of a symbol
-    AddressOf(IRDAGNamedMemLoc)
+    AddressOf(IRDAGNamedMemLoc),
+    // inline assembly
+    Asm(String)
 }
 
 impl std::fmt::Debug for IRDAGNodeCons {
@@ -174,7 +176,8 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::Read(_) => write!(f, "Read"),
             Self::Write(_, _) => write!(f, "Write"),
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
-            Self::AddressOf(_) => write!(f, "AddressOf")
+            Self::AddressOf(_) => write!(f, "AddressOf"),
+            Self::Asm(arg0) => f.debug_tuple("Asm").field(arg0).finish()
         }
     }
 }

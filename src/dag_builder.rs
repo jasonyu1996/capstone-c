@@ -5,7 +5,7 @@ use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
 use crate::dag::{*, self};
 
-use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator};
+use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator, AsmStatement};
 use lang_c::{visit::Visit as ParserVisit,
     ast::{FunctionDefinition, Expression, CallExpression, Statement, 
         BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
@@ -276,6 +276,17 @@ impl<'ast> IRDAGBuilder<'ast> {
             IRDAGNodeVType::RawPtr(ty),
             IRDAGNodeCons::AddressOf(named_mem_loc),
             false
+        ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_asm(&mut self, asm: String) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::Asm(asm),
+            true
         ));
         self.add_nonlabel_node(&res);
         res
@@ -700,6 +711,19 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         }
     }
 
+    fn visit_asm_statement(&mut self, asm_statement: &'ast lang_c::ast::AsmStatement, span: &'ast Span) {
+        match asm_statement {
+            AsmStatement::GnuBasic(basic_asm) => {
+                let asm = basic_asm.node.join("").replace("\"", "");
+                // place it in a separate basic block to maintain order (TODO: we might not want to do this)
+                self.new_block_reset();
+                self.new_asm(asm);
+                self.new_block_reset();
+            }
+            AsmStatement::GnuExtended(_) => panic!("Extended assembly statement not supported")
+        }
+    }
+
     fn visit_statement(&mut self, statement: &'ast Statement, span: &'ast Span) {
         match statement {
             Statement::Continue => {
@@ -728,6 +752,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 compound.iter().for_each(|block_item_node| self.visit_block_item(&block_item_node.node, &block_item_node.span)),
             Statement::Labeled(labeled_stmt) => self.visit_labeled_statement(&labeled_stmt.node, &labeled_stmt.span),
             Statement::Switch(switch_stmt) => self.visit_switch_statement(&switch_stmt.node, &switch_stmt.span),
+            Statement::Asm(asm_stmt) => self.visit_asm_statement(&asm_stmt.node, &asm_stmt.span),
             _ => panic!("Unsupported statement {:?}", statement)
         }
     }

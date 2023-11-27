@@ -564,6 +564,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id);
                 self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
             }
+            IRDAGNodeCons::Asm(asm) => {
+                code_printer.print_asm(asm).unwrap();
+            }
             _ => {
                 panic!("Unrecognised node {:?}", node.cons);
             }
