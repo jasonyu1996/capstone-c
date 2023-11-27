@@ -298,9 +298,9 @@ impl<'ast> IRDAGBuilder<'ast> {
                 params: &[CaplanParam]) {
         for param in params.iter() {
             self.locals.insert(param.name.clone(), param.ty.clone());
-            for offset in (0..param.ty.size(&self.globals.target_conf)).step_by(self.globals.target_conf.register_width) {
+            param.ty.visit_offset(&mut |offset, _| {
                 self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: param.name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());
-            }
+            }, 0, &self.globals.target_conf);
         }
         self.visit_function_definition(ast, span);
         // self.dag.pretty_print();
@@ -511,13 +511,19 @@ impl<'ast> IRDAGBuilder<'ast> {
                         if size != rhs_lval.ty.size(&self.globals.target_conf) {
                             panic!("Size mismatch for assignment");
                         } else {
-                            let mut lhs_loc = lval.loc;
-                            let mut rhs_loc = rhs_lval.loc;
-                            for _ in (0..size).step_by(self.globals.target_conf.register_width) {
+                            let lhs_loc_base = lval.loc;
+                            let rhs_loc_base = rhs_lval.loc;
+                            let offset_collection = lval.ty.collect_offsets(&self.globals.target_conf);
+                            for (elem_offset, elem_size) in offset_collection {
+                                let lhs_loc = lhs_loc_base.clone().apply_offset(elem_offset as isize, self);
+                                let rhs_loc = rhs_loc_base.clone().apply_offset(elem_offset as isize, self);
                                 let read_res = self.read_location(&rhs_loc);
-                                self.write_location(&lhs_loc, &read_res);
-                                lhs_loc = lhs_loc.apply_offset(self.globals.target_conf.register_width as isize, self);
-                                rhs_loc = rhs_loc.apply_offset(self.globals.target_conf.register_width as isize, self);
+                                if elem_size <= 8 {
+                                    self.write_location(&lhs_loc, &read_res);
+                                } else {
+                                    // TODO: write capability here
+                                    panic!("Writing capability unimplemented");
+                                }
                             }
                         }
                     }
@@ -1030,7 +1036,8 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let name = self.decl_id_name.take().unwrap();
         let ty = self.decl_type.as_ref().unwrap().clone();
         self.locals.insert(name.clone(),ty.clone());
-        for offset in (0..ty.size(&self.globals.target_conf)).step_by(self.globals.target_conf.register_width) {
+        let offset_collection = ty.collect_offsets(&self.globals.target_conf);
+        for (offset, _) in offset_collection {
             self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());
         }
         if let Some(initializer_node) = init_declarator.initializer.as_ref() {

@@ -32,15 +32,15 @@ enum VarLocation {
 }
 
 enum TempLocation {
-    SpilledStackSlot(usize),
+    SpilledStackSlot(usize, usize),
     GPR(RegId),
     Nowhere
 }
 
 #[derive(Clone, Copy, Debug)]
 enum GPRState {
-    Taken(IRDAGNodeId), // stores the result of node with id
-    Pinned(IRDAGNodeId), // pin a reg if it is going to be used immediately
+    Taken(IRDAGNodeId, usize), // stores the result of node with id
+    Pinned(IRDAGNodeId, usize), // pin a reg if it is going to be used immediately
     Reserved,
     Free
 }
@@ -63,6 +63,114 @@ struct TempState {
     rev_deps_to_eval: usize
 }
 
+struct StackSlotInfo {
+    offset: usize,
+    size: usize
+}
+
+// arrangement from high to low: spilled regs, local vars
+struct StackFrame {
+    stack_slots: Vec<StackSlotInfo>,
+    tot_stack_slot_size: usize,
+    // assuming 16-byte alignment
+    spilled_stack_slots: Vec<SpilledStackSlotState>, // spilled slots are of fixed 8-byte size
+}
+
+impl StackFrame {
+    fn new() -> Self {
+        Self {
+            stack_slots: Vec::new(),
+            tot_stack_slot_size: 0,
+            spilled_stack_slots: Vec::new()
+        }
+    }
+
+    fn allocate_stack_slot(&mut self, size: usize) -> usize {
+        if size > 8 && self.tot_stack_slot_size % 16 != 0 {
+            // capability needs 16-byte alignment
+            self.tot_stack_slot_size += 8;
+        }
+        self.stack_slots.push(StackSlotInfo { offset: self.tot_stack_slot_size, size: size });
+        self.tot_stack_slot_size += size;
+        self.stack_slots.len() - 1
+    }
+
+    fn allocate_stack_slot_specified_offset(&mut self, offset: usize, size: usize) -> usize {
+        assert!(offset >= self.tot_stack_slot_size && (size <= 8 || offset % 16 == 0), "Invalid specified offset for stack slot");
+        self.stack_slots.push(StackSlotInfo { offset: offset, size: size });
+        self.tot_stack_slot_size = offset + size;
+        self.stack_slots.len() - 1
+    }
+
+    fn extend_spill_stack_slots(&mut self, size: usize) -> usize {
+        if size == 16 && self.size() % 16 != 0 {
+            self.spilled_stack_slots.push(SpilledStackSlotState::Free);
+        }
+        let res = self.spilled_stack_slots.len();
+        self.spilled_stack_slots.push(SpilledStackSlotState::Free);
+        if size == 16 {
+            self.spilled_stack_slots.push(SpilledStackSlotState::Free);
+        }
+        res
+    }
+
+    fn spill_stack_slot_offset(&self, slot_id: usize) -> usize {
+        assert!(slot_id < self.spilled_stack_slots.len());
+        self.tot_stack_slot_size + 8 * slot_id
+    }
+
+    fn stack_slot_offset(&self, slot_id: usize) -> usize {
+        self.stack_slots[slot_id].offset
+    }
+
+    // total size
+    fn size(&self) -> usize {
+        self.tot_stack_slot_size + 8 * self.spilled_stack_slots.len()
+    }
+
+    fn find_free_spill_slot(&mut self, size: usize) -> usize {
+        let (start, end, step) = if size == 16 {
+            if self.tot_stack_slot_size % 16 != 0 {
+                (1, self.spilled_stack_slots.len() - 1, 2)
+            } else {
+                (0, self.spilled_stack_slots.len() - 1, 2)
+            }
+        } else {
+            (0, self.spilled_stack_slots.len(), 1)
+        };
+        (start..end).step_by(step).find(|&slot_id| {
+            matches!(self.spilled_stack_slots[slot_id], SpilledStackSlotState::Free) &&
+                (size == 8 || matches!(self.spilled_stack_slots[slot_id + 1], SpilledStackSlotState::Free))
+        }).unwrap_or_else(
+            || {
+                self.extend_spill_stack_slots(size)
+            }
+        )
+    }
+
+    fn take_spill_slots(&mut self, slot_id: usize, node_id: IRDAGNodeId, size: usize) {
+        assert!(matches!(self.spilled_stack_slots[slot_id], SpilledStackSlotState::Free));
+        self.spilled_stack_slots[slot_id] = SpilledStackSlotState::Taken(node_id);
+        if size == 16 {
+            assert!(matches!(self.spilled_stack_slots[slot_id + 1], SpilledStackSlotState::Free));
+            self.spilled_stack_slots[slot_id + 1] = SpilledStackSlotState::Taken(node_id);
+        }
+    }
+
+    fn free_spill_slots(&mut self, slot_id: usize, size: usize) {
+        self.spilled_stack_slots[slot_id] = SpilledStackSlotState::Free;
+        if size == 16 {
+            self.spilled_stack_slots[slot_id + 1] = SpilledStackSlotState::Free;
+        }
+    }
+
+    fn clear_spill_slots(&mut self) {
+        for spill_slot_state in self.spilled_stack_slots.iter_mut() {
+            *spill_slot_state = SpilledStackSlotState::Free;
+        }
+    }
+}
+
 type VarId = usize;
 
 // this just generates code for a single function
@@ -70,9 +178,8 @@ struct FunctionCodeGen<'ctx> {
     globals: &'ctx CaplanGlobalContext,
     vars_to_ids: HashMap<IRDAGNamedMemLoc, VarId>,
     vars: Vec<VarState>,
-    stack_slots: Vec<VarId>,
+    stack_frame: StackFrame,
     temps: HashMap<IRDAGNodeId, TempState>,
-    spilled_stack_slots: Vec<SpilledStackSlotState>,
     op_topo_stack: Vec<GCed<IRDAGNode>>,
     gpr_states: [GPRState; GPR_N],
     // if each GPR is used at all in the function
@@ -85,9 +192,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             globals: globals,
             vars_to_ids: HashMap::new(),
             vars: Vec::new(),
-            stack_slots: Vec::new(),
+            stack_frame: StackFrame::new(),
             temps: HashMap::new(),
-            spilled_stack_slots: Vec::new(),
             op_topo_stack: Vec::new(),
             gpr_states: [GPRState::Free; GPR_N],
             gpr_clobbered: [false; GPR_N]
@@ -100,16 +206,19 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         code_printer.print_label(&func_label).unwrap();
 
         // now we know how much stack space is needed
-        let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len();
+        let mut stack_frame_size = self.stack_frame.size();
         let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -(((tot_stack_slot_n + clobbered_callee_saved_n) * self.globals.target_conf.register_width) as isize)).unwrap();
+        if clobbered_callee_saved_n > 0 && stack_frame_size % 16 != 0 {
+            stack_frame_size += 8;
+        }
+        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + 16 * clobbered_callee_saved_n) as isize)).unwrap();
 
 
         for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
             // clobbered callee-saved registers need saving here
             assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
-            code_printer.print_store_to_stack_slot(*reg_id, tot_stack_slot_n).unwrap();
-            tot_stack_slot_n += 1;
+            code_printer.print_store_to_stack(*reg_id, stack_frame_size).unwrap();
+            stack_frame_size += 16;
         }
 
         // shift params to stack
@@ -119,38 +228,54 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 offset: 0
             };
             let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
-            code_printer.print_store_to_stack_slot(GPR_PARAMS[param_idx], self.vars[var_id].stack_slot).unwrap();
+            code_printer.print_store_to_stack(GPR_PARAMS[param_idx], self.stack_frame.stack_slot_offset(self.vars[var_id].stack_slot)).unwrap();
         }
     }
 
     fn generate_epilogue<T>(&mut self, func: &CaplanFunction, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         code_printer.print_label(&self.gen_func_ret_label(&func.name)).unwrap();
 
-        let mut tot_stack_slot_n = self.stack_slots.len() + self.spilled_stack_slots.len();
+        let mut stack_frame_size = self.stack_frame.size();
 
         for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
+            if stack_frame_size % 16 != 0  {
+                stack_frame_size += 8;
+            }
             // clobbered callee-saved registers need restoring here
-            code_printer.print_load_from_stack_slot(*reg_id, tot_stack_slot_n).unwrap();
-            tot_stack_slot_n += 1;
+            // TODO: 16 byte loading
+            code_printer.print_load_from_stack(*reg_id, stack_frame_size).unwrap();
+            stack_frame_size += 16;
         }
 
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, (tot_stack_slot_n * self.globals.target_conf.register_width) as isize).unwrap();
+        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, stack_frame_size as isize).unwrap();
         code_printer.print_ret().unwrap();
+    }
+
+    fn reg_size(&self, reg_id: RegId) -> Option<usize> {
+        match &self.gpr_states[reg_id] {
+            GPRState::Free => None,
+            GPRState::Reserved => None,
+            GPRState::Pinned(_, sz) => Some(*sz),
+            GPRState::Taken(_, sz) => Some(*sz)
+        }
     }
 
     fn spill_reg<T>(&mut self, reg_id: RegId, node_id: IRDAGNodeId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // find a spill slot
-        let spill_slot = self.find_free_spill_slot();
-        code_printer.print_store_to_stack_slot(reg_id, self.spill_slot_to_stack_slot(spill_slot)).unwrap();
-        self.spilled_stack_slots[spill_slot] = SpilledStackSlotState::Taken(node_id);
-        self.temps.get_mut(&node_id).unwrap().loc = TempLocation::SpilledStackSlot(spill_slot);
+        let size = self.reg_size(reg_id).unwrap();
+
+        let spill_slot = self.stack_frame.find_free_spill_slot(size);
+        // TODO: 16-byte spilling
+        code_printer.print_store_to_stack(reg_id, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
+        self.stack_frame.take_spill_slots(spill_slot, node_id, size);
+        self.temps.get_mut(&node_id).unwrap().loc = TempLocation::SpilledStackSlot(spill_slot, size);
         self.gpr_states[reg_id] = GPRState::Free;
     }
 
     fn spill_reg_if_taken<T>(&mut self, reg_id: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         match self.gpr_states[reg_id] {
             GPRState::Free => (),
-            GPRState::Taken(node_id) => {
+            GPRState::Taken(node_id, _) => {
                 let temp_state = self.temps.get_mut(&node_id).unwrap();
                 if temp_state.rev_deps_to_eval == 0 {
                     temp_state.loc = TempLocation::Nowhere;
@@ -160,7 +285,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             GPRState::Reserved => panic!("Attempting to spill reserved reg"),
-            GPRState::Pinned(node_id) => panic!("Attempting to spill pinned reg for node {}", node_id)
+            GPRState::Pinned(node_id, _) => panic!("Attempting to spill pinned reg for node {}", node_id)
         }
     }
 
@@ -168,10 +293,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         let dead = self.gpr_states.iter().enumerate().find(
             |(_, s)| {
                 match s {
-                    GPRState::Taken(node_id) => {
+                    GPRState::Taken(node_id, _) => {
                         self.temps.get(node_id).unwrap().rev_deps_to_eval == 0
                     }
-                    GPRState::Pinned(node_id) => {
+                    GPRState::Pinned(node_id, _) => {
                         self.temps.get(node_id).unwrap().rev_deps_to_eval == 0 // FIXME: not done correctly
                     }
                     GPRState::Reserved => false,
@@ -186,7 +311,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             dead_reg
         } else {
             let (reg_to_spill, &mut node_to_spill) = self.gpr_states.iter_mut().enumerate().find_map(|(idx, s)| {
-                if let GPRState::Taken(node_id) = s {
+                if let GPRState::Taken(node_id, _) = s {
                     Some((idx, node_id))
                 } else {
                     None
@@ -197,10 +322,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
     }
 
-    fn try_assign_reg_no_spill(&mut self, node_id: IRDAGNodeId) -> Option<RegId> {
+    fn try_assign_reg_no_spill(&mut self, node_id: IRDAGNodeId, size: usize) -> Option<RegId> {
         self.gpr_states.iter_mut().enumerate().find(|(_, s)| matches!(**s, GPRState::Free)).map(
             |(idx, s)| {
-                *s = GPRState::Taken(node_id);
+                *s = GPRState::Taken(node_id, size);
                 self.gpr_clobbered[idx] = true;
                 self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(idx);
                 idx
@@ -220,45 +345,24 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         format!("_{}.ret", func_name)
     }
     
-    fn assign_reg<T>(&mut self, node_id: IRDAGNodeId, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
-        if let Some(reg_id) = self.try_assign_reg_no_spill(node_id) {
+    fn assign_reg<T>(&mut self, node_id: IRDAGNodeId, size: usize, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
+        if let Some(reg_id) = self.try_assign_reg_no_spill(node_id, size) {
             reg_id
         } else {
             let reg_id = self.spill_any_reg(code_printer);
-            self.gpr_states[reg_id] = GPRState::Taken(node_id); // initially it is pinned to prevent immediate spilling
+            self.gpr_states[reg_id] = GPRState::Taken(node_id, size); // initially it is pinned to prevent immediate spilling
             self.gpr_clobbered[reg_id] = true;
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(reg_id);
             reg_id
         }
     }
 
-    fn find_free_spill_slot(&mut self) -> usize {
-        self.spilled_stack_slots.iter().enumerate().find_map(
-            |(slot_id, slot_state)| {
-                if matches!(slot_state, SpilledStackSlotState::Free) {
-                    Some(slot_id)
-                } else {
-                    None
-                }
-            }
-        ).unwrap_or_else(
-            || {
-                self.spilled_stack_slots.push(SpilledStackSlotState::Free);
-                self.spilled_stack_slots.len() - 1
-            }
-        )
-    }
-
-    fn spill_slot_to_stack_slot(&self, spill_slot: usize) -> usize {
-        self.stack_slots.len() + spill_slot
-    }
-
     fn pin_gpr(&mut self, reg_id: RegId) {
         match self.gpr_states[reg_id] {
-            GPRState::Taken(node_id) => {
-                self.gpr_states[reg_id] = GPRState::Pinned(node_id);
+            GPRState::Taken(node_id, size) => {
+                self.gpr_states[reg_id] = GPRState::Pinned(node_id, size);
             }
-            GPRState::Pinned(_) => (),
+            GPRState::Pinned(_, _) => (),
             _ => {
                 panic!("Failed to pin GPR {} in state {:?}", reg_id, self.gpr_states[reg_id]);
             }
@@ -267,9 +371,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
     fn unpin_gpr(&mut self, reg_id: RegId) {
         match self.gpr_states[reg_id] {
-            GPRState::Taken(_) => (),
-            GPRState::Pinned(node_id) => {
-                self.gpr_states[reg_id] = GPRState::Taken(node_id);
+            GPRState::Taken(_, _) => (),
+            GPRState::Pinned(node_id, size) => {
+                self.gpr_states[reg_id] = GPRState::Taken(node_id, size);
             }
             _ => {
                 panic!("Failed to unpin GPR {} in state {:?}", reg_id, self.gpr_states[reg_id]);
@@ -280,28 +384,31 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     fn prepare_source_reg_specified<T>(&mut self, source_node_id: IRDAGNodeId,
             target_reg_id: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         let temp_state = self.temps.get(&source_node_id).unwrap();
-        match temp_state.loc {
+        let size = match temp_state.loc {
             TempLocation::GPR(reg_id) => {
+                let res = self.reg_size(reg_id).unwrap();
                 if target_reg_id != reg_id {
                     self.spill_reg_if_taken(target_reg_id, code_printer);
                     // just move
                     code_printer.print_mv(target_reg_id, reg_id).unwrap();
                 }
+                res
             }
-            TempLocation::SpilledStackSlot(spill_slot) => {
+            TempLocation::SpilledStackSlot(spill_slot, size) => {
                 self.spill_reg_if_taken(target_reg_id, code_printer);
-                code_printer.print_load_from_stack_slot(target_reg_id, self.spill_slot_to_stack_slot(spill_slot)).unwrap();
-                self.spilled_stack_slots[spill_slot] = SpilledStackSlotState::Free;
+                code_printer.print_load_from_stack(target_reg_id, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
+                self.stack_frame.free_spill_slots(spill_slot, size);
+                size
             }
             TempLocation::Nowhere => panic!("Nowhere to find the source node")
-        }
+        };
         let temp_state = self.temps.get_mut(&source_node_id).unwrap();
         temp_state.loc = TempLocation::GPR(target_reg_id);
         temp_state.rev_deps_to_eval -= 1;
         if let Some(var_id) = temp_state.var {
             self.vars[var_id].loc = VarLocation::GPR(target_reg_id);
         }
-        self.gpr_states[target_reg_id] = GPRState::Pinned(source_node_id);
+        self.gpr_states[target_reg_id] = GPRState::Pinned(source_node_id, size);
     }
 
 
@@ -309,13 +416,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         eprintln!("Prepare reg for source node {}", source_node_id);
         let temp_state = self.temps.get(&source_node_id).unwrap();
         // bring it to register
-        let reg_id = match temp_state.loc {
-            TempLocation::GPR(reg_id) => reg_id,
-            TempLocation::SpilledStackSlot(spill_slot) => {
-                let r = self.assign_reg(source_node_id, code_printer); // this already records the temp location in reg
-                self.spilled_stack_slots[spill_slot] = SpilledStackSlotState::Free;
-                code_printer.print_load_from_stack_slot(r, self.spill_slot_to_stack_slot(spill_slot)).unwrap();
-                r
+        let (reg_id, size) = match temp_state.loc {
+            TempLocation::GPR(reg_id) => (reg_id, self.reg_size(reg_id).unwrap()),
+            TempLocation::SpilledStackSlot(spill_slot, size) => {
+                let r = self.assign_reg(source_node_id, size, code_printer); // this already records the temp location in reg
+                self.stack_frame.free_spill_slots(spill_slot, size);
+                code_printer.print_load_from_stack(r, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
+                (r, size)
             }
             TempLocation::Nowhere => {
                 panic!("Source temporary has not been evaluated.");
@@ -327,7 +434,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         if let Some(var_id) = temp_state.var {
             self.vars[var_id].loc = VarLocation::GPR(reg_id);
         }
-        self.gpr_states[reg_id] = GPRState::Pinned(source_node_id);
+        self.gpr_states[reg_id] = GPRState::Pinned(source_node_id, size);
         reg_id
     }
 
@@ -339,13 +446,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
         match &node.cons {
             IRDAGNodeCons::IntConst(val) => {
-                let reg_id = self.assign_reg(node.id, code_printer);
+                let reg_id = self.assign_reg(node.id, 8, code_printer);
                 code_printer.print_li(reg_id, *val).unwrap();
             }
             IRDAGNodeCons::IntBinOp(op_type, s1, s2) => {
                 let rs1 = self.prepare_source_reg(s1.borrow().id, code_printer);
                 let rs2 = self.prepare_source_reg(s2.borrow().id, code_printer);
-                let rd = self.assign_reg(node.id, code_printer);
+                let rd = self.assign_reg(node.id, 8, code_printer);
                 self.unpin_gpr(rs1);
                 self.unpin_gpr(rs2);
                 match op_type {
@@ -366,7 +473,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             IRDAGNodeCons::IntUnOp(op_type, source) => {
                 let rs = self.prepare_source_reg(source.borrow().id, code_printer);
-                let rd = self.assign_reg(node.id, code_printer);
+                let rd = self.assign_reg(node.id, 8, code_printer);
                 self.unpin_gpr(rs); // FIXME: unpin before assignment?
                 match op_type {
                     IRDAGNodeIntUnOpType::Neg => code_printer.print_neg(rd, rs).unwrap(),
@@ -375,10 +482,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             IRDAGNodeCons::AddressOf(named_mem_loc) => {
-                let rd = self.assign_reg(node.id, code_printer);
+                let rd = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
                 if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                    // TODO: capability needs special treatment
                     code_printer.print_addi(rd, GPR_IDX_SP, 
-                        (self.vars.get(var_id).unwrap().stack_slot * self.globals.target_conf.register_width) as isize).unwrap();
+                        self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().stack_slot) as isize).unwrap();
                 } else {
                     code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                     if named_mem_loc.offset != 0 {
@@ -392,12 +500,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(rs);
-                            let rd = self.assign_reg(node.id, code_printer);
+                            let rd = self.assign_reg(node.id, 8, code_printer);
                             let var_state = self.vars.get_mut(var_id).unwrap();
                             // look at current location of the variable
                             if let VarLocation::GPR(old_reg_id) = var_state.loc {
                                 // disassociate the old reg and node
-                                if let GPRState::Taken(node_id) = self.gpr_states[old_reg_id] {
+                                if let GPRState::Taken(node_id, _) = self.gpr_states[old_reg_id] {
                                     self.temps.get_mut(&node_id).unwrap().var = None;
                                 }
                             }
@@ -410,7 +518,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 code_printer.print_mv(rd, rs).unwrap();
                             }
                         } else {
-                            let rd = self.assign_reg(node.id, code_printer); // FIXME: the result doesn't actually reside here
+                            let rd = self.assign_reg(node.id, 8, code_printer); // FIXME: the result doesn't actually reside here
                             self.unpin_gpr(rs);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                             code_printer.print_sd(rs, rd, named_mem_loc.offset as isize).unwrap();
@@ -423,13 +531,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
                         self.unpin_gpr(r_offset);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
-                            let rd = self.assign_reg(node.id, code_printer);
+                            let rd = self.assign_reg(node.id, 8, code_printer);
                             self.unpin_gpr(r_val);
 
                             code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
-                            code_printer.print_sd(r_val, rd, (self.vars.get(var_id).unwrap().stack_slot * self.globals.target_conf.register_width) as isize).unwrap();
+                            code_printer.print_sd(r_val, rd, self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().stack_slot) as isize).unwrap();
                         } else {
-                            let rd = self.assign_reg(node.id, code_printer); // FIXME: need to set the result reg correctly
+                            let rd = self.assign_reg(node.id, 8, code_printer); // FIXME: need to set the result reg correctly
                             self.unpin_gpr(r_val);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                             code_printer.print_add(rd, rd, r_offset).unwrap();
@@ -458,28 +566,28 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 VarLocation::GPR(reg_id) => {
                                     // already in a register
                                     // just grab the register
-                                    if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
+                                    if let GPRState::Taken(node_id, _) = self.gpr_states[reg_id] {
                                         self.temps.get_mut(&node_id).unwrap().var = None; // disassociate with old node
                                     }
                                     self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(reg_id);
-                                    self.gpr_states[reg_id] = GPRState::Taken(node.id);
+                                    self.gpr_states[reg_id] = GPRState::Taken(node.id, node.vtype.size());
                                     reg_id
                                 }
                                 VarLocation::StackSlot => {
                                     // need to load from stack
                                     let stack_slot = var_state.stack_slot;
-                                    let reg_id = self.assign_reg(node.id, code_printer);
+                                    let reg_id = self.assign_reg(node.id, node.vtype.size(), code_printer);
                                     let var_state_mut = self.vars.get_mut(var_id).unwrap();
                                     var_state_mut.dirty = false; // just loaded, not dirty
                                     var_state_mut.loc = VarLocation::GPR(reg_id);
-                                    code_printer.print_load_from_stack_slot(reg_id, stack_slot).unwrap();
+                                    code_printer.print_load_from_stack(reg_id, self.stack_frame.stack_slot_offset(stack_slot)).unwrap();
                                     reg_id
                                 }
                             };
                             self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
                         } else {
                             // global variable
-                            let rd = self.assign_reg(node.id, code_printer);
+                            let rd = self.assign_reg(node.id, node.vtype.size(), code_printer);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                             code_printer.print_ld(rd, rd, named_mem_loc.offset as isize).unwrap();
                         }
@@ -491,12 +599,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         // get address
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(r_offset);
-                            let rd = self.assign_reg(node.id, code_printer);
+                            let rd = self.assign_reg(node.id, node.vtype.size(), code_printer);
                             code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
                             code_printer.print_ld(rd, rd,
-                                (self.vars.get(var_id).unwrap().stack_slot * self.globals.target_conf.register_width) as isize).unwrap();
+                                self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().stack_slot) as isize).unwrap();
                         } else {
-                            let rd = self.assign_reg(node.id, code_printer);
+                            let rd = self.assign_reg(node.id, node.vtype.size(), code_printer);
                             self.unpin_gpr(r_offset);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                             code_printer.print_add(rd, rd, r_offset).unwrap();
@@ -505,7 +613,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     }
                     IRDAGMemLoc::Addr(addr) => {
                         let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
-                        let reg_id = self.assign_reg(node.id, code_printer);
+                        let reg_id = self.assign_reg(node.id, node.vtype.size(), code_printer);
                         self.unpin_gpr(rs);
                         code_printer.print_ld(reg_id, rs, 0).unwrap();
                     }
@@ -554,14 +662,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
                 
                 // save ra
-                let ra_spill_slot = self.find_free_spill_slot();
-                code_printer.print_store_to_stack_slot(GPR_IDX_RA, self.spill_slot_to_stack_slot(ra_spill_slot)).unwrap();
+                let ra_spill_slot = self.stack_frame.find_free_spill_slot(8); // TODO: implement for capstone abi
+                code_printer.print_store_to_stack(GPR_IDX_RA, self.stack_frame.spill_stack_slot_offset(ra_spill_slot)).unwrap();
                 // no need to update spill slot state because we immediately load ra back
                 code_printer.print_call(callee).unwrap(); // this clobbers ra et al.
-                code_printer.print_load_from_stack_slot(GPR_IDX_RA, self.spill_slot_to_stack_slot(ra_spill_slot)).unwrap();
+                code_printer.print_load_from_stack(GPR_IDX_RA, self.stack_frame.spill_stack_slot_offset(ra_spill_slot)).unwrap();
                 
                 assert!(matches!(self.gpr_states[GPR_IDX_A0], GPRState::Free));
-                self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id);
+                self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, 8);
                 self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
             }
             IRDAGNodeCons::Asm(asm) => {
@@ -602,9 +710,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             self.gpr_states[reserved_gpr] = GPRState::Reserved;
         }
         
-        for spill_slot_state in self.spilled_stack_slots.iter_mut() {
-            *spill_slot_state = SpilledStackSlotState::Free;
-        }
+        self.stack_frame.clear_spill_slots();
 
         self.codegen_block_unlabeled_reset(func_name, block, code_printer);
     }
@@ -623,10 +729,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             match var_state.loc {
                 VarLocation::GPR(reg_id) => {
                     if var_state.dirty {
-                        code_printer.print_store_to_stack_slot(reg_id, var_state.stack_slot).unwrap();
+                        code_printer.print_store_to_stack(reg_id, self.stack_frame.stack_slot_offset(var_state.stack_slot)).unwrap();
                         var_state.dirty = false;
                     }
-                    if let GPRState::Taken(node_id) = self.gpr_states[reg_id] {
+                    if let GPRState::Taken(node_id, _) = self.gpr_states[reg_id] {
                         self.temps.get_mut(&node_id).unwrap().var = None;
                     }
                     var_state.loc = VarLocation::StackSlot;
@@ -663,31 +769,36 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }; // TODO: param's can only be 8 bytes
             self.vars_to_ids.insert(mem_loc, var_id);
             // TODO: passing params through stack is not supported
-            eprintln!("Allocated slot {} to param {}", self.stack_slots.len(), param.name);
+            eprintln!("Allocated slot {} to param {}", self.stack_frame.stack_slots.len(), param.name);
+            let stack_slot = self.stack_frame.allocate_stack_slot(8);
             self.vars.push(VarState {
                 loc: VarLocation::StackSlot,
-                stack_slot: self.stack_slots.len(),
+                stack_slot: stack_slot,
                 dirty: false
             });
-            self.stack_slots.push(var_id);
         }
 
         for (local_name, local_type) in func.locals.iter() {
-            let size = local_type.size(&self.globals.target_conf);
-            for offset in (0..size).step_by(self.globals.target_conf.register_width) {
+            let base_offset = if local_type.alignment(&self.globals.target_conf) == 8 || self.stack_frame.tot_stack_slot_size % 16 == 0 {
+                self.stack_frame.tot_stack_slot_size
+            } else {
+                self.stack_frame.tot_stack_slot_size + 8
+            };
+            local_type.visit_offset(&mut|offset, size| {
                 let mem_loc = IRDAGNamedMemLoc {
                     var_name: local_name.clone(),
                     offset: offset
                 };
                 let var_id = self.vars.len();
                 self.vars_to_ids.insert(mem_loc, var_id);
+                let stack_slot = self.stack_frame.allocate_stack_slot_specified_offset(offset + base_offset, size);
                 self.vars.push(VarState {
                     loc: VarLocation::StackSlot,
-                    stack_slot: self.stack_slots.len(),
+                    stack_slot: stack_slot,
                     dirty: false
                 });
-                self.stack_slots.push(var_id);
-            }
+               
+            }, 0, &self.globals.target_conf);
         }
 
         // for each basic block, do a topo sort

@@ -38,13 +38,13 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
-    pub fn print_load_from_stack_slot(&mut self, rd: RegId, slot: usize) -> Result<(), std::io::Error> {
-        writeln!(&mut self.out, "{}ld {}, {}(sp)", INST_INDENT, REG_NAMES[rd], self.target_conf.register_width * slot)?;
+    pub fn print_load_from_stack(&mut self, rd: RegId, offset: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}ld {}, {}(sp)", INST_INDENT, REG_NAMES[rd], offset)?;
         Ok(())
     }
 
-    pub fn print_store_to_stack_slot(&mut self, rs: RegId, slot: usize) -> Result<(), std::io::Error> {
-        writeln!(&mut self.out, "{}sd {}, {}(sp)", INST_INDENT, REG_NAMES[rs], self.target_conf.register_width * slot)?;
+    pub fn print_store_to_stack(&mut self, rs: RegId, offset: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}sd {}, {}(sp)", INST_INDENT, REG_NAMES[rs], offset)?;
         Ok(())
     }
 
@@ -55,6 +55,16 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_sd(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}sd {}, {}({})", INST_INDENT, REG_NAMES[rs1], offset, REG_NAMES[rs2])?;
+        Ok(())
+    }
+
+    pub fn print_ldc(&mut self, rd: RegId, rs: RegId, offset: isize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}.insn i 0x5b, 0x3, {}, {}({})", INST_INDENT, REG_NAMES[rd], offset, REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_stc(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> { 
+        writeln!(&mut self.out, "{}.insn s 0x5b, 0x4, {}, {}({})", INST_INDENT, REG_NAMES[rs1], offset, REG_NAMES[rs2])?;
         Ok(())
     }
 

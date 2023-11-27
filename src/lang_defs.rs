@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use lang_c::ast::{TypeSpecifier as ASTTypeSpecifier, DerivedDeclarator, ArraySize, Expression, Constant};
-use crate::{utils::GCed, lang::CaplanGlobalContext, target_conf::CaplanTargetConf};
+use crate::{utils::GCed, lang::CaplanGlobalContext, target_conf::{CaplanTargetConf, self}};
 
 #[derive(Debug, Clone)]
 pub struct CaplanStructField {
@@ -11,7 +11,9 @@ pub struct CaplanStructField {
 #[derive(Debug, Clone)]
 pub struct CaplanStruct {
     pub size: usize, // number of bytes
-    pub fields: HashMap<String, CaplanStructField>
+    pub alignment: usize,
+    pub fields: Vec<(String, CaplanStructField)>,
+    pub fields_idx: HashMap<String, usize>
 }
 
 #[derive(Debug, Clone)]
@@ -31,22 +33,30 @@ impl CaplanStruct {
     pub fn new() -> Self {
         Self {
             size: 0,
-            fields: HashMap::new()
+            alignment: 8,
+            fields: Vec::new(),
+            fields_idx: HashMap::new()
         }
     }
 
     pub fn add_field(&mut self, field_name: &str, ty: CaplanType, target_conf: &CaplanTargetConf) {
+        // TODO: consider alignment here
         let offset = self.size;
+        let field_name_str = String::from(field_name);
         self.size += ty.size(target_conf);
-        self.fields.insert(String::from(field_name), CaplanStructField {
+        if ty.alignment(target_conf) == 16 {
+            self.alignment = 16;
+        }
+        self.fields.push((field_name_str.clone(), CaplanStructField {
             ty: ty,
             offset: offset
-        });
+        }));
+        self.fields_idx.insert(field_name_str, self.fields.len() - 1);
     }
 
     // returns (offset, type) if found
     pub fn find_field<'a>(&'a self, field_name: &str) -> Option<&'a CaplanStructField> {
-        self.fields.get(field_name)
+        self.fields_idx.get(field_name).map(|idx| &self.fields[*idx].1)
     }
 }
 
@@ -128,6 +138,51 @@ impl CaplanType {
             CaplanType::Struct(s) => s.size,
             CaplanType::StructRef(s_ref) => s_ref.borrow().size
         }
+    }
+
+    pub fn alignment(&self, target_conf: &CaplanTargetConf) -> usize {
+        match self {
+            CaplanType::Void => 8,
+            CaplanType::Int => 8,
+            CaplanType::Dom => 16,
+            CaplanType::Array(elem_t, elem_n) => elem_t.alignment(target_conf), // TODO: padding possibly needed
+            CaplanType::LinPtr(_) => 16,
+            CaplanType::NonlinPtr(_) => 16,
+            CaplanType::RawPtr(_) => 8,
+            CaplanType::Struct(s) => s.alignment,
+            CaplanType::StructRef(s_ref) => s_ref.borrow().alignment
+        }
+    }
+
+    pub fn visit_offset<V>(&self, visitor: &mut V, base_offset: usize, target_conf: &CaplanTargetConf) where V: FnMut(usize, usize) {
+        match self {
+            CaplanType::Array(elem_t, elem_n) => {
+                let mut offset = base_offset;
+                for _ in 0..*elem_n {
+                    elem_t.visit_offset(visitor, offset, target_conf);
+                    offset += elem_t.size(target_conf);
+                }
+            }
+            CaplanType::Struct(s) => {
+                for (_, field) in s.fields.iter() {
+                    field.ty.visit_offset(visitor, base_offset + field.offset, target_conf);
+                }
+            }
+            CaplanType::StructRef(s_ref) => {
+                for (_, field) in s_ref.borrow().fields.iter() {
+                    field.ty.visit_offset(visitor, base_offset + field.offset, target_conf);
+                }
+            }
+            _ => visitor(base_offset, self.size(target_conf))
+        }
+    }
+
+    pub fn collect_offsets(&self, target_conf: &CaplanTargetConf) -> Vec<(usize, usize)> {
+        let mut res : Vec<(usize, usize)> = Vec::new();
+        self.visit_offset(&mut |offset, size| {
+            res.push((offset, size))
+        }, 0, target_conf);
+        res
     }
 }
 
