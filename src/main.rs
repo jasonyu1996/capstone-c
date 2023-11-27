@@ -31,33 +31,37 @@ mod utils;
 mod dag;
 mod dag_builder;
 mod codegen;
+mod target_conf;
 
 use lang::CaplanTranslationUnit;
 use codegen::CodeGen;
+use target_conf::{CaplanTargetConf, CaplanABI};
 
 #[derive(ClapParser)]
 #[clap(author, version, about)]
 struct Args {
     source: String,
-    #[clap(long, default_value_t = 500)]
-    clock_rate: u32,
-    #[clap(long, default_value_t = 1<<14)]
-    stack_size: u32,
-    #[clap(long, default_value_t = 1<<16)]
-    mem_size: usize,
-    #[clap(long, default_value_t = 32)]
-    gpr_n: usize,
+    #[clap(long)]
+    #[arg(default_value_t = String::from("riscv64"))]
+    abi: String,
     #[clap(long)]
     show_ast: bool,
     #[clap(long)]
-    dag_dot: bool,
-    #[clap(long)]
-    print_comments: bool
+    dag_dot: bool
+}
+
+fn target_conf_from_args(args: &Args) -> Option<CaplanTargetConf> {
+    let abi_op = match args.abi.as_str() {
+        "riscv64" => Some(CaplanABI::RISCV64),
+        "capstone" => Some(CaplanABI::CAPSTONE_CG_NL_SD),
+        _ => None
+    };
+    abi_op.map(|abi| CaplanTargetConf::new(abi))
 }
 
 
-fn generate_code(translation_unit: &TranslationUnit) {
-    let codegen = CodeGen::new(CaplanTranslationUnit::from_ast(translation_unit), std::io::stdout());
+fn generate_code(translation_unit: &TranslationUnit, target_conf: CaplanTargetConf) {
+    let codegen = CodeGen::new(CaplanTranslationUnit::from_ast(translation_unit, target_conf), std::io::stdout());
     codegen.codegen()
 }
 
@@ -69,7 +73,8 @@ fn main() {
             if cli_args.show_ast {
                 eprintln!("AST:\n{:#?}", &parser_result);
             } 
-            generate_code(&parser_result.unit);
+            let target_conf = target_conf_from_args(&cli_args).expect("Invalid target configuration");
+            generate_code(&parser_result.unit, target_conf);
         }
         Err(e) => {
             eprintln!("Parse error!");

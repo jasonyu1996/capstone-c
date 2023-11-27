@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use lang_c::ast::{TypeSpecifier as ASTTypeSpecifier, DerivedDeclarator, ArraySize, Expression, Constant};
-use crate::{utils::GCed, lang::CaplanGlobalContext};
+use crate::{utils::GCed, lang::CaplanGlobalContext, target_conf::CaplanTargetConf};
 
 #[derive(Debug, Clone)]
 pub struct CaplanStructField {
@@ -35,9 +35,9 @@ impl CaplanStruct {
         }
     }
 
-    pub fn add_field(&mut self, field_name: &str, ty: CaplanType) {
+    pub fn add_field(&mut self, field_name: &str, ty: CaplanType, target_conf: &CaplanTargetConf) {
         let offset = self.size;
-        self.size += ty.size();
+        self.size += ty.size(target_conf);
         self.fields.insert(String::from(field_name), CaplanStructField {
             ty: ty,
             offset: offset
@@ -71,9 +71,9 @@ impl CaplanType {
         }
     }
 
-    pub fn decorate_from_ast(&mut self, derived_declarator: &DerivedDeclarator) {
+    pub fn decorate_from_ast(&mut self, derived_declarator: &DerivedDeclarator, target_conf: &CaplanTargetConf) {
         match derived_declarator {
-            DerivedDeclarator::Pointer(_) => self.make_pointer(false),
+            DerivedDeclarator::Pointer(_) => self.make_pointer(target_conf),
             DerivedDeclarator::Array(arr_declarator) => {
                 let length_opt = match &arr_declarator.node.size {
                     ArraySize::VariableExpression(expr) => {
@@ -102,29 +102,26 @@ impl CaplanType {
         }
     }
 
-    pub fn make_pointer(&mut self, linear: bool) {
-        let mut t = CaplanType::Void;
-        std::mem::swap(self, &mut t);
-        *self = if linear {
-            CaplanType::LinPtr(Box::new(t))
-        } else {
-            // CaplanType::NonlinPtr(Box::new(t))
-            CaplanType::RawPtr(Box::new(t))
-        };
+    pub fn make_pointer(&mut self, target_conf: &CaplanTargetConf) {
+        target_conf.make_pointer(self);
+    }
+
+    pub fn make_linear_pointer(&mut self) {
+        let t = std::mem::replace(self, CaplanType::Void);
+        *self = CaplanType::LinPtr(Box::new(t));
     }
 
     pub fn make_array(&mut self, count: usize) {
-        let mut t = CaplanType::Void;
-        std::mem::swap(self, &mut t);
+        let t = std::mem::replace(self, CaplanType::Void);
         *self = CaplanType::Array(Box::new(t), count);
     }
 
-    pub fn size(&self) -> usize {
+    pub fn size(&self, target_conf: &CaplanTargetConf) -> usize {
         match self {
             CaplanType::Void => 8,
             CaplanType::Int => 8,
             CaplanType::Dom => 16,
-            CaplanType::Array(elem_t, elem_n) => elem_t.size() * elem_n,
+            CaplanType::Array(elem_t, elem_n) => elem_t.size(target_conf) * elem_n,
             CaplanType::LinPtr(_) => 16,
             CaplanType::NonlinPtr(_) => 16,
             CaplanType::RawPtr(_) => 8,

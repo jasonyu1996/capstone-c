@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::exit;
 
 use crate::dag::*;
-use crate::lang::{CaplanFunction, CaplanTranslationUnit};
+use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
 use crate::utils::GCed;
 
 mod code_printer;
@@ -66,7 +66,8 @@ struct TempState {
 type VarId = usize;
 
 // this just generates code for a single function
-struct FunctionCodeGen {
+struct FunctionCodeGen<'ctx> {
+    globals: &'ctx CaplanGlobalContext,
     vars_to_ids: HashMap<IRDAGNamedMemLoc, VarId>,
     vars: Vec<VarState>,
     stack_slots: Vec<VarId>,
@@ -78,9 +79,10 @@ struct FunctionCodeGen {
     gpr_clobbered: [bool; GPR_N]
 }
 
-impl FunctionCodeGen {
-    fn new() -> Self {
+impl<'ctx> FunctionCodeGen<'ctx> {
+    fn new(globals: &'ctx CaplanGlobalContext) -> Self {
         Self {
+            globals: globals,
             vars_to_ids: HashMap::new(),
             vars: Vec::new(),
             stack_slots: Vec::new(),
@@ -668,7 +670,7 @@ impl FunctionCodeGen {
         }
 
         for (local_name, local_type) in func.locals.iter() {
-            let size = local_type.size();
+            let size = local_type.size(&self.globals.target_conf);
             for offset in (0..size).step_by(8) {
                 let mem_loc = IRDAGNamedMemLoc {
                     var_name: local_name.clone(),
@@ -746,14 +748,14 @@ impl<Out> CodeGen<Out> where Out: std::io::Write {
 
     pub fn codegen(mut self) {
         for func in self.translation_unit.functions {
-            let func_codegen = FunctionCodeGen::new();
+            let func_codegen = FunctionCodeGen::new(&self.translation_unit.globals);
             func_codegen.codegen(func, &mut self.ctx, &mut self.out);
         }
 
         // bss declaration
         for global_var in self.translation_unit.globals.global_vars.iter() {
             // TODO: throw the io error out
-            writeln!(&mut self.out, ".comm {}, {}", global_var.0, global_var.1.size()).unwrap();
+            writeln!(&mut self.out, ".comm {}, {}", global_var.0, global_var.1.size(&self.translation_unit.globals.target_conf)).unwrap();
         }
     }
 }

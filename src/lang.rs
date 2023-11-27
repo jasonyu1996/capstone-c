@@ -1,7 +1,7 @@
 use std::{collections::{HashSet, HashMap}, process::id};
 
 use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator, DeclarationSpecifier, TypeSpecifier, StructKind, StructDeclaration}, span::Span};
-use crate::{dag::IRDAG, lang_defs::CaplanStruct};
+use crate::{dag::IRDAG, lang_defs::CaplanStruct, target_conf::CaplanTargetConf};
 use crate::dag_builder::IRDAGBuilder;
 use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
@@ -59,7 +59,7 @@ impl<'ast> ParserVisit<'ast> for CaplanParamBuilder<'ast> {
             derived_declarator: &'ast lang_c::ast::DerivedDeclarator,
             span: &'ast Span,
         ) {
-        self.param.ty.decorate_from_ast(derived_declarator);
+        self.param.ty.decorate_from_ast(derived_declarator, &self.globals.target_conf);
     }
 }
 
@@ -72,14 +72,16 @@ pub struct CaplanFunction {
 }
 
 pub struct CaplanGlobalContext {
+    pub target_conf: CaplanTargetConf,
     pub func_decls: HashSet<String>,
     pub struct_defs: HashMap<String, GCed<CaplanStruct>>,
     pub global_vars: HashMap<String, CaplanType>
 }
 
 impl CaplanGlobalContext {
-    fn new() -> Self {
+    fn new(target_conf: CaplanTargetConf) -> Self {
         Self {
+            target_conf: target_conf,
             func_decls: HashSet::new(),
             struct_defs: HashMap::new(),
             global_vars: HashMap::new()
@@ -152,9 +154,9 @@ impl<'ast> ParserVisit<'ast> for CaplanFunctionBuilder<'ast> {
 }
 
 impl CaplanTranslationUnit {
-    pub fn from_ast(ast: &TranslationUnit) -> Self {
+    pub fn from_ast(ast: &TranslationUnit, target_conf: CaplanTargetConf) -> Self {
         let mut res = CaplanTranslationUnit {
-            globals: CaplanGlobalContext::new(),
+            globals: CaplanGlobalContext::new(target_conf),
             functions: Vec::new(),
             in_global_context: true,
             last_type: None,
@@ -196,7 +198,7 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
                     self.globals.func_decls.insert(ident.node.name.clone());
                 }
             }
-            _ => self.last_type.as_mut().unwrap().decorate_from_ast(derived_declarator)
+            _ => self.last_type.as_mut().unwrap().decorate_from_ast(derived_declarator, &self.globals.target_conf)
         }
     }
 
@@ -215,7 +217,7 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
                     let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
                     let last_type = self.last_type.take().unwrap();
                     for ident_name in ident_names {
-                        struct_def.borrow_mut().add_field(&ident_name, last_type.clone());
+                        struct_def.borrow_mut().add_field(&ident_name, last_type.clone(), &self.globals.target_conf);
                     }
                 } else {
                     panic!("Static assertion not supported");

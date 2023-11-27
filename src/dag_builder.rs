@@ -53,15 +53,14 @@ pub struct IRDAGBuilder<'ast> {
     continue_targets: Vec<GCed<IRDAGNode>>,
     switch_target_info: Vec<SwitchTargetInfo<'ast>>,
     globals: &'ast CaplanGlobalContext,
-    last_func_ident: Option<String>
+    last_func_ident: Option<String>,
+    id_counter: u64
 }
 
 impl<'ast> IRDAGBuilder<'ast> {
     pub fn new(globals: &'ast CaplanGlobalContext) -> Self {
         let mut dag = IRDAG::new();
-        let init_label = dag.new_label();
-        dag.place_label_node(&init_label);
-        Self {
+        let mut res = Self {
             dag: dag,
             locals: HashMap::new(),
             local_named_locs: HashMap::new(),
@@ -72,15 +71,223 @@ impl<'ast> IRDAGBuilder<'ast> {
             continue_targets: Vec::new(),
             switch_target_info: Vec::new(),
             globals: globals,
-            last_func_ident: None
+            last_func_ident: None,
+            id_counter: 0
+        };
+        let init_label = res.new_label();
+        res.place_label_node(&init_label);
+        res
+    }
+
+    /* Low level operations (add nodes etc.) */
+
+    pub fn add_dep(a: &GCed<IRDAGNode>, dep: &GCed<IRDAGNode>) {
+        eprintln!("Depends: {} depends on {}", a.borrow().id, dep.borrow().id);
+        (**dep).borrow_mut().add_to_rev_deps(a);
+        (**a).borrow_mut().inc_dep_count();
+    }
+
+    fn add_nonlabel_node(&mut self, node: &GCed<IRDAGNode>) {
+        let last_block = self.dag.blocks.last_mut().unwrap();
+        assert!(last_block.exit_node.is_none()); // we should not have seen an exit node yet
+        last_block.dag.push(node.clone());
+        self.id_counter += 1;
+        if node.borrow().cons.is_control_flow() {
+            last_block.exit_node = Some(node.clone());
+            self.new_block();
         }
     }
+
+    /* Returns the index of the new basic block */
+    fn new_block(&mut self) -> usize {
+        self.dag.blocks.push(IRDAGBlock::new());
+        self.dag.blocks.len() - 1
+    }
+
+    fn current_block_id(&self) -> usize {
+        assert!(!self.dag.blocks.is_empty());
+        self.dag.blocks.len() - 1
+    }
+
+    pub fn place_label_node(&mut self, label_node: &GCed<IRDAGNode>) {
+        let blk_id = 
+            if self.dag.blocks.last().unwrap().dag.is_empty() {
+                self.current_block_id()
+            } else {
+                self.new_block()
+            };
+        let last_block = self.dag.blocks.last_mut().unwrap();
+        assert!(last_block.dag.is_empty()); // must be the first node to add
+        last_block.labeled = true;
+        let mut label_node_ref = label_node.borrow_mut();
+        if let IRDAGNodeCons::Label(None) = label_node_ref.cons {
+            label_node_ref.cons = IRDAGNodeCons::Label(Some(blk_id));
+        } else {
+            panic!("Label has been placed elsewhere!");
+        }
+    }
+
+    pub fn new_int_const(&mut self, v: u64) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::IntConst(v),
+            false
+        ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_int_binop(&mut self, op_type: IRDAGNodeIntBinOpType, a: &GCed<IRDAGNode>, b: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::IntBinOp(op_type, a.clone(), b.clone()),
+            false
+        ));
+        Self::add_dep(&res, a);
+        Self::add_dep(&res, b);
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_int_unop(&mut self, op_type: IRDAGNodeIntUnOpType, a: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::IntUnOp(op_type, a.clone()),
+            false
+        ));
+        Self::add_dep(&res, a);
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_read(&mut self, mem_loc: IRDAGMemLoc) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            // TODO: should be looked up, assuming int for now
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::Read(mem_loc.clone()),
+            false
+        ));
+        match &mem_loc {
+            IRDAGMemLoc::Addr(addr) => Self::add_dep(&res, addr),
+            IRDAGMemLoc::Named(_) => (),
+            IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&res, dyn_offset)
+        }
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_write(&mut self, mem_loc: IRDAGMemLoc, v: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            v.borrow().vtype.clone(),
+            IRDAGNodeCons::Write(mem_loc.clone(), v.clone()),
+            true
+        ));
+        Self::add_dep(&res, v);
+        match &mem_loc {
+            IRDAGMemLoc::Addr(addr) => Self::add_dep(&res, addr),
+            IRDAGMemLoc::Named(_) => (),
+            IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&res, dyn_offset)
+        }
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_label(&mut self) -> GCed<IRDAGNode> {
+        // label nodes are not added to the list until they are placed
+        new_gced(IRDAGNode::new(
+            0, // not used
+            IRDAGNodeVType::Label,
+            IRDAGNodeCons::Label(None),
+            true
+        ))
+    }
+
+    pub fn new_branch(&mut self, target: &GCed<IRDAGNode>, cond: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::Branch(target.clone(), cond.clone()),
+            true
+        ));
+        Self::add_dep(&res, cond);
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_jump(&mut self, target: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::Jump(target.clone()),
+            true
+        ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_switch(&mut self, val: &GCed<IRDAGNode>, targets: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::Switch(val.clone(), targets),
+            true
+        ));
+        Self::add_dep(&res, val);
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_indom_return(&mut self, ret_val: Option<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Void,
+            IRDAGNodeCons::InDomReturn(ret_val.clone()),
+            true
+        ));
+        if let Some(ret_val_node) = ret_val {
+            Self::add_dep(&res, &ret_val_node);
+        }
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_indom_call(&mut self, callee: &str, args: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int,
+            IRDAGNodeCons::InDomCall(String::from(callee), args.clone()),
+            true
+        ));
+        for arg in args.iter() {
+            Self::add_dep(&res, arg);
+        }
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    pub fn new_address_of(&mut self, named_mem_loc: IRDAGNamedMemLoc, ty: CaplanType) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::RawPtr(ty),
+            IRDAGNodeCons::AddressOf(named_mem_loc),
+            false
+        ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    /* high-level build operations */
 
     pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span, 
                 params: &[CaplanParam]) {
         for param in params.iter() {
             self.locals.insert(param.name.clone(), param.ty.clone());
-            for offset in (0..param.ty.size()).step_by(8) {
+            for offset in (0..param.ty.size(&self.globals.target_conf)).step_by(8) {
                 self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: param.name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());
             }
         }
@@ -114,14 +321,14 @@ impl<'ast> IRDAGBuilder<'ast> {
 
     fn read_location(&mut self, loc: &IRDAGMemLoc) -> GCed<IRDAGNode> {
         match loc {
-            IRDAGMemLoc::Addr(_) => self.dag.new_read(loc.clone()),
+            IRDAGMemLoc::Addr(_) => self.new_read(loc.clone()),
             IRDAGMemLoc::Named(named_mem_loc) => {
-                let read_node = self.dag.new_read(loc.clone());
+                let read_node = self.new_read(loc.clone());
                 self.read_named_mem_loc(named_mem_loc, &read_node);
                 read_node
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
-                let read_node = self.dag.new_read(loc.clone());
+                let read_node = self.new_read(loc.clone());
                 for offset in offset_range.clone().step_by(8) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset); // TODO: very brute force
                     self.read_named_mem_loc(&covered_loc, &read_node);
@@ -135,10 +342,10 @@ impl<'ast> IRDAGBuilder<'ast> {
         // TODO: need to adjust the type
         match lval.loc {
             IRDAGMemLoc::Addr(addr) => addr,
-            IRDAGMemLoc::Named(named) => self.dag.new_address_of(named, lval.ty),
+            IRDAGMemLoc::Named(named) => self.new_address_of(named, lval.ty),
             IRDAGMemLoc::NamedWithDynOffset(named, dyn_offset, offset_range) => {
-                let base_addr = self.dag.new_address_of(named, lval.ty);
-                let addr = self.dag.new_int_binop(IRDAGNodeIntBinOpType::Add, &base_addr, &dyn_offset);
+                let base_addr = self.new_address_of(named, lval.ty);
+                let addr = self.new_int_binop(IRDAGNodeIntBinOpType::Add, &base_addr, &dyn_offset);
                 addr
             }
         }
@@ -146,14 +353,14 @@ impl<'ast> IRDAGBuilder<'ast> {
 
     fn write_location(&mut self, loc: &IRDAGMemLoc, val: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         match loc {
-            IRDAGMemLoc::Addr(_) => self.dag.new_write(loc.clone(), val),
+            IRDAGMemLoc::Addr(_) => self.new_write(loc.clone(), val),
             IRDAGMemLoc::Named(named_mem_loc) => {
-                let write_node = self.dag.new_write(loc.clone(), val);
+                let write_node = self.new_write(loc.clone(), val);
                 self.write_named_mem_loc(named_mem_loc, &write_node);
                 write_node
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
-                let write_node = self.dag.new_write(loc.clone(), val);
+                let write_node = self.new_write(loc.clone(), val);
                 for offset in offset_range.clone().step_by(8) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset);
                     self.write_named_mem_loc(&covered_loc, &write_node);
@@ -173,7 +380,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                         Some(self.get_address(elem_lval))
                     }
                     _ => {
-                        if lval.ty.size() > 8 {
+                        if lval.ty.size(&self.globals.target_conf) > 8 {
                             None
                         } else {
                             // read the variable location
@@ -229,11 +436,11 @@ impl<'ast> IRDAGBuilder<'ast> {
         let r_ref = r.borrow();
         let res_word = 
             if let (IRDAGNodeCons::IntConst(l_const), IRDAGNodeCons::IntConst(r_const)) = (&l_ref.cons, &r_ref.cons) {
-                self.dag.new_int_const(dag::static_bin_op(op_type, *l_const, *r_const))
+                self.new_int_const(dag::static_bin_op(op_type, *l_const, *r_const))
             } else {
                 drop(l_ref);
                 drop(r_ref); // somehow Rust is stupid
-                self.dag.new_int_binop(op_type, &l, &r)
+                self.new_int_binop(op_type, &l, &r)
             };
         self.last_temp_res = Some(IRDAGNodeTempResult::Word(res_word));
     }
@@ -243,8 +450,8 @@ impl<'ast> IRDAGBuilder<'ast> {
         self.visit_expression(&expr.operand.node, &expr.operand.span);
         let r = self.last_temp_res_to_word().unwrap();
         let res_word = match &r.borrow().cons {
-            IRDAGNodeCons::IntConst(r_const) => self.dag.new_int_const(dag::static_un_op(op_type, *r_const)),
-            _ => self.dag.new_int_unop(op_type, &r)
+            IRDAGNodeCons::IntConst(r_const) => self.new_int_const(dag::static_un_op(op_type, *r_const)),
+            _ => self.new_int_unop(op_type, &r)
         };
         self.last_temp_res = Some(IRDAGNodeTempResult::Word(res_word));
     }
@@ -253,7 +460,7 @@ impl<'ast> IRDAGBuilder<'ast> {
         if let Some(v) = self.local_named_locs.get_mut(mem_loc) {
             if let Some(last_access) = v.last_access.as_ref() {
                 // this current access must wait until after the previous access completes
-                IRDAG::add_dep(node, last_access);
+                Self::add_dep(node, last_access);
             }
             v.last_access = Some(node.clone());
             v.last_write = Some(node.clone());
@@ -264,7 +471,7 @@ impl<'ast> IRDAGBuilder<'ast> {
         // eprintln!("{:?}", mem_loc);
         if let Some(v) = self.local_named_locs.get_mut(mem_loc) {
             if let Some(last_write) = v.last_write.as_ref() {
-                IRDAG::add_dep(node, last_write);
+                Self::add_dep(node, last_write);
             }
             v.last_access = Some(node.clone());
         }
@@ -280,12 +487,12 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn gen_assign(&mut self, lhs: IRDAGNodeTempResult, rhs: IRDAGNodeTempResult) {
         if let IRDAGNodeTempResult::LVal(lval) = lhs {
             let orig_lval = lval.clone();
-            let size = lval.ty.size();
+            let size = lval.ty.size(&self.globals.target_conf);
             if size > 8 {
                 match rhs {
                     IRDAGNodeTempResult::Word(_) => panic!("Size mismatch for assignment"),
                     IRDAGNodeTempResult::LVal(rhs_lval) => {
-                        if size != rhs_lval.ty.size() {
+                        if size != rhs_lval.ty.size(&self.globals.target_conf) {
                             panic!("Size mismatch for assignment");
                         } else {
                             let mut lhs_loc = lval.loc;
@@ -293,8 +500,8 @@ impl<'ast> IRDAGBuilder<'ast> {
                             for _ in (0..size).step_by(8) {
                                 let read_res = self.read_location(&rhs_loc);
                                 self.write_location(&lhs_loc, &read_res);
-                                lhs_loc = lhs_loc.apply_offset(8, &mut self.dag);
-                                rhs_loc = rhs_loc.apply_offset(8, &mut self.dag);
+                                lhs_loc = lhs_loc.apply_offset(8, self);
+                                rhs_loc = rhs_loc.apply_offset(8, self);
                             }
                         }
                     }
@@ -315,46 +522,46 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_if_statement(&mut self, if_statement: &'ast lang_c::ast::IfStatement, span: &'ast Span) {
         self.visit_expression(&if_statement.condition.node, &if_statement.condition.span);
         let cond = self.last_temp_res_to_word().unwrap();
-        let label_then = self.dag.new_label();
-        let label_taken = self.dag.new_label();
-        let branch_node = self.dag.new_branch(&label_taken, &cond);
+        let label_then = self.new_label();
+        let label_taken = self.new_label();
+        let branch_node = self.new_branch(&label_taken, &cond);
         self.new_block_reset();
-        let _ = self.dag.new_jump(&label_then);
+        let _ = self.new_jump(&label_then);
         self.new_block_reset();
-        self.dag.place_label_node(&label_taken);
+        self.place_label_node(&label_taken);
         self.visit_statement(&if_statement.then_statement.node, &if_statement.then_statement.span);
         if let Some(else_statement_node) = if_statement.else_statement.as_ref() {
-            let label_end = self.dag.new_label();
-            let _ = self.dag.new_jump(&label_end);
+            let label_end = self.new_label();
+            let _ = self.new_jump(&label_end);
             self.new_block_reset();
-            self.dag.place_label_node(&label_then);
+            self.place_label_node(&label_then);
             self.visit_statement(&else_statement_node.node, &else_statement_node.span);
             self.new_block_reset();
-            self.dag.place_label_node(&label_end);
+            self.place_label_node(&label_end);
         } else {
             self.new_block_reset();
-            self.dag.place_label_node(&label_then);
+            self.place_label_node(&label_then);
         }
     }
 
     fn visit_while_statement(&mut self, while_statement: &'ast lang_c::ast::WhileStatement, span: &'ast Span) {
-        let label_start = self.dag.new_label();
-        let label_taken = self.dag.new_label();
-        let label_end = self.dag.new_label();
+        let label_start = self.new_label();
+        let label_taken = self.new_label();
+        let label_end = self.new_label();
         self.push_loop_info(&label_end, &label_start);
         self.new_block_reset();
-        self.dag.place_label_node(&label_start);
+        self.place_label_node(&label_start);
         self.visit_expression(&while_statement.expression.node, &while_statement.expression.span);
         let cond = self.last_temp_res_to_word().unwrap();
-        let _ = self.dag.new_branch(&label_taken, &cond);
+        let _ = self.new_branch(&label_taken, &cond);
         self.new_block_reset();
-        let _ = self.dag.new_jump(&label_end);
+        let _ = self.new_jump(&label_end);
         self.new_block_reset();
-        self.dag.place_label_node(&label_taken);
+        self.place_label_node(&label_taken);
         self.visit_statement(&while_statement.statement.node, &while_statement.statement.span);
-        let _ = self.dag.new_jump(&label_start);
+        let _ = self.new_jump(&label_start);
         self.new_block_reset();
-        self.dag.place_label_node(&label_end);
+        self.place_label_node(&label_end);
         self.pop_loop_info();
     }
 
@@ -363,35 +570,35 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     }
 
     fn visit_for_statement(&mut self, for_statement: &'ast lang_c::ast::ForStatement, span: &'ast Span) {
-        let label_start = self.dag.new_label();
-        let label_end = self.dag.new_label();
-        let label_cont = self.dag.new_label();
+        let label_start = self.new_label();
+        let label_end = self.new_label();
+        let label_cont = self.new_label();
 
         self.push_loop_info(&label_end, &label_cont);
 
         self.visit_for_initializer(&for_statement.initializer.node, &for_statement.initializer.span);
         self.new_block_reset();
-        self.dag.place_label_node(&label_start);
+        self.place_label_node(&label_start);
         if let Some(cond_node) = for_statement.condition.as_ref() {
             self.visit_expression(&cond_node.node, &cond_node.span);
-            let label_taken = self.dag.new_label();
+            let label_taken = self.new_label();
             let cond = self.last_temp_res_to_word().unwrap();
-            self.dag.new_branch(&label_taken, &cond);
+            self.new_branch(&label_taken, &cond);
             self.new_block_reset();
-            self.dag.new_jump(&label_end);
+            self.new_jump(&label_end);
             self.new_block_reset();
-            self.dag.place_label_node(&label_taken);
+            self.place_label_node(&label_taken);
         }
 
         self.visit_statement(&for_statement.statement.node, &for_statement.statement.span);
         self.new_block_reset();
-        self.dag.place_label_node(&label_cont);
+        self.place_label_node(&label_cont);
         if let Some(step_node) = for_statement.step.as_ref() {
             self.visit_expression(&step_node.node, &step_node.span);
         }
-        self.dag.new_jump(&label_start);
+        self.new_jump(&label_start);
         self.new_block_reset();
-        self.dag.place_label_node(&label_end);
+        self.place_label_node(&label_end);
         
         self.pop_loop_info();
     }
@@ -401,22 +608,22 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             do_while_statement: &'ast lang_c::ast::DoWhileStatement,
             span: &'ast Span,
         ) {
-        let label_start = self.dag.new_label();
-        let label_cont = self.dag.new_label();
-        let label_end = self.dag.new_label();
+        let label_start = self.new_label();
+        let label_cont = self.new_label();
+        let label_end = self.new_label();
 
         self.push_loop_info(&label_end, &label_cont);
 
         self.new_block_reset();
-        self.dag.place_label_node(&label_start);
+        self.place_label_node(&label_start);
         self.visit_statement(&do_while_statement.statement.node, &do_while_statement.statement.span);
         self.new_block_reset();
-        self.dag.place_label_node(&label_cont);
+        self.place_label_node(&label_cont);
         self.visit_expression(&do_while_statement.expression.node, &do_while_statement.expression.span);
         let cond = self.last_temp_res_to_word().unwrap();
-        self.dag.new_branch(&label_start, &cond);
+        self.new_branch(&label_start, &cond);
         self.new_block_reset();
-        self.dag.place_label_node(&label_end);
+        self.place_label_node(&label_end);
 
         self.pop_loop_info();
     }
@@ -428,18 +635,18 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             span: &'ast Span,
         ) {
         // TODO: because the current basic block organisation is stupid, we do weird stuff here
-        let label_skip_expr = self.dag.new_label();
-        let label_skip_stmt = self.dag.new_label();
+        let label_skip_expr = self.new_label();
+        let label_skip_stmt = self.new_label();
 
         self.switch_target_info.push(SwitchTargetInfo::new());
         self.break_targets.push(label_skip_expr.clone());
 
-        self.dag.new_jump(&label_skip_stmt);
+        self.new_jump(&label_skip_stmt);
         self.new_block_reset();
         self.visit_statement(&switch_statement.statement.node, &switch_statement.statement.span);
-        self.dag.new_jump(&label_skip_expr);
+        self.new_jump(&label_skip_expr);
         self.new_block_reset();
-        self.dag.place_label_node(&label_skip_stmt);
+        self.place_label_node(&label_skip_stmt);
 
         self.break_targets.pop().unwrap();
         let switch_targets = self.switch_target_info.pop().unwrap();
@@ -449,34 +656,34 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         for (expr, expr_span, target) in switch_targets.targets.iter() {
             self.visit_expression(expr, expr_span);
             let b_res = self.last_temp_res_to_word().unwrap();
-            let cmp_res = self.dag.new_int_binop(IRDAGNodeIntBinOpType::Eq, 
+            let cmp_res = self.new_int_binop(IRDAGNodeIntBinOpType::Eq, 
                 &val, &b_res);
-            self.dag.new_branch(target, &cmp_res);
+            self.new_branch(target, &cmp_res);
             self.new_block_reset();
         }
 
         if let Some(default_target) = switch_targets.default_target.as_ref() {
-            self.dag.new_jump(default_target);
+            self.new_jump(default_target);
             self.new_block_reset();
         }
 
         self.new_block_reset();
-        self.dag.place_label_node(&label_skip_expr);
+        self.place_label_node(&label_skip_expr);
     }
 
     fn visit_label(&mut self, label: &'ast lang_c::ast::Label, span: &'ast Span) {
         match label {
             Label::Case(expr) => {
-                let label = self.dag.new_label();
+                let label = self.new_label();
                 self.new_block_reset();
-                self.dag.place_label_node(&label);
+                self.place_label_node(&label);
 
                 self.switch_target_info.last_mut().unwrap().targets.push((&expr.node, &expr.span, label));
             }
             Label::Default => {
-                let label = self.dag.new_label();
+                let label = self.new_label();
                 self.new_block_reset();
-                self.dag.place_label_node(&label);
+                self.place_label_node(&label);
 
                 let last_switch_target_info = self.switch_target_info.last_mut().unwrap();
                 assert!(last_switch_target_info.default_target.is_none(), "Duplicate default");
@@ -491,11 +698,11 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_statement(&mut self, statement: &'ast Statement, span: &'ast Span) {
         match statement {
             Statement::Continue => {
-                self.dag.new_jump(&self.continue_targets.last().unwrap());
+                self.new_jump(&self.continue_targets.last().unwrap().clone());
                 self.new_block_reset();
             }
             Statement::Break => {
-                self.dag.new_jump(&self.break_targets.last().unwrap());
+                self.new_jump(&self.break_targets.last().unwrap().clone());
                 self.new_block_reset();
             }
             Statement::Expression(None) => (),
@@ -509,7 +716,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                     self.visit_expression(&ret_val_expr.node, &ret_val_expr.span);
                     self.last_temp_res_to_word().unwrap() // TODO: only 8 byte can be returned
                 });
-                self.dag.new_indom_return(ret_val_node);
+                self.new_indom_return(ret_val_node);
                 self.new_block_reset();
             }
             Statement::Compound(compound) =>
@@ -627,24 +834,24 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 // simple optimisation: check whether the index is statically known
                 let rhs_cons = &rhs.borrow().cons;
                 if let IRDAGNodeCons::IntConst(int_const) = rhs_cons {
-                    let offset = elem_ty.size() as u64 * *int_const;
-                    let loc = lhs.loc.apply_offset(offset as isize, &mut self.dag);
+                    let offset = elem_ty.size(&self.globals.target_conf) as u64 * *int_const;
+                    let loc = lhs.loc.apply_offset(offset as isize, self);
                     self.last_temp_res = Some(IRDAGNodeTempResult::LVal(
                         IRDAGLVal { ty: elem_ty, loc: loc }
                     ));
                 } else {
-                    let elem_size_const = self.dag.new_int_const(elem_ty.size() as u64);
-                    let offset = self.dag.new_int_binop(
+                    let elem_size_const = self.new_int_const(elem_ty.size(&self.globals.target_conf) as u64);
+                    let offset = self.new_int_binop(
                         IRDAGNodeIntBinOpType::Mul,
                         &elem_size_const, &rhs);
                     let loc = match lhs.loc {
-                        IRDAGMemLoc::Addr(addr) => IRDAGMemLoc::Addr(self.dag.new_int_binop(IRDAGNodeIntBinOpType::Add, &addr, &offset)),
+                        IRDAGMemLoc::Addr(addr) => IRDAGMemLoc::Addr(self.new_int_binop(IRDAGNodeIntBinOpType::Add, &addr, &offset)),
                         IRDAGMemLoc::Named(named) => {
-                            let addr_range = named.offset..(named.offset + self.lookup_local(&named.var_name).unwrap().size());
+                            let addr_range = named.offset..(named.offset + self.lookup_local_imm(&named.var_name).unwrap().size(&self.globals.target_conf));
                             IRDAGMemLoc::NamedWithDynOffset(named, offset, addr_range)
                         }
                         IRDAGMemLoc::NamedWithDynOffset(named, dyn_offset, offset_range) =>
-                            IRDAGMemLoc::NamedWithDynOffset(named, self.dag.new_int_binop(IRDAGNodeIntBinOpType::Add, &dyn_offset, &offset), offset_range)
+                            IRDAGMemLoc::NamedWithDynOffset(named, self.new_int_binop(IRDAGNodeIntBinOpType::Add, &dyn_offset, &offset), offset_range)
                     };
                     self.last_temp_res = Some(IRDAGNodeTempResult::LVal(
                         IRDAGLVal { ty: elem_ty, loc: loc }
@@ -687,7 +894,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 self.last_temp_res_to_word().unwrap()
             }
         ));
-        self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.dag.new_indom_call(&func_name, args)));
+        self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.new_indom_call(&func_name, args)));
         self.new_block_reset();
     }
 
@@ -709,7 +916,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 }.expect("Cannot find field");
                 self.last_temp_res = Some(
                     IRDAGNodeTempResult::LVal(
-                        IRDAGLVal { ty: field.ty, loc: lval.loc.clone().apply_offset(field.offset as isize, &mut self.dag) }
+                        IRDAGLVal { ty: field.ty, loc: lval.loc.clone().apply_offset(field.offset as isize, self) }
                     )
                 );
             }
@@ -721,17 +928,17 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.visit_expression(&sizeofval.0.node, &sizeofval.0.span);
         let r = self.last_temp_res.take().unwrap();
         let size = match r {
-            IRDAGNodeTempResult::LVal(lval) => lval.ty.size(),
+            IRDAGNodeTempResult::LVal(lval) => lval.ty.size(&self.globals.target_conf),
             IRDAGNodeTempResult::Word(_) => 8
         };
-        self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.dag.new_int_const(size as u64)));
+        self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.new_int_const(size as u64)));
     }
 
     fn visit_constant(&mut self, constant: &'ast lang_c::ast::Constant, span: &'ast Span) {
         match constant {
             Constant::Integer(integer) => {
                 self.last_temp_res = Some(IRDAGNodeTempResult::Word(
-                    self.dag.new_int_const(u64::from_str_radix(integer.number.as_ref(), 10).unwrap())
+                    self.new_int_const(u64::from_str_radix(integer.number.as_ref(), 10).unwrap())
                 ));
             }
             _ => {
@@ -759,7 +966,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             derived_declarator: &'ast lang_c::ast::DerivedDeclarator,
             span: &'ast Span,
         ) {
-        self.decl_type.as_mut().map(|x| x.decorate_from_ast(derived_declarator));
+        self.decl_type.as_mut().map(|x| x.decorate_from_ast(derived_declarator, &self.globals.target_conf));
     }
 
     fn visit_declarator(&mut self, declarator: &'ast lang_c::ast::Declarator, span: &'ast Span) {
@@ -793,7 +1000,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let name = self.decl_id_name.take().unwrap();
         let ty = self.decl_type.as_ref().unwrap().clone();
         self.locals.insert(name.clone(),ty.clone());
-        for offset in (0..ty.size()).step_by(8) {
+        for offset in (0..ty.size(&self.globals.target_conf)).step_by(8) {
             self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());
         }
         if let Some(initializer_node) = init_declarator.initializer.as_ref() {
