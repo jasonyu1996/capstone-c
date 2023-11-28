@@ -1,7 +1,5 @@
 use core::panic;
 use std::collections::HashMap;
-use std::io::Write;
-use std::process::exit;
 
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
@@ -268,6 +266,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             code_printer.print_add(rd, rs1, rs2).unwrap();
         } else {
             code_printer.print_incoffset(rd, rs1, rs2).unwrap();
+        }
+    }
+
+    // this assumes that the cursor is pointing at the base of the new bound
+    fn pointer_bound_imm<T>(&self, rd: RegId, rs: RegId, size: usize, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        // do nothing in non-Capstone
+        if self.globals.target_conf.min_alignment == 16 {
+            code_printer.print_shrinkto(rd, rs, size).unwrap();
         }
     }
 
@@ -540,6 +546,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     // TODO: capability needs special treatment
                     self.pointer_offset_imm(rd, GPR_IDX_SP,
                         self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, code_printer);
+                    self.pointer_bound_imm(rd, rd, node.vtype.inner_type().unwrap().size(&self.globals.target_conf), code_printer)
                 } else {
                     assert!(self.globals.target_conf.min_alignment == 8, "taking address of global variable not implemented");
                     code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();

@@ -47,6 +47,15 @@ impl IRDAGNodeVType {
             _ => None
         }
     }
+
+    pub fn inner_type(&self) -> Option<&CaplanType> {
+        match self {
+            IRDAGNodeVType::RawPtr(inner_type) => Some(inner_type),
+            IRDAGNodeVType::LinPtr(inner_type) => Some(inner_type),
+            IRDAGNodeVType::NonlinPtr(inner_type) => Some(inner_type),
+            _ => None
+        }
+    }
 }
 
 #[derive(Debug)]

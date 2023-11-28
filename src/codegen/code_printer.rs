@@ -21,7 +21,8 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("cincoffsetimm(rd, rs, offset)", ".insn i 0x5b, 0x2, rd, offset(rs)"),
     ("movc(rd, rs)", ".insn r 0x5b, 0x1, 0xa, rd, rs, x0"),
     ("ldc(rd, rs, offset)", ".insn i 0x5b, 0x3, rd, offset(rs)"),
-    ("stc(rs1, rs2, offset)", ".insn s 0x5b, 0x4, rs1, offset(rs2)")
+    ("stc(rs1, rs2, offset)", ".insn s 0x5b, 0x4, rs1, offset(rs2)"),
+    ("shrinkto(rd, rs, size)", ".insn i 0x5b, 0x0, rd, size(rs)")
 ];
 
 pub struct CodePrinter<T> where T: Write {
@@ -229,6 +230,11 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_movc(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}movc({}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_shrinkto(&mut self, rd: RegId, rs: RegId, size: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}shrinkto({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], size)?;
         Ok(())
     }
 
