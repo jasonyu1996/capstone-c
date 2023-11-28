@@ -1,5 +1,3 @@
-use std::slice::Iter;
-
 pub const GPR_N : usize = 32;
 
 pub type RegId = usize;

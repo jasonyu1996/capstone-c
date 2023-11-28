@@ -57,6 +57,11 @@ struct VarState {
     dirty: bool
 }
 
+struct VarInfo {
+    state: VarState,
+    size: usize
+}
+
 struct TempState {
     var: Option<VarId>, // if this has the value of a variable
     loc: TempLocation,
@@ -177,7 +182,7 @@ type VarId = usize;
 struct FunctionCodeGen<'ctx> {
     globals: &'ctx CaplanGlobalContext,
     vars_to_ids: HashMap<IRDAGNamedMemLoc, VarId>,
-    vars: Vec<VarState>,
+    vars: Vec<VarInfo>,
     stack_frame: StackFrame,
     temps: HashMap<IRDAGNodeId, TempState>,
     op_topo_stack: Vec<GCed<IRDAGNode>>,
@@ -208,13 +213,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         // now we know how much stack space is needed
         let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log); // this makes sure that all stack frames are aligned
         let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_callee_saved_n) as isize)).unwrap();
+        self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_callee_saved_n) as isize), code_printer);
 
 
         for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
             // clobbered callee-saved registers need saving here
             assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
-            code_printer.print_store_to_stack(*reg_id, stack_frame_size).unwrap();
+            Self::store(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
             stack_frame_size += self.globals.target_conf.min_alignment;
         }
 
@@ -225,7 +230,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 offset: 0
             };
             let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
-            code_printer.print_store_to_stack(GPR_PARAMS[param_idx], self.stack_frame.stack_slot_offset(self.vars[var_id].stack_slot)).unwrap();
+            Self::store(GPR_PARAMS[param_idx],
+                GPR_IDX_SP,
+                self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                self.vars[var_id].size,
+                code_printer
+            );
         }
     }
 
@@ -237,18 +247,40 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
             // clobbered callee-saved registers need restoring here
             // TODO: 16 byte loading
-            code_printer.print_load_from_stack(*reg_id, stack_frame_size).unwrap();
+            Self::load(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
             stack_frame_size += self.globals.target_conf.min_alignment;
         }
 
-        code_printer.print_addi(GPR_IDX_SP, GPR_IDX_SP, stack_frame_size as isize).unwrap();
+        self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, stack_frame_size as isize, code_printer);
         code_printer.print_ret().unwrap();
+    }
+
+    fn pointer_offset_imm<T>(&self, rd: RegId, rs: RegId, offset: isize, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        if self.reg_size(rs).unwrap() == 8 {
+            code_printer.print_addi(rd, rs, offset).unwrap();
+        } else {
+            code_printer.print_incoffsetimm(rd, rs, offset).unwrap();
+        }
+    }
+
+    fn pointer_offset<T>(&self, rd: RegId, rs1: RegId, rs2: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        if self.reg_size(rs1).unwrap() == 8 {
+            code_printer.print_add(rd, rs1, rs2).unwrap();
+        } else {
+            code_printer.print_incoffset(rd, rs1, rs2).unwrap();
+        }
     }
 
     fn reg_size(&self, reg_id: RegId) -> Option<usize> {
         match &self.gpr_states[reg_id] {
             GPRState::Free => None,
-            GPRState::Reserved => None,
+            GPRState::Reserved => {
+                Some(if self.globals.target_conf.min_alignment == 8 || reg_id == GPR_IDX_X0 || reg_id == GPR_IDX_RA {
+                    8
+                } else {
+                    16
+                })
+            }
             GPRState::Pinned(_, sz) => Some(*sz),
             GPRState::Taken(_, sz) => Some(*sz)
         }
@@ -375,6 +407,33 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
     }
 
+
+    fn move_reg<T>(&self, rd: RegId, rs: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        let size = self.reg_size(rs).unwrap();
+        if size == 8 {
+            code_printer.print_mv(rd, rs)
+        } else {
+            code_printer.print_movc(rd, rs)
+        }.unwrap();
+    }
+
+    fn load<T>(rd: RegId, rs: RegId, offset: isize, size: usize, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        if size == 8 {
+            code_printer.print_ld(rd, rs, offset).unwrap();
+        } else {
+            code_printer.print_ldc(rd, rs, offset).unwrap();
+        }
+    }
+
+    fn store<T>(rs1: RegId, rs2: RegId, offset: isize, size: usize, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        if size == 8 {
+            code_printer.print_sd(rs1, rs2, offset).unwrap();
+        } else {
+            code_printer.print_stc(rs1, rs2, offset).unwrap();
+        }
+    }
+
+
     fn prepare_source_reg_specified<T>(&mut self, source_node_id: IRDAGNodeId,
             target_reg_id: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         let temp_state = self.temps.get(&source_node_id).unwrap();
@@ -384,7 +443,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 if target_reg_id != reg_id {
                     self.spill_reg_if_taken(target_reg_id, code_printer);
                     // just move
-                    code_printer.print_mv(target_reg_id, reg_id).unwrap();
+                    self.move_reg(target_reg_id, reg_id, code_printer);
                 }
                 res
             }
@@ -400,7 +459,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         temp_state.loc = TempLocation::GPR(target_reg_id);
         temp_state.rev_deps_to_eval -= 1;
         if let Some(var_id) = temp_state.var {
-            self.vars[var_id].loc = VarLocation::GPR(target_reg_id);
+            self.vars[var_id].state.loc = VarLocation::GPR(target_reg_id);
         }
         self.gpr_states[target_reg_id] = GPRState::Pinned(source_node_id, size);
     }
@@ -426,7 +485,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         temp_state.loc = TempLocation::GPR(reg_id);
         temp_state.rev_deps_to_eval -= 1;
         if let Some(var_id) = temp_state.var {
-            self.vars[var_id].loc = VarLocation::GPR(reg_id);
+            self.vars[var_id].state.loc = VarLocation::GPR(reg_id);
         }
         self.gpr_states[reg_id] = GPRState::Pinned(source_node_id, size);
         reg_id
@@ -479,9 +538,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let rd = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
                 if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                     // TODO: capability needs special treatment
-                    code_printer.print_addi(rd, GPR_IDX_SP, 
-                        self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().stack_slot) as isize).unwrap();
+                    self.pointer_offset_imm(rd, GPR_IDX_SP,
+                        self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, code_printer);
                 } else {
+                    assert!(self.globals.target_conf.min_alignment == 8, "taking address of global variable not implemented");
                     code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                     if named_mem_loc.offset != 0 {
                         code_printer.print_addi(rd, rd, named_mem_loc.offset as isize).unwrap();
@@ -489,33 +549,36 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             IRDAGNodeCons::Write(loc, source) => {
+                eprintln!("Write value of type {:?}", source.borrow().vtype);
+                let v_size = source.borrow().vtype.size();
                 match &loc {
                     IRDAGMemLoc::Named(named_mem_loc) => {
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(rs);
                             let rd = self.assign_reg(node.id, 8, code_printer);
-                            let var_state = self.vars.get_mut(var_id).unwrap();
+                            let var_info = self.vars.get_mut(var_id).unwrap();
                             // look at current location of the variable
-                            if let VarLocation::GPR(old_reg_id) = var_state.loc {
+                            if let VarLocation::GPR(old_reg_id) = var_info.state.loc {
                                 // disassociate the old reg and node
                                 if let GPRState::Taken(node_id, _) = self.gpr_states[old_reg_id] {
                                     self.temps.get_mut(&node_id).unwrap().var = None;
                                 }
                             }
                             
-                            var_state.loc = VarLocation::GPR(rd);
-                            var_state.dirty = true;
+                            var_info.state.loc = VarLocation::GPR(rd);
+                            var_info.state.dirty = true;
                             self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
 
                             if rd != rs {
-                                code_printer.print_mv(rd, rs).unwrap();
+                                self.move_reg(rd, rs, code_printer);
                             }
                         } else {
+                            assert!(v_size == 8, "storing capabilities to global variables unimplemented");
                             let rd = self.assign_reg(node.id, 8, code_printer); // FIXME: the result doesn't actually reside here
                             self.unpin_gpr(rs);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
-                            code_printer.print_sd(rs, rd, named_mem_loc.offset as isize).unwrap();
+                            Self::store(rs, rd, named_mem_loc.offset as isize, v_size, code_printer);
                         }
                     }
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
@@ -528,9 +591,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             let rd = self.assign_reg(node.id, 8, code_printer);
                             self.unpin_gpr(r_val);
 
-                            code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
-                            code_printer.print_sd(r_val, rd, self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().stack_slot) as isize).unwrap();
+                            self.pointer_offset(rd, GPR_IDX_GP, r_offset, code_printer);
+                            Self::store(r_val, rd, self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, v_size, code_printer);
                         } else {
+                            assert!(v_size == 8, "storing capabilities to global variables unimplemented");
+
                             let rd = self.assign_reg(node.id, 8, code_printer); // FIXME: need to set the result reg correctly
                             self.unpin_gpr(r_val);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
@@ -543,20 +608,24 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let rs2 = self.prepare_source_reg(addr.borrow().id, code_printer);
                         self.unpin_gpr(rs1);
                         self.unpin_gpr(rs2);
-                        code_printer.print_sd(rs1, rs2, 0).unwrap();
+                        Self::store(rs1, rs2, 0, v_size, code_printer);
                     }
                 }
             }
             IRDAGNodeCons::Read(mem_loc) => {
                 // see where it is right now
+                eprintln!("Read value with type {:?}", node.vtype);
+                let res_size = node.vtype.size();
                 match mem_loc {
                     IRDAGMemLoc::Named(named_mem_loc) => {
+                        // assert!(res_size == 8, "loading capability from named location not implemented");
+
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
-                            let var_state = self.vars.get(var_id).unwrap();
+                            let var_info = self.vars.get(var_id).unwrap();
                             // local variable
 
                             // look at current location of the variable
-                            let _ = match var_state.loc {
+                            let _ = match var_info.state.loc {
                                 VarLocation::GPR(reg_id) => {
                                     // already in a register
                                     // just grab the register
@@ -569,19 +638,20 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 }
                                 VarLocation::StackSlot => {
                                     // need to load from stack
-                                    let stack_slot = var_state.stack_slot;
-                                    let reg_id = self.assign_reg(node.id, node.vtype.size(), code_printer);
-                                    let var_state_mut = self.vars.get_mut(var_id).unwrap();
-                                    var_state_mut.dirty = false; // just loaded, not dirty
-                                    var_state_mut.loc = VarLocation::GPR(reg_id);
-                                    code_printer.print_load_from_stack(reg_id, self.stack_frame.stack_slot_offset(stack_slot)).unwrap();
+                                    let stack_slot = var_info.state.stack_slot;
+                                    let reg_id = self.assign_reg(node.id, res_size, code_printer);
+                                    let var_info_mut = self.vars.get_mut(var_id).unwrap();
+                                    var_info_mut.state.dirty = false; // just loaded, not dirty
+                                    var_info_mut.state.loc = VarLocation::GPR(reg_id);
+                                    Self::load(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize, res_size, code_printer);
                                     reg_id
                                 }
                             };
                             self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
                         } else {
+                            assert!(res_size == 8, "loading capability from global variable not implemented");
                             // global variable
-                            let rd = self.assign_reg(node.id, node.vtype.size(), code_printer);
+                            let rd = self.assign_reg(node.id, res_size, code_printer);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                             code_printer.print_ld(rd, rd, named_mem_loc.offset as isize).unwrap();
                         }
@@ -593,12 +663,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         // get address
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(r_offset);
-                            let rd = self.assign_reg(node.id, node.vtype.size(), code_printer);
-                            code_printer.print_add(rd, GPR_IDX_SP, r_offset).unwrap();
-                            code_printer.print_ld(rd, rd,
-                                self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().stack_slot) as isize).unwrap();
+                            let rd = self.assign_reg(node.id, res_size, code_printer);
+                            self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
+                            Self::load(rd, rd, self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, res_size, code_printer);
                         } else {
-                            let rd = self.assign_reg(node.id, node.vtype.size(), code_printer);
+                            assert!(res_size == 8, "loading capability from global variable not implemented");
+
+                            let rd = self.assign_reg(node.id, res_size, code_printer);
                             self.unpin_gpr(r_offset);
                             code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
                             code_printer.print_add(rd, rd, r_offset).unwrap();
@@ -607,9 +678,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     }
                     IRDAGMemLoc::Addr(addr) => {
                         let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
-                        let reg_id = self.assign_reg(node.id, node.vtype.size(), code_printer);
+                        let reg_id = self.assign_reg(node.id, res_size, code_printer);
                         self.unpin_gpr(rs);
-                        code_printer.print_ld(reg_id, rs, 0).unwrap();
+                        Self::load(reg_id, rs, 0, res_size, code_printer);
                     }
                 }
             }
@@ -634,7 +705,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     let rs = self.prepare_source_reg(ret_val_node.borrow().id, code_printer);
                     self.unpin_gpr(rs);
                     if rs != GPR_IDX_A0 {
-                        code_printer.print_mv(GPR_IDX_A0, rs).unwrap();
+                        self.move_reg(GPR_IDX_A0, rs, code_printer);
                     }
                 }
                 code_printer.print_jump_label(&self.gen_func_ret_label(func_name)).unwrap();
@@ -689,9 +760,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
         }
 
-        for var_state in self.vars.iter() {
-            assert!(!var_state.dirty);
-            assert!(matches!(var_state.loc, VarLocation::StackSlot));
+        for var_info in self.vars.iter() {
+            assert!(!var_info.state.dirty);
+            assert!(matches!(var_info.state.loc, VarLocation::StackSlot));
         }
     }
 
@@ -719,20 +790,21 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
     fn codegen_block_end_cleanup<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // write back all dirty variables
-        for var_state in self.vars.iter_mut() {
-            match var_state.loc {
+        for var_info in self.vars.iter_mut() {
+            match var_info.state.loc {
                 VarLocation::GPR(reg_id) => {
-                    if var_state.dirty {
-                        code_printer.print_store_to_stack(reg_id, self.stack_frame.stack_slot_offset(var_state.stack_slot)).unwrap();
-                        var_state.dirty = false;
+                    if var_info.state.dirty {
+                        let stack_slot = var_info.state.stack_slot;
+                        Self::store(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize, var_info.size, code_printer);
+                        var_info.state.dirty = false;
                     }
                     if let GPRState::Taken(node_id, _) = self.gpr_states[reg_id] {
                         self.temps.get_mut(&node_id).unwrap().var = None;
                     }
-                    var_state.loc = VarLocation::StackSlot;
+                    var_info.state.loc = VarLocation::StackSlot;
                 },
                 VarLocation::StackSlot => {
-                    assert!(!var_state.dirty);
+                    assert!(!var_info.state.dirty);
                 }
             }
         }
@@ -764,11 +836,16 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             self.vars_to_ids.insert(mem_loc, var_id);
             // TODO: passing params through stack is not supported
             eprintln!("Allocated slot {} to param {}", self.stack_frame.stack_slots.len(), param.name);
-            let stack_slot = self.stack_frame.allocate_stack_slot(8);
-            self.vars.push(VarState {
-                loc: VarLocation::StackSlot,
-                stack_slot: stack_slot,
-                dirty: false
+            let param_size = param.ty.size(&self.globals.target_conf);
+            assert!(param_size == 8 || param_size == 16, "Each parameter must fit in a register");
+            let stack_slot = self.stack_frame.allocate_stack_slot(param_size);
+            self.vars.push(VarInfo {
+                state: VarState {
+                    loc: VarLocation::StackSlot,
+                    stack_slot: stack_slot,
+                    dirty: false
+                },
+                size: param_size
             });
         }
 
@@ -783,10 +860,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let var_id = self.vars.len();
                 self.vars_to_ids.insert(mem_loc, var_id);
                 let stack_slot = self.stack_frame.allocate_stack_slot_specified_offset(offset + base_offset, size);
-                self.vars.push(VarState {
-                    loc: VarLocation::StackSlot,
-                    stack_slot: stack_slot,
-                    dirty: false
+                self.vars.push(VarInfo {
+                    state: VarState {
+                        loc: VarLocation::StackSlot,
+                        stack_slot: stack_slot,
+                        dirty: false
+                    },
+                    size: size
                 });
                
             }, 0, &self.globals.target_conf);
@@ -839,28 +919,36 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 pub struct CodeGen<Out> where Out: std::io::Write {
     translation_unit: CaplanTranslationUnit,
     ctx: GlobalCodeGenContext,
-    out: Out
+    code_printer: CodePrinter<Out>
 }
 
 impl<Out> CodeGen<Out> where Out: std::io::Write {
     pub fn new(translation_unit: CaplanTranslationUnit, out: Out) -> Self {
+        let target_conf = translation_unit.globals.target_conf.clone();
         Self {
             translation_unit: translation_unit,
             ctx: GlobalCodeGenContext::new(),
-            out: out
+            code_printer: CodePrinter::new(out, target_conf)
         }
     }
 
     pub fn codegen(mut self) {
+        self.code_printer.print_defs().unwrap();
+        writeln!(&mut self.code_printer.out).unwrap();
+
         for func in self.translation_unit.functions {
             let func_codegen = FunctionCodeGen::new(&self.translation_unit.globals);
-            func_codegen.codegen(func, &mut self.ctx, &mut self.out);
+            func_codegen.codegen(func, &mut self.ctx, &mut self.code_printer.out);
         }
 
         // bss declaration
-        for global_var in self.translation_unit.globals.global_vars.iter() {
+        for (var_name, var_type) in self.translation_unit.globals.global_vars.iter() {
             // TODO: throw the io error out
-            writeln!(&mut self.out, ".comm {}, {}", global_var.0, global_var.1.size(&self.translation_unit.globals.target_conf)).unwrap();
+            // writeln!(&mut self.code_printer.out, ".align {}", alignment_bits).unwrap();
+            writeln!(&mut self.code_printer.out, ".comm {}, {}, {}",
+                var_name,
+                var_type.size(&self.translation_unit.globals.target_conf),
+                var_type.alignment(&self.translation_unit.globals.target_conf)).unwrap();
         }
     }
 }

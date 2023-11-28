@@ -1,4 +1,4 @@
-use crate::target_conf::{CaplanTargetConf, self};
+use crate::target_conf::{CaplanTargetConf, self, CaplanABI};
 
 use super::arch_defs::*;
 use std::io::Write;
@@ -15,8 +15,17 @@ const REG_NAMES : [&'static str; GPR_N] = [
 
 const INST_INDENT : &'static str = "  ";
 
+// defines
+const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
+    ("cincoffset(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0xc, rd, rs1, rs2"),
+    ("cincoffsetimm(rd, rs, offset)", ".insn i 0x5b, 0x2, rd, offset(rs)"),
+    ("movc(rd, rs)", ".insn r 0x5b, 0x1, 0xa, rd, rs, x0"),
+    ("ldc(rd, rs, offset)", ".insn i 0x5b, 0x3, rd, offset(rs)"),
+    ("stc(rs1, rs2, offset)", ".insn s 0x5b, 0x4, rs1, offset(rs2)")
+];
+
 pub struct CodePrinter<T> where T: Write {
-    out: T,
+    pub out: T,
     target_conf: CaplanTargetConf
 }
 
@@ -26,6 +35,15 @@ impl<T> CodePrinter<T> where T: Write {
             out: out,
             target_conf: target_conf
         }
+    }
+
+    pub fn print_defs(&mut self) -> Result<(), std::io::Error> {
+        if matches!(self.target_conf.abi, CaplanABI::CapstoneCGNLSD) {
+            for (macro_name, macro_def) in ASM_DEFS_CAPSTONE.iter() {
+                writeln!(&mut self.out, "#define {} {}", *macro_name, *macro_def)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn print_la(&mut self, rd: RegId, symbol: &str) ->  Result<(), std::io::Error> {
@@ -55,16 +73,6 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_sd(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}sd {}, {}({})", INST_INDENT, REG_NAMES[rs1], offset, REG_NAMES[rs2])?;
-        Ok(())
-    }
-
-    pub fn print_ldc(&mut self, rd: RegId, rs: RegId, offset: isize) -> Result<(), std::io::Error> {
-        writeln!(&mut self.out, "{}.insn i 0x5b, 0x3, {}, {}({})", INST_INDENT, REG_NAMES[rd], offset, REG_NAMES[rs])?;
-        Ok(())
-    }
-
-    pub fn print_stc(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> { 
-        writeln!(&mut self.out, "{}.insn s 0x5b, 0x4, {}, {}({})", INST_INDENT, REG_NAMES[rs1], offset, REG_NAMES[rs2])?;
         Ok(())
     }
 
@@ -186,4 +194,42 @@ impl<T> CodePrinter<T> where T: Write {
     pub fn get_out(self) -> T {
         self.out
     }
+
+    /* Capstone-specific */
+
+    pub fn print_ldc(&mut self, rd: RegId, rs: RegId, offset: isize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}ldc({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], offset)?;
+        Ok(())
+    }
+
+    pub fn print_stc(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> { 
+        writeln!(&mut self.out, "{}stc({}, {}, {})", INST_INDENT, REG_NAMES[rs1], REG_NAMES[rs2], offset)?;
+        Ok(())
+    }
+
+    pub fn print_load_cap_from_stack(&mut self, rd: RegId, offset: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}ldc({}, sp, {})", INST_INDENT, REG_NAMES[rd], offset)?;
+        Ok(())
+    }
+
+    pub fn print_store_cap_to_stack(&mut self, rs: RegId, offset: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}stc({}, sp, {})", INST_INDENT, REG_NAMES[rs], offset)?;
+        Ok(())
+    }
+
+    pub fn print_incoffsetimm(&mut self, rd: RegId, rs: RegId, offset: isize) ->Result<(), std::io::Error> { 
+        writeln!(&mut self.out, "{}cincoffsetimm({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], offset)?;
+        Ok(())
+    }
+
+    pub fn print_incoffset(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}cincoffset({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
+
+    pub fn print_movc(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}movc({}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
 }
