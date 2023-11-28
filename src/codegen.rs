@@ -292,15 +292,36 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
     }
 
+    fn writeback_if_dirty<T>(&mut self, reg_id: RegId, code_printer: &mut CodePrinter<T>) -> bool where T: std::io::Write {
+        match &self.gpr_states[reg_id] {
+            GPRState::Taken(node_id, size) => {
+                if let Some(var_id) = self.temps.get(node_id).unwrap().var {
+                    if self.vars[var_id].state.dirty {
+                        // need to write back if it's dirty
+                        let slot_id = self.vars[var_id].state.stack_slot;
+                        Self::store(reg_id, GPR_IDX_SP, self.stack_frame.spill_stack_slot_offset(slot_id) as isize, *size, code_printer);
+                    }
+                    self.vars[var_id].state.loc = VarLocation::StackSlot;
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => panic!("GPR not taken")
+        }
+    }
+
     fn spill_reg<T>(&mut self, reg_id: RegId, node_id: IRDAGNodeId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // find a spill slot
-        let size = self.reg_size(reg_id).unwrap();
+        if !self.writeback_if_dirty(reg_id, code_printer) {
+            let size = self.reg_size(reg_id).unwrap();
 
-        let spill_slot = self.stack_frame.find_free_spill_slot(size);
-        // TODO: 16-byte spilling
-        code_printer.print_store_to_stack(reg_id, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
-        self.stack_frame.take_spill_slots(spill_slot, node_id, size);
-        self.temps.get_mut(&node_id).unwrap().loc = TempLocation::SpilledStackSlot(spill_slot, size);
+            let spill_slot = self.stack_frame.find_free_spill_slot(size);
+            // TODO: 16-byte spilling
+            code_printer.print_store_to_stack(reg_id, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
+            self.stack_frame.take_spill_slots(spill_slot, node_id, size);
+            self.temps.get_mut(&node_id).unwrap().loc = TempLocation::SpilledStackSlot(spill_slot, size);
+        }
         self.gpr_states[reg_id] = GPRState::Free;
     }
 
@@ -311,6 +332,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let temp_state = self.temps.get_mut(&node_id).unwrap();
                 if temp_state.rev_deps_to_eval == 0 {
                     temp_state.loc = TempLocation::Nowhere;
+                    self.writeback_if_dirty(reg_id, code_printer);
                     self.gpr_states[reg_id] = GPRState::Free;
                 } else {
                     self.spill_reg(reg_id, node_id, code_printer);
@@ -320,23 +342,23 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             GPRState::Pinned(node_id, _) => panic!("Attempting to spill pinned reg for node {}", node_id)
         }
     }
+    
+    fn reg_is_dead(&self, gpr_state: &GPRState) -> bool {
+        match gpr_state {
+            GPRState::Taken(node_id, _) => {
+                self.temps.get(node_id).unwrap().rev_deps_to_eval == 0
+            }
+            GPRState::Pinned(node_id, _) => {
+                self.temps.get(node_id).unwrap().rev_deps_to_eval == 0 // FIXME: not done correctly
+            }
+            GPRState::Reserved => false,
+            GPRState::Free => true
+        }
+    }
 
     fn spill_any_reg<T>(&mut self, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
         let dead = self.gpr_states.iter().enumerate().find(
-            |(_, s)| {
-                match s {
-                    GPRState::Taken(node_id, _) => {
-                        self.temps.get(node_id).unwrap().rev_deps_to_eval == 0
-                    }
-                    GPRState::Pinned(node_id, _) => {
-                        self.temps.get(node_id).unwrap().rev_deps_to_eval == 0 // FIXME: not done correctly
-                    }
-                    GPRState::Reserved => false,
-                    GPRState::Free => {
-                        panic!("Attempting to spill when there are still free GPRs");
-                    }
-                }
-            }
+            |(_, s)| self.reg_is_dead(*s)
         ).map(|(idx, _)| idx);
         if let Some(dead_reg) = dead {
             // no need to write back either
@@ -386,6 +408,18 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             self.gpr_clobbered[reg_id] = true;
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(reg_id);
             reg_id
+        }
+    }
+
+    fn assign_reg_with_hint<T>(&mut self, node_id: IRDAGNodeId, size: usize, hint: RegId, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
+        if self.reg_is_dead(&self.gpr_states[hint]) {
+            self.spill_reg_if_taken(hint, code_printer);
+            self.gpr_states[hint] = GPRState::Taken(node_id, size); // initially it is pinned to prevent immediate spilling
+            self.gpr_clobbered[hint] = true;
+            self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(hint);
+            hint
+        } else {
+            self.assign_reg(node_id, size, code_printer)
         }
     }
 
@@ -505,17 +539,22 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
         match &node.cons {
             IRDAGNodeCons::IntConst(val) => {
-                let reg_id = self.assign_reg(node.id, 8, code_printer);
-                code_printer.print_li(reg_id, *val).unwrap();
+                if *val == 0 {
+                    self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_X0);
+                } else {
+                    let reg_id = self.assign_reg(node.id, 8, code_printer);
+                    code_printer.print_li(reg_id, *val).unwrap();
+                }
             }
             IRDAGNodeCons::IntBinOp(op_type, s1, s2) => {
                 let rs1 = self.prepare_source_reg(s1.borrow().id, code_printer);
                 let rs2 = self.prepare_source_reg(s2.borrow().id, code_printer);
                 assert_eq!(s2.borrow().vtype.size(), 8);
                 let res_size = node.vtype.size();
-                let rd = self.assign_reg(node.id, res_size, code_printer);
                 self.unpin_gpr(rs1);
                 self.unpin_gpr(rs2);
+                let rd = self.assign_reg_with_hint(node.id, res_size, rs1, code_printer);
+                // let rd = self.assign_reg(node.id, res_size, code_printer);
                 match op_type {
                     IRDAGNodeIntBinOpType::Add => {
                         if res_size == 8 {
@@ -539,9 +578,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             IRDAGNodeCons::IntUnOp(op_type, source) => {
+                let res_size = source.borrow().vtype.size();
                 let rs = self.prepare_source_reg(source.borrow().id, code_printer);
-                let rd = self.assign_reg(node.id, 8, code_printer);
-                self.unpin_gpr(rs); // FIXME: unpin before assignment?
+                self.unpin_gpr(rs);
+                let rd = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
                 match op_type {
                     IRDAGNodeIntUnOpType::Neg => code_printer.print_neg(rd, rs).unwrap(),
                     IRDAGNodeIntUnOpType::Not => code_printer.print_not(rd, rs).unwrap(),
@@ -571,7 +611,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let rs = self.prepare_source_reg(source.borrow().id, code_printer);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(rs);
-                            let rd = self.assign_reg(node.id, 8, code_printer);
+                            let rd = self.assign_reg_with_hint(node.id, v_size, rs, code_printer);
                             let var_info = self.vars.get_mut(var_id).unwrap();
                             // look at current location of the variable
                             if let VarLocation::GPR(old_reg_id) = var_info.state.loc {
@@ -603,7 +643,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
                         self.unpin_gpr(r_offset);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
-                            let rd = self.assign_reg(node.id, 8, code_printer);
+                            let rd = self.assign_reg_with_hint(node.id, v_size, r_offset, code_printer);
                             self.unpin_gpr(r_val);
 
                             self.pointer_offset(rd, GPR_IDX_GP, r_offset, code_printer);
@@ -678,7 +718,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         // get address
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(r_offset);
-                            let rd = self.assign_reg(node.id, res_size, code_printer);
+                            let rd = self.assign_reg_with_hint(node.id, res_size, r_offset, code_printer);
                             self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
                             Self::load(rd, rd, self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, res_size, code_printer);
                         } else {
@@ -758,7 +798,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             IRDAGNodeCons::CapResize(src, size) => {
                 let rs = self.prepare_source_reg(src.borrow().id, code_printer);
                 self.unpin_gpr(rs);
-                let rd = self.assign_reg(node.id, src.borrow().vtype.size(), code_printer);
+                let rd = self.assign_reg_with_hint(node.id, src.borrow().vtype.size(), rs, code_printer);
                 self.pointer_bound_imm(rd, rs, *size, code_printer);
             }
             _ => {
