@@ -511,11 +511,19 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             IRDAGNodeCons::IntBinOp(op_type, s1, s2) => {
                 let rs1 = self.prepare_source_reg(s1.borrow().id, code_printer);
                 let rs2 = self.prepare_source_reg(s2.borrow().id, code_printer);
-                let rd = self.assign_reg(node.id, 8, code_printer);
+                assert_eq!(s2.borrow().vtype.size(), 8);
+                let res_size = node.vtype.size();
+                let rd = self.assign_reg(node.id, res_size, code_printer);
                 self.unpin_gpr(rs1);
                 self.unpin_gpr(rs2);
                 match op_type {
-                    IRDAGNodeIntBinOpType::Add => code_printer.print_add(rd, rs1, rs2).unwrap(),
+                    IRDAGNodeIntBinOpType::Add => {
+                        if res_size == 8 {
+                            code_printer.print_add(rd, rs1, rs2).unwrap();
+                        } else {
+                            code_printer.print_incoffset(rd, rs1, rs2).unwrap();
+                        }
+                    }
                     IRDAGNodeIntBinOpType::Sub => code_printer.print_sub(rd, rs1, rs2).unwrap(),
                     IRDAGNodeIntBinOpType::Mul => code_printer.print_mul(rd, rs1, rs2).unwrap(),
                     IRDAGNodeIntBinOpType::Div => code_printer.print_div(rd, rs1, rs2).unwrap(),
@@ -746,6 +754,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             IRDAGNodeCons::Asm(asm) => {
                 code_printer.print_asm(asm).unwrap();
+            }
+            IRDAGNodeCons::CapResize(src, size) => {
+                let rs = self.prepare_source_reg(src.borrow().id, code_printer);
+                self.unpin_gpr(rs);
+                let rd = self.assign_reg(node.id, src.borrow().vtype.size(), code_printer);
+                self.pointer_bound_imm(rd, rs, *size, code_printer);
             }
             _ => {
                 panic!("Unrecognised node {:?}", node.cons);

@@ -141,7 +141,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     pub fn new_int_binop(&mut self, op_type: IRDAGNodeIntBinOpType, a: &GCed<IRDAGNode>, b: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
-            IRDAGNodeVType::Int,
+            a.borrow().vtype.clone(),
             IRDAGNodeCons::IntBinOp(op_type, a.clone(), b.clone()),
             false
         ));
@@ -270,10 +270,11 @@ impl<'ast> IRDAGBuilder<'ast> {
         res
     }
 
-    pub fn new_address_of(&mut self, named_mem_loc: IRDAGNamedMemLoc, ty: CaplanType) -> GCed<IRDAGNode> {
+    pub fn new_address_of(&mut self, named_mem_loc: IRDAGNamedMemLoc, mut ty: CaplanType) -> GCed<IRDAGNode> {
+        self.globals.target_conf.make_pointer(&mut ty);
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
-            IRDAGNodeVType::RawPtr(ty),
+            IRDAGNodeVType::from_caplan_type(&ty).unwrap(),
             IRDAGNodeCons::AddressOf(named_mem_loc),
             false
         ));
@@ -288,6 +289,18 @@ impl<'ast> IRDAGBuilder<'ast> {
             IRDAGNodeCons::Asm(asm),
             true
         ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
+    fn new_cap_resize(&mut self, v: &GCed<IRDAGNode>, size: usize) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            v.borrow().vtype.clone(),
+            IRDAGNodeCons::CapResize(v.clone(), size),
+            false
+        ));
+        Self::add_dep(&res, &v);
         self.add_nonlabel_node(&res);
         res
     }
@@ -366,7 +379,16 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn get_address(&mut self, lval: IRDAGLVal) -> GCed<IRDAGNode> {
         // TODO: need to adjust the type
         match lval.loc {
-            IRDAGMemLoc::Addr(addr) => addr,
+            IRDAGMemLoc::Addr(addr) => {
+                eprintln!("Get address type {:?} {:?}, ", lval.ty, addr.borrow().vtype);
+                if addr.borrow().vtype.size() == 16 { // is capability
+                    let size = lval.ty.size(&self.globals.target_conf);
+                    let res = self.new_cap_resize(&addr, size);
+                    res
+                } else {
+                    addr
+                }
+            }
             IRDAGMemLoc::Named(named) => self.new_address_of(named, lval.ty),
             IRDAGMemLoc::NamedWithDynOffset(named, dyn_offset, offset_range) => {
                 let base_addr = self.new_address_of(named, lval.ty);
@@ -955,25 +977,34 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             member_expression: &'ast lang_c::ast::MemberExpression,
             span: &'ast Span,
         ) {
-        assert!(matches!(member_expression.operator.node, MemberOperator::Direct), "Only direct member operator (.) is supported");
         self.visit_expression(&member_expression.expression.node, &member_expression.expression.span);
-        let lhs = self.last_temp_res.take().unwrap();
-        let field_name = &member_expression.identifier.node.name;
-        match &lhs {
-            IRDAGNodeTempResult::LVal(lval) => {
-                let field = match &lval.ty {
-                    CaplanType::Struct(s) => s.find_field(field_name).cloned(),
-                    CaplanType::StructRef(s_ref) => s_ref.borrow().find_field(field_name).cloned(),
-                    _ => None
-                }.expect("Cannot find field");
-                self.last_temp_res = Some(
-                    IRDAGNodeTempResult::LVal(
-                        IRDAGLVal { ty: field.ty, loc: lval.loc.clone().apply_offset(field.offset as isize, self) }
-                    )
-                );
+
+        let (ty, loc) = match &member_expression.operator.node {
+            MemberOperator::Indirect => {
+                let addr = self.last_temp_res_to_word().unwrap();
+                let ty = addr.borrow().vtype.inner_type().unwrap().clone();
+                (ty, IRDAGMemLoc::Addr(addr.clone()))
             }
-            _ => panic!("Invalid member expression")
-        }
+            MemberOperator::Direct => {
+                let lhs = self.last_temp_res.take().unwrap();
+                match lhs {
+                    IRDAGNodeTempResult::LVal(lval) => (lval.ty, lval.loc),
+                    _ => panic!("Invalid member expression")
+                }
+            }
+        };
+
+        let field_name = &member_expression.identifier.node.name;
+        let field = match ty {
+            CaplanType::Struct(s) => s.find_field(field_name).cloned(),
+            CaplanType::StructRef(s_ref) => s_ref.borrow().find_field(field_name).cloned(),
+            _ => None
+        }.expect("Cannot find field");
+        self.last_temp_res = Some(
+            IRDAGNodeTempResult::LVal(
+                IRDAGLVal { ty: field.ty, loc: loc.apply_offset(field.offset as isize, self) }
+            )
+        );
     }
 
     fn visit_sizeofval(&mut self, sizeofval: &'ast lang_c::ast::SizeOfVal, span: &'ast Span) {

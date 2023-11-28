@@ -114,16 +114,20 @@ pub enum IRDAGMemLoc {
 impl IRDAGMemLoc {
     // only for static offset
     pub fn apply_offset(self, offset: isize, dag_builder: &mut IRDAGBuilder) -> Self {
-        match self {
-            IRDAGMemLoc::Addr(addr) => {
-                let const_node = dag_builder.new_int_const(offset as u64);
-                IRDAGMemLoc::Addr(dag_builder.new_int_binop(IRDAGNodeIntBinOpType::Add,
-                    &addr, &const_node))
+        if offset == 0 {
+            self
+        } else {
+            match self {
+                IRDAGMemLoc::Addr(addr) => {
+                    let const_node = dag_builder.new_int_const(offset as u64);
+                    IRDAGMemLoc::Addr(dag_builder.new_int_binop(IRDAGNodeIntBinOpType::Add,
+                        &addr, &const_node))
+                }
+                IRDAGMemLoc::Named(named_mem_loc) =>
+                    IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset)),
+                IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) =>
+                    IRDAGMemLoc::NamedWithDynOffset(named_mem_loc.apply_offset(offset), dyn_offset, offset_range)
             }
-            IRDAGMemLoc::Named(named_mem_loc) =>
-                IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset)),
-            IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) =>
-                IRDAGMemLoc::NamedWithDynOffset(named_mem_loc.apply_offset(offset), dyn_offset, offset_range)
         }
     }
 
@@ -181,6 +185,8 @@ pub enum IRDAGNodeCons {
     // label of a specific basic block
     // Label(None) is a label that has not been placed
     Label(Option<usize>),
+    // resizing a capability
+    CapResize(GCed<IRDAGNode>, usize),
     // take the address of a symbol
     AddressOf(IRDAGNamedMemLoc),
     // inline assembly
@@ -203,6 +209,7 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::DomReturn(_) => write!(f, "DomReturn"),
             Self::Read(_) => write!(f, "Read"),
             Self::Write(_, _) => write!(f, "Write"),
+            Self::CapResize(_, _) => write!(f, "CapResize"),
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
             Self::AddressOf(_) => write!(f, "AddressOf"),
             Self::Asm(arg0) => f.debug_tuple("Asm").field(arg0).finish()
