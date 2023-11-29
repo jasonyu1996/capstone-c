@@ -919,6 +919,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             BinaryOperator::BitwiseXor => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Xor, binary_operator_expression);
             }
+            BinaryOperator::ShiftLeft => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Shl, binary_operator_expression);
+            }
+            BinaryOperator::ShiftRight => {
+                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Shr, binary_operator_expression);
+            }
             BinaryOperator::Equals => {
                 self.process_int_bin_expr(IRDAGNodeIntBinOpType::Eq, binary_operator_expression);
             }

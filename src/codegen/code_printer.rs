@@ -238,4 +238,24 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
+    pub fn print_sll(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> { 
+        writeln!(&mut self.out, "{}sll {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
+
+    pub fn print_srl(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> { 
+        writeln!(&mut self.out, "{}srl {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
+
+    pub fn print_slli(&mut self, rd: RegId, rs: RegId, imm: usize) -> Result<(), std::io::Error> { 
+        writeln!(&mut self.out, "{}slli {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], imm)?;
+        Ok(())
+    }
+
+    pub fn print_srli(&mut self, rd: RegId, rs: RegId, imm: usize) -> Result<(), std::io::Error> { 
+        writeln!(&mut self.out, "{}srli {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], imm)?;
+        Ok(())
+    }
+
 }

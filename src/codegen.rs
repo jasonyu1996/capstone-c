@@ -575,7 +575,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IRDAGNodeIntBinOpType::LessThan => code_printer.print_lt(rd, rs1, rs2).unwrap(),
                     IRDAGNodeIntBinOpType::GreaterThan => code_printer.print_lt(rd, rs2, rs1).unwrap(),
                     IRDAGNodeIntBinOpType::LessEq => code_printer.print_le(rd, rs1, rs2).unwrap(),
-                    IRDAGNodeIntBinOpType::GreaterEq => code_printer.print_le(rd, rs1, rs1).unwrap()
+                    IRDAGNodeIntBinOpType::GreaterEq => code_printer.print_le(rd, rs1, rs1).unwrap(),
+                    IRDAGNodeIntBinOpType::Shl => code_printer.print_sll(rd, rs1, rs2).unwrap(),
+                    IRDAGNodeIntBinOpType::Shr => code_printer.print_srl(rd, rs1, rs2).unwrap()
                 }
             }
             IRDAGNodeCons::IntUnOp(op_type, source) => {

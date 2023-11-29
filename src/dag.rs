@@ -75,6 +75,7 @@ pub struct IRDAGNode {
 pub enum IRDAGNodeIntBinOpType {
     Add, Sub, Mul, Div, Or, Xor, And,
     Eq, LessThan, GreaterThan, LessEq, GreaterEq, NEq,
+    Shr, Shl
     // TODO: more
 }
 
@@ -340,6 +341,8 @@ pub fn static_bin_op(op: IRDAGNodeIntBinOpType, a: u64, b: u64) -> u64 {
         IRDAGNodeIntBinOpType::GreaterEq => if a >= b { 1 } else { 0 },
         IRDAGNodeIntBinOpType::LessThan => if a < b { 1 } else { 0 },
         IRDAGNodeIntBinOpType::LessEq => if a <= b { 1 } else { 0 },
+        IRDAGNodeIntBinOpType::Shl => a << b,
+        IRDAGNodeIntBinOpType::Shr => a >> b
     }
 }
 
