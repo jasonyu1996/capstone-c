@@ -1,6 +1,7 @@
 use core::panic;
 use std::collections::HashMap;
 
+use crate::codegen::code_printer::REG_NAMES;
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
 use crate::utils::{GCed, align_up_to};
@@ -643,11 +644,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
                         self.unpin_gpr(r_offset);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
-                            let rd = self.assign_reg_with_hint(node.id, v_size, r_offset, code_printer);
+                            let rd = self.assign_reg_with_hint(node.id, self.globals.target_conf.register_width, r_offset, code_printer);
                             self.unpin_gpr(r_val);
 
-                            self.pointer_offset(rd, GPR_IDX_GP, r_offset, code_printer);
-                            Self::store(r_val, rd, self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, v_size, code_printer);
+                            self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
+                            Self::store(r_val, rd, (named_mem_loc.offset +
+                                self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot)) as isize, v_size, code_printer);
                         } else {
                             assert!(v_size == 8, "storing capabilities to global variables unimplemented");
 
@@ -720,7 +722,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.unpin_gpr(r_offset);
                             let rd = self.assign_reg_with_hint(node.id, res_size, r_offset, code_printer);
                             self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
-                            Self::load(rd, rd, self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, res_size, code_printer);
+                            Self::load(rd, rd, 
+                                (named_mem_loc.offset + self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot)) as isize, res_size, code_printer);
                         } else {
                             assert!(res_size == 8, "loading capability from global variable not implemented");
 
@@ -792,8 +795,86 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, 8);
                 self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
             }
-            IRDAGNodeCons::Asm(asm) => {
-                code_printer.print_asm(asm).unwrap();
+            IRDAGNodeCons::Asm(asm, outputs, inputs) => {
+                eprintln!("asm with {} inputs and {} outputs", inputs.len(), outputs.len());
+                let output_regs = Vec::from_iter(outputs.iter().map(
+                    |out| {
+                        match &out.constraint {
+                            IRDAGAsmOutputConstraint::Overwrite => {
+                                let res = self.assign_reg(node.id, out.size, code_printer);
+                                self.pin_gpr(res);
+                                res
+                            }
+                            IRDAGAsmOutputConstraint::ReadWrite => {
+                                panic!("ReadWrite asm output unsupported");
+                            }
+                        }
+                    }
+                ));
+                let input_regs = Vec::from_iter(inputs.iter().map(
+                    |inp| {
+                        self.prepare_source_reg(inp.value.borrow().id, code_printer)
+                    }
+                ));
+                // unpin inputs only
+                for reg in input_regs.iter() {
+                    self.unpin_gpr(*reg);
+                }
+                // now simply do pattern replacement
+                let mut asm_res = asm.clone();
+                for (reg_idx, (symb_name_op, reg)) in 
+                    outputs.iter().map(|out| &out.symb_name).chain(
+                        inputs.iter().map(|inp| &inp.symb_name)
+                    ).zip(output_regs.iter().chain(input_regs.iter())).enumerate() {
+                    asm_res = asm_res.replace(&format!("%{}", reg_idx), REG_NAMES[*reg]);
+                    if let Some(symb_name) = symb_name_op {
+                        asm_res = asm_res.replace(&format!("[{}]", symb_name), REG_NAMES[*reg]);
+                    }
+                }
+                code_printer.print_asm(&asm_res).unwrap();
+                // write back result to output locations
+                for (reg, out) in output_regs.iter().zip(outputs.iter()) {
+                    match &out.loc {
+                        IRDAGMemLoc::Addr(addr) => {
+                            let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
+                            self.unpin_gpr(rs);
+                            Self::store(*reg, rs, 0, out.size, code_printer);
+                        }
+                        IRDAGMemLoc::Named(named_mem_loc) => {
+                            if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                                Self::store(*reg, GPR_IDX_SP,
+                                    self.stack_frame.spill_stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                                    out.size, code_printer);
+                            } else {
+                                assert!(self.globals.target_conf.register_width == 8, "Global variable access in Capstone unimplemented");
+                                let rs = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
+                                self.unpin_gpr(rs);
+                                code_printer.print_la(rs, &named_mem_loc.var_name).unwrap();
+                                Self::store(*reg, rs, named_mem_loc.offset as isize, out.size, code_printer);
+                            }
+                        }
+                        IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, range) => {
+                            let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
+                            self.unpin_gpr(r_offset);
+                            if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                                let rd = self.assign_reg_with_hint(node.id, self.globals.target_conf.register_width,
+                                    r_offset, code_printer);
+                                self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
+                                Self::store(*reg, rd,
+                                    (named_mem_loc.offset + self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot)) as isize,
+                                    out.size, code_printer);
+                            } else {
+                                let rs = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
+                                self.unpin_gpr(rs);
+                                code_printer.print_la(rs, &named_mem_loc.var_name).unwrap();
+                                self.pointer_offset(rs, rs, r_offset, code_printer);
+                                Self::store(*reg, rs, named_mem_loc.offset as isize, out.size, code_printer);
+                                assert!(self.globals.target_conf.register_width == 8, "Global variable access in Capstone unimplemented");
+                            }
+                        }
+                    }
+                    self.unpin_gpr(*reg);
+                }
             }
             IRDAGNodeCons::CapResize(src, size) => {
                 let rs = self.prepare_source_reg(src.borrow().id, code_printer);

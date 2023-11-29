@@ -87,6 +87,14 @@ impl<'ast> IRDAGBuilder<'ast> {
         (**a).borrow_mut().inc_dep_count();
     }
 
+    pub fn add_dep_mem_loc(a: &GCed<IRDAGNode>, dep: &IRDAGMemLoc) {
+        match &dep {
+            IRDAGMemLoc::Addr(addr) => Self::add_dep(&a, addr),
+            IRDAGMemLoc::Named(_) => (),
+            IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&a, dyn_offset)
+        }
+    }
+
     fn add_nonlabel_node(&mut self, node: &GCed<IRDAGNode>) {
         let last_block = self.dag.blocks.last_mut().unwrap();
         assert!(last_block.exit_node.is_none()); // we should not have seen an exit node yet
@@ -171,11 +179,7 @@ impl<'ast> IRDAGBuilder<'ast> {
             IRDAGNodeCons::Read(mem_loc.clone()),
             false
         ));
-        match &mem_loc {
-            IRDAGMemLoc::Addr(addr) => Self::add_dep(&res, addr),
-            IRDAGMemLoc::Named(_) => (),
-            IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&res, dyn_offset)
-        }
+        Self::add_dep_mem_loc(&res, &mem_loc);
         self.add_nonlabel_node(&res);
         res
     }
@@ -188,11 +192,7 @@ impl<'ast> IRDAGBuilder<'ast> {
             true
         ));
         Self::add_dep(&res, v);
-        match &mem_loc {
-            IRDAGMemLoc::Addr(addr) => Self::add_dep(&res, addr),
-            IRDAGMemLoc::Named(_) => (),
-            IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&res, dyn_offset)
-        }
+        Self::add_dep_mem_loc(&res, &mem_loc);
         self.add_nonlabel_node(&res);
         res
     }
@@ -282,13 +282,20 @@ impl<'ast> IRDAGBuilder<'ast> {
         res
     }
 
-    pub fn new_asm(&mut self, asm: String) -> GCed<IRDAGNode> {
+    pub fn new_asm(&mut self, asm: String, outputs: Vec<IRDAGAsmOutput>, inputs: Vec<IRDAGAsmInput>) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
             IRDAGNodeVType::Void,
-            IRDAGNodeCons::Asm(asm),
+            IRDAGNodeCons::Nop,
             true
         ));
+        for out in outputs.iter() {
+            Self::add_dep_mem_loc(&res, &out.loc);
+        }
+        for inp in inputs.iter() {
+            Self::add_dep(&res, &inp.value);
+        }
+        res.borrow_mut().cons = IRDAGNodeCons::Asm(asm, outputs, inputs);
         self.add_nonlabel_node(&res);
         res
     }
@@ -758,13 +765,52 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_asm_statement(&mut self, asm_statement: &'ast lang_c::ast::AsmStatement, span: &'ast Span) {
         match asm_statement {
             AsmStatement::GnuBasic(basic_asm) => {
-                let asm = basic_asm.node.join("").replace("\"", "");
+                let asm = basic_asm.node.concat().replace("\"", "");
                 // place it in a separate basic block to maintain order (TODO: we might not want to do this)
                 self.new_block_reset();
-                self.new_asm(asm);
+                self.new_asm(asm, Vec::new(), Vec::new());
                 self.new_block_reset();
             }
-            AsmStatement::GnuExtended(_) => panic!("Extended assembly statement not supported")
+            AsmStatement::GnuExtended(extended_asm_stmt) => {
+                let asm_template = extended_asm_stmt.template.node.concat().replace("\"", "");
+                let outputs = Vec::from_iter(extended_asm_stmt.outputs.iter().map(
+                    |out_op| {
+                        // parse constraint string
+                        self.visit_expression(&out_op.node.variable_name.node, &out_op.node.variable_name.span);
+                        let (out_loc, size) = match self.last_temp_res.take().unwrap() {
+                            IRDAGNodeTempResult::LVal(lval) =>
+                                (lval.loc, lval.ty.size(&self.globals.target_conf)),
+                            IRDAGNodeTempResult::Word(_) => panic!("Output of asm needs to be lval")
+                        };
+                        assert!(size <= self.globals.target_conf.register_width, "Asm output lval cannot be wider than register");
+                        let out_constraint = if out_op.node.constraints.node.concat().contains("+") {
+                            IRDAGAsmOutputConstraint::ReadWrite
+                        } else {
+                            IRDAGAsmOutputConstraint::Overwrite
+                        };
+                        IRDAGAsmOutput {
+                            symb_name: out_op.node.symbolic_name.as_ref().map(|n| n.node.name.clone()),
+                            constraint: out_constraint,
+                            loc: out_loc,
+                            size: size
+                        }
+                    }
+                ));
+                let inputs = Vec::from_iter(extended_asm_stmt.inputs.iter().map(
+                    |inp_op| {
+                        self.visit_expression(&inp_op.node.variable_name.node, &inp_op.node.variable_name.span);
+                        let inp_val = self.last_temp_res_to_word().unwrap();
+                        IRDAGAsmInput {
+                            symb_name: inp_op.node.symbolic_name.as_ref().map(|n| n.node.name.clone()),
+                            value: inp_val
+                        }
+                    }
+                ));
+                // since asm is placed in a new block, we don't need to worry about read-write re-ordering
+                self.new_block_reset();
+                self.new_asm(asm_template, outputs, inputs);
+                self.new_block_reset();
+            }
         }
     }
 

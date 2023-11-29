@@ -3,7 +3,7 @@ use crate::target_conf::{CaplanTargetConf, self, CaplanABI};
 use super::arch_defs::*;
 use std::io::Write;
 
-const REG_NAMES : [&'static str; GPR_N] = [
+pub const REG_NAMES : [&'static str; GPR_N] = [
     "x0", "ra", "sp", "gp", "tp",
     "t0", "t1", "t2", "s0", "s1",
     "a0", "a1", "a2", "a3", "a4",

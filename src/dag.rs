@@ -157,8 +157,26 @@ pub struct IRDAGLVal {
     pub loc: IRDAGMemLoc
 }
 
+pub struct IRDAGAsmInput {
+    pub symb_name: Option<String>,
+    pub value: GCed<IRDAGNode>
+}
+
+pub enum IRDAGAsmOutputConstraint {
+    ReadWrite, // the value must also be available
+    Overwrite
+}
+
+
+pub struct IRDAGAsmOutput {
+    pub symb_name: Option<String>,
+    pub constraint: IRDAGAsmOutputConstraint,
+    pub loc: IRDAGMemLoc,
+    pub size: usize
+}
 
 pub enum IRDAGNodeCons {
+    Nop, // placeholder
     // simple operations on integers; output is also integer
     IntConst(u64),
     IntBinOp(IRDAGNodeIntBinOpType, GCed<IRDAGNode>, GCed<IRDAGNode>),
@@ -190,12 +208,13 @@ pub enum IRDAGNodeCons {
     // take the address of a symbol
     AddressOf(IRDAGNamedMemLoc),
     // inline assembly
-    Asm(String)
+    Asm(String, Vec<IRDAGAsmOutput>, Vec<IRDAGAsmInput>)
 }
 
 impl std::fmt::Debug for IRDAGNodeCons {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Nop => write!(f, "Nop"),
             Self::IntConst(arg0) => f.debug_tuple("IntConst").field(arg0).finish(),
             Self::IntBinOp(arg0, _, _) => f.debug_tuple("IntBinOp").field(arg0).finish(),
             Self::IntUnOp(arg0, _) => f.debug_tuple("IntUnOp").field(arg0).finish(),
@@ -212,7 +231,7 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::CapResize(_, _) => write!(f, "CapResize"),
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
             Self::AddressOf(_) => write!(f, "AddressOf"),
-            Self::Asm(arg0) => f.debug_tuple("Asm").field(arg0).finish()
+            Self::Asm(arg0, _, _) => f.debug_tuple("Asm").field(arg0).finish()
         }
     }
 }
