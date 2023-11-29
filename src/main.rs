@@ -66,8 +66,24 @@ fn generate_code(translation_unit: &TranslationUnit, target_conf: CaplanTargetCo
 }
 
 fn main() {
-    let cli_args = Args::parse();
-    let config = Config::default();
+    let mut args_passthrough : Vec<String> = Vec::new();
+    let mut args_clap : Vec<String>= Vec::new();
+
+    let mut arg_passthrough = false;
+    for arg in std::env::args() {
+        if arg == "--" {
+            arg_passthrough = true;
+        } else if arg_passthrough {
+            args_passthrough.push(arg);
+        } else {
+            args_clap.push(arg);
+        }
+    }
+
+    let cli_args = Args::parse_from(args_clap);
+    let mut config = Config::with_gcc();
+    config.cpp_options.extend(args_passthrough);
+
     match parse_c(&config, &cli_args.source) {
         Ok(parser_result)  => {
             if cli_args.show_ast {
@@ -86,8 +102,8 @@ fn main() {
                     }
                     eprintln!("At line {}, column {}", syntax_error.line, syntax_error.column);
                 }
-                _ => {
-                    eprintln!("{:#?}", e);
+                ParseError::PreprocessorError(preprocessor_error) => {
+                    eprintln!("{:#?}", preprocessor_error);
                 }
             }
         }
