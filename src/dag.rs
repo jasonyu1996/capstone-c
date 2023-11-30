@@ -247,6 +247,7 @@ impl IRDAGNodeCons {
             IRDAGNodeCons::DomCall(_, _) => true,
             IRDAGNodeCons::InDomReturn(_) => true,
             IRDAGNodeCons::DomReturn(_) => true,
+            IRDAGNodeCons::Asm(_, _, _) => true, // potentially control-flow, conservatively treat it as such
             _ => {
                 false
             }

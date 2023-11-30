@@ -802,7 +802,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                     }
                 ));
                 // since asm is placed in a new block, we don't need to worry about read-write re-ordering
-                self.new_block_reset();
                 self.new_asm(asm_template, outputs, inputs);
                 self.new_block_reset();
             }
