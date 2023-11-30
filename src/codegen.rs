@@ -845,7 +845,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         IRDAGMemLoc::Named(named_mem_loc) => {
                             if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                                 Self::store(*reg, GPR_IDX_SP,
-                                    self.stack_frame.spill_stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                                    self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
                                     out.size, code_printer);
                             } else {
                                 assert!(self.globals.target_conf.register_width == 8, "Global variable access in Capstone unimplemented");

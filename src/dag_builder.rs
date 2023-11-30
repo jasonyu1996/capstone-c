@@ -5,7 +5,7 @@ use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
 use crate::dag::{*, self};
 
-use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator, AsmStatement};
+use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator, AsmStatement, IntegerBase};
 use lang_c::{visit::Visit as ParserVisit,
     ast::{FunctionDefinition, Expression, CallExpression, Statement, 
         BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
@@ -1072,8 +1072,14 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_constant(&mut self, constant: &'ast lang_c::ast::Constant, span: &'ast Span) {
         match constant {
             Constant::Integer(integer) => {
+                let radix = match &integer.base {
+                    IntegerBase::Binary => 2,
+                    IntegerBase::Octal => 8,
+                    IntegerBase::Decimal => 10,
+                    IntegerBase::Hexadecimal => 16
+                };
                 self.last_temp_res = Some(IRDAGNodeTempResult::Word(
-                    self.new_int_const(u64::from_str_radix(integer.number.as_ref(), 10).unwrap())
+                    self.new_int_const(u64::from_str_radix(integer.number.as_ref(), radix).unwrap())
                 ));
             }
             _ => {
