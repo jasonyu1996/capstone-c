@@ -192,6 +192,26 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
+    pub fn print_align(&mut self, align: usize) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, ".align {}", align)?;
+        Ok(())
+    }
+
+    pub fn print_section(&mut self, sec_name: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, ".section {}", sec_name)?;
+        Ok(())
+    }
+
+    pub fn print_u64(&mut self, mut val: u64) -> Result<(), std::io::Error> {
+        write!(&mut self.out, "{}", INST_INDENT)?;
+        for _ in 0..8 {
+            write!(&mut self.out, ".byte {:#04x}; ", val & 255)?;
+            val >>= 8;
+        }
+        writeln!(&mut self.out)?;
+        Ok(())
+    }
+
     pub fn get_out(self) -> T {
         self.out
     }

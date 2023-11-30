@@ -343,7 +343,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn lookup_identifier_type<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
         self.lookup_local_imm(v).or_else(
             || {
-                self.globals.global_vars.get(v)
+                self.globals.global_vars_to_ids.get(v).map(|&idx| &self.globals.global_vars[idx])
             }
         )
     }
@@ -563,12 +563,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                                 let lhs_loc = lhs_loc_base.clone().apply_offset(elem_offset as isize, self);
                                 let rhs_loc = rhs_loc_base.clone().apply_offset(elem_offset as isize, self);
                                 let read_res = self.read_location(&rhs_loc, IRDAGNodeVType::Int); // FIXME: this type should be looked up in type def
-                                if elem_size <= 8 {
-                                    self.write_location(&lhs_loc, &read_res);
-                                } else {
-                                    // TODO: write capability here
-                                    panic!("Writing capability unimplemented");
-                                }
+                                self.write_location(&lhs_loc, &read_res);
                             }
                         }
                     }
@@ -993,7 +988,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
         // check whether this is a local, param, or global
         let loc_info = self.lookup_local_imm(&identifier.name).or_else(
-            || self.globals.global_vars.get(&identifier.name)
+            || self.globals.global_vars_to_ids.get(&identifier.name).map(|&idx| &self.globals.global_vars[idx])
         );
         // local or global variable
         if let Some(ty) = loc_info {
@@ -1001,8 +996,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 ty: ty.clone(),
                 loc: IRDAGMemLoc::Named(IRDAGNamedMemLoc { var_name: identifier.name.clone(), offset: 0 })
             }));
-        } else if let Some(g_var_type) = self.globals.global_vars.get(&identifier.name) {
-            
         } else if self.globals.func_decls.contains(&identifier.name) {
             assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(identifier.name.clone());

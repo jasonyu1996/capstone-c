@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::codegen::code_printer::REG_NAMES;
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
+use crate::target_conf::CaplanABI;
 use crate::utils::{GCed, align_up_to};
 
 mod code_printer;
@@ -532,6 +533,18 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         reg_id
     }
 
+    fn get_global_var_pointer<T>(&self, reg: RegId, var_name: &str, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        match &self.globals.target_conf.abi {
+            CaplanABI::RISCV64 => {
+                code_printer.print_la(reg, var_name).unwrap();
+            }
+            CaplanABI::CapstoneCGNLSD => {
+                let global_var_idx = *self.globals.global_vars_to_ids.get(var_name).unwrap();
+                code_printer.print_ldc(reg, GPR_IDX_GP, (16 * global_var_idx) as isize).unwrap();
+            }
+        }
+    }
+
     fn generate_node<T>(&mut self, func_name: &str, node: &IRDAGNode, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         eprintln!("Codegen for node {} ({:?})", node.id, node.cons);
         if node.rev_deps.is_empty() && !node.side_effects {
@@ -599,10 +612,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot) as isize, code_printer);
                     self.pointer_bound_imm(rd, rd, node.vtype.inner_type().unwrap().size(&self.globals.target_conf), code_printer)
                 } else {
-                    assert!(self.globals.target_conf.min_alignment == 8, "taking address of global variable not implemented");
-                    code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
+                    self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
                     if named_mem_loc.offset != 0 {
-                        code_printer.print_addi(rd, rd, named_mem_loc.offset as isize).unwrap();
+                        self.pointer_offset_imm(rd, rd, named_mem_loc.offset as isize, code_printer);
                     }
                 }
             }
@@ -632,10 +644,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 self.move_reg(rd, rs, code_printer);
                             }
                         } else {
-                            assert!(v_size == 8, "storing capabilities to global variables unimplemented");
-                            let rd = self.assign_reg(node.id, 8, code_printer); // FIXME: the result doesn't actually reside here
+                            let rd = self.assign_reg(node.id, v_size, code_printer); // FIXME: the result doesn't actually reside here
                             self.unpin_gpr(rs);
-                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
+                            self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
                             Self::store(rs, rd, named_mem_loc.offset as isize, v_size, code_printer);
                         }
                     }
@@ -653,13 +664,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             Self::store(r_val, rd, (named_mem_loc.offset +
                                 self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot)) as isize, v_size, code_printer);
                         } else {
-                            assert!(v_size == 8, "storing capabilities to global variables unimplemented");
-
-                            let rd = self.assign_reg(node.id, 8, code_printer); // FIXME: need to set the result reg correctly
+                            let rd = self.assign_reg(node.id, v_size, code_printer); // FIXME: need to set the result reg correctly
                             self.unpin_gpr(r_val);
-                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
-                            code_printer.print_add(rd, rd, r_offset).unwrap();
-                            code_printer.print_sd(r_val, rd, named_mem_loc.offset as isize).unwrap();
+                            self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
+                            self.pointer_offset(rd, rd, r_offset, code_printer);
+                            Self::store(r_val, rd, named_mem_loc.offset as isize, v_size, code_printer);
                         }
                     }
                     IRDAGMemLoc::Addr(addr) => {
@@ -708,11 +717,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             };
                             self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
                         } else {
-                            assert!(res_size == 8, "loading capability from global variable not implemented");
                             // global variable
                             let rd = self.assign_reg(node.id, res_size, code_printer);
-                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
-                            code_printer.print_ld(rd, rd, named_mem_loc.offset as isize).unwrap();
+                            self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
+                            Self::load(rd, rd, named_mem_loc.offset as isize, res_size, code_printer);
                         }
                     }
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
@@ -727,13 +735,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             Self::load(rd, rd, 
                                 (named_mem_loc.offset + self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot)) as isize, res_size, code_printer);
                         } else {
-                            assert!(res_size == 8, "loading capability from global variable not implemented");
-
                             let rd = self.assign_reg(node.id, res_size, code_printer);
                             self.unpin_gpr(r_offset);
-                            code_printer.print_la(rd, &named_mem_loc.var_name).unwrap();
-                            code_printer.print_add(rd, rd, r_offset).unwrap();
-                            code_printer.print_ld(rd, rd, named_mem_loc.offset as isize).unwrap();
+                            self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
+                            self.pointer_offset(rd, rd, r_offset, code_printer);
+                            Self::load(rd, rd, named_mem_loc.offset as isize, res_size, code_printer);
                         }
                     }
                     IRDAGMemLoc::Addr(addr) => {
@@ -848,10 +854,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                     self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
                                     out.size, code_printer);
                             } else {
-                                assert!(self.globals.target_conf.register_width == 8, "Global variable access in Capstone unimplemented");
                                 let rs = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
                                 self.unpin_gpr(rs);
-                                code_printer.print_la(rs, &named_mem_loc.var_name).unwrap();
+                                self.get_global_var_pointer(rs, &named_mem_loc.var_name, code_printer);
                                 Self::store(*reg, rs, named_mem_loc.offset as isize, out.size, code_printer);
                             }
                         }
@@ -868,7 +873,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             } else {
                                 let rs = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
                                 self.unpin_gpr(rs);
-                                code_printer.print_la(rs, &named_mem_loc.var_name).unwrap();
+                                self.get_global_var_pointer(rs, &named_mem_loc.var_name, code_printer);
                                 self.pointer_offset(rs, rs, r_offset, code_printer);
                                 Self::store(*reg, rs, named_mem_loc.offset as isize, out.size, code_printer);
                                 assert!(self.globals.target_conf.register_width == 8, "Global variable access in Capstone unimplemented");
@@ -1085,14 +1090,28 @@ impl<Out> CodeGen<Out> where Out: std::io::Write {
             func_codegen.codegen(func, &mut self.ctx, &mut self.code_printer.out);
         }
 
-        // bss declaration
-        for (var_name, var_type) in self.translation_unit.globals.global_vars.iter() {
-            // TODO: throw the io error out
-            // writeln!(&mut self.code_printer.out, ".align {}", alignment_bits).unwrap();
-            writeln!(&mut self.code_printer.out, ".comm {}, {}, {}",
-                var_name,
-                var_type.size(&self.translation_unit.globals.target_conf),
-                var_type.alignment(&self.translation_unit.globals.target_conf)).unwrap();
+        match &self.translation_unit.globals.target_conf.abi {
+            CaplanABI::RISCV64 => {
+                // bss declaration
+                for (var_name, &idx) in self.translation_unit.globals.global_vars_to_ids.iter() {
+                    // TODO: throw the io error out
+                    // writeln!(&mut self.code_printer.out, ".align {}", alignment_bits).unwrap();
+                    let var_type = &self.translation_unit.globals.global_vars[idx];
+                    writeln!(&mut self.code_printer.out, ".comm {}, {}, {}",
+                        var_name,
+                        var_type.size(&self.translation_unit.globals.target_conf),
+                        var_type.alignment(&self.translation_unit.globals.target_conf)).unwrap();
+                }
+            }
+            CaplanABI::CapstoneCGNLSD => {
+                // TODO: produce the caplocation table in a special table
+                self.code_printer.print_align(16).unwrap();
+                self.code_printer.print_section(".gct").unwrap();
+                for var_type in self.translation_unit.globals.global_vars.iter() {
+                    self.code_printer.print_u64(var_type.size(&self.translation_unit.globals.target_conf) as u64).unwrap();
+                    self.code_printer.print_u64(0x6).unwrap();
+                }
+            }
         }
     }
 }
