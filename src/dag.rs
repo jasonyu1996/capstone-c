@@ -8,6 +8,7 @@ pub enum IRDAGNodeVType {
     Void,
     Int,
     Dom,
+    Rev,
     RawPtr(CaplanType), // TODO: probably we don't need this info here
     LinPtr(CaplanType),
     NonlinPtr(CaplanType),
@@ -20,6 +21,7 @@ impl IRDAGNodeVType {
             IRDAGNodeVType::Void => 8,
             IRDAGNodeVType::Int => 8,
             IRDAGNodeVType::Dom => 16,
+            IRDAGNodeVType::Rev => 16,
             IRDAGNodeVType::RawPtr(_) => 8,
             IRDAGNodeVType::LinPtr(_) => 16,
             IRDAGNodeVType::NonlinPtr(_) => 16,
@@ -32,6 +34,7 @@ impl IRDAGNodeVType {
         match self {
             IRDAGNodeVType::LinPtr(_) => true,
             IRDAGNodeVType::Dom => true,
+            IRDAGNodeVType::Rev => true,
             _ => false
         }
     }

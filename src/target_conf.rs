@@ -29,6 +29,8 @@ impl CaplanTargetConf {
         }
     }
 
+    // For Capstone ABI, this is assuming that the pointer points to either
+    // the stack or a global variable, and hence is always nonlinear
     pub fn make_pointer(&self, ty: &mut CaplanType) {
         let t = std::mem::replace(ty, CaplanType::Void);
         *ty = match &self.abi {

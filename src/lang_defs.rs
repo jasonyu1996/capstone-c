@@ -16,17 +16,39 @@ pub struct CaplanStruct {
     pub fields_idx: HashMap<String, usize>
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum CaplanType {
     Void,
     Int,
     Dom,
+    Rev, // revocatio capability; let's not record the type here (programmer beware)
     Array(Box<CaplanType>, usize), // element type and length
     LinPtr(Box<CaplanType>),
     NonlinPtr(Box<CaplanType>),
     RawPtr(Box<CaplanType>),
     Struct(Box<CaplanStruct>), // TODO: this is not supported for now
     StructRef(GCed<CaplanStruct>) // referencing a struct def elsewhere
+}
+
+impl std::fmt::Debug for CaplanType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CaplanType::Void => write!(f, "Void"),
+            CaplanType::Int => write!(f, "Int"),
+            CaplanType::Dom => write!(f, "Dom"),
+            CaplanType::Rev => write!(f, "Rev"),
+            CaplanType::Array(inner_type, n) => 
+                f.debug_tuple("Array").field(inner_type).field(n).finish(),
+            CaplanType::LinPtr(inner_type) =>
+                f.debug_tuple("LinPtr").field(inner_type).finish(),
+            CaplanType::NonlinPtr(inner_type) =>
+                f.debug_tuple("NonlinPtr").field(inner_type).finish(),
+            CaplanType::RawPtr(inner_type) =>
+                f.debug_tuple("RawPtr").field(inner_type).finish(),
+            CaplanType::Struct(_) => write!(f, "Struct"),
+            CaplanType::StructRef(_) => write!(f, "Struct")
+        }
+    }
 }
 
 impl CaplanStruct {
@@ -112,6 +134,13 @@ impl CaplanType {
         }
     }
 
+    pub fn is_linear(&self) -> bool {
+        match self {
+            CaplanType::LinPtr(_) | CaplanType::Rev | CaplanType::Dom => true,
+            _ => false
+        }
+    }
+
     pub fn make_pointer(&mut self, target_conf: &CaplanTargetConf) {
         target_conf.make_pointer(self);
     }
@@ -131,6 +160,7 @@ impl CaplanType {
             CaplanType::Void => 8,
             CaplanType::Int => 8,
             CaplanType::Dom => 16,
+            CaplanType::Rev => 16,
             CaplanType::Array(elem_t, elem_n) => elem_t.size(target_conf) * elem_n,
             CaplanType::LinPtr(_) => 16,
             CaplanType::NonlinPtr(_) => 16,
@@ -145,6 +175,7 @@ impl CaplanType {
             CaplanType::Void => 8,
             CaplanType::Int => 8,
             CaplanType::Dom => 16,
+            CaplanType::Rev => 16,
             CaplanType::Array(elem_t, elem_n) => elem_t.alignment(target_conf), // TODO: padding possibly needed
             CaplanType::LinPtr(_) => 16,
             CaplanType::NonlinPtr(_) => 16,
@@ -187,3 +218,50 @@ impl CaplanType {
 }
 
 
+// attributes in GNU extension
+
+// attributes for types. We see them as modifiers of types
+pub struct TypeAttribute<'h> {
+    pub name: &'h str,
+    // this is intended to be called after the other parts of the type specifier has been processed
+    pub type_modifier: &'h dyn Fn(&mut CaplanType) -> bool 
+}
+
+macro_rules! builtin_type_attr {
+    ($name:expr, $ty:expr) => {
+        TypeAttribute {
+            name: $name,
+            type_modifier: &|ty: &mut CaplanType| {
+                *ty = $ty;
+                true
+            }
+        }
+    }
+}
+
+pub const TYPE_ATTRIBUTES : &'static [TypeAttribute<'static>] = &[
+    TypeAttribute {
+        name: "linear",
+        type_modifier: &|ty: &mut CaplanType| {
+            let orig_type = std::mem::replace(ty, CaplanType::Void);
+            match orig_type {
+                CaplanType::NonlinPtr(inner_type) | CaplanType::LinPtr(inner_type) => {
+                    *ty = CaplanType::LinPtr(inner_type);
+                    true
+                }
+                _ => false
+            }
+        }
+    },
+    builtin_type_attr!("rev", CaplanType::Rev),
+    builtin_type_attr!("dom", CaplanType::Dom)
+];
+
+pub fn try_modify_type_with_attr(ty: &mut CaplanType, attr_name: &str) -> bool {
+    for attr in TYPE_ATTRIBUTES.iter() {
+        if attr.name == attr_name {
+            return (attr.type_modifier)(ty);
+        }
+    }
+    false
+}

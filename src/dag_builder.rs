@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use crate::lang::{CaplanParam, CaplanGlobalContext};
-use crate::lang_defs::CaplanType;
+use crate::lang_defs::{CaplanType, try_modify_type_with_attr};
 use crate::utils::{GCed, new_gced};
 use crate::dag::{*, self};
 
-use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator, AsmStatement, IntegerBase};
+use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator, AsmStatement, IntegerBase, Attribute, Extension};
 use lang_c::{visit::Visit as ParserVisit,
     ast::{FunctionDefinition, Expression, CallExpression, Statement, 
         BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
@@ -49,12 +49,13 @@ pub struct IRDAGBuilder<'ast> {
     last_temp_res: Option<IRDAGNodeTempResult>,
     decl_type: Option<CaplanType>,
     decl_id_name: Option<String>,
+    type_attr_names: Vec<String>,
     break_targets: Vec<GCed<IRDAGNode>>,
     continue_targets: Vec<GCed<IRDAGNode>>,
     switch_target_info: Vec<SwitchTargetInfo<'ast>>,
     globals: &'ast CaplanGlobalContext,
     last_func_ident: Option<String>,
-    id_counter: u64
+    id_counter: u64,
 }
 
 impl<'ast> IRDAGBuilder<'ast> {
@@ -67,6 +68,7 @@ impl<'ast> IRDAGBuilder<'ast> {
             last_temp_res: None,
             decl_type: None,
             decl_id_name: None,
+            type_attr_names: Vec::new(),
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
             switch_target_info: Vec::new(),
@@ -359,16 +361,24 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     // ty: type of the value being read, not of the location
-    fn read_location(&mut self, loc: &IRDAGMemLoc, ty: IRDAGNodeVType) -> GCed<IRDAGNode> {
+    // dep_as_write: treat this as a write when managing dependencies if this read result is linear and is involved in a transfer-type operation
+    fn read_location(&mut self, loc: &IRDAGMemLoc, ty: IRDAGNodeVType, dep_as_write: bool) -> GCed<IRDAGNode> {
         // ty might be a capability
         match loc {
             IRDAGMemLoc::Addr(_) => self.new_read(loc.clone(), ty),
             IRDAGMemLoc::Named(named_mem_loc) => {
                 let ty_size = ty.size();
                 let read_node = self.new_read(loc.clone(), ty);
-                self.read_named_mem_loc(named_mem_loc, &read_node);
-                if ty_size == 16 {
-                    self.read_named_mem_loc(&named_mem_loc.clone().with_offset(8), &read_node);
+                if dep_as_write {
+                    self.write_named_mem_loc(named_mem_loc, &read_node);
+                    if ty_size == 16 {
+                        self.write_named_mem_loc(&named_mem_loc.clone().with_offset(8), &read_node);
+                    }
+                } else {
+                    self.read_named_mem_loc(named_mem_loc, &read_node);
+                    if ty_size == 16 {
+                        self.read_named_mem_loc(&named_mem_loc.clone().with_offset(8), &read_node);
+                    }
                 }
                 read_node
             }
@@ -376,7 +386,11 @@ impl<'ast> IRDAGBuilder<'ast> {
                 let read_node = self.new_read(loc.clone(), ty);
                 for offset in offset_range.clone().step_by(8) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset); // TODO: very brute force
-                    self.read_named_mem_loc(&covered_loc, &read_node);
+                    if dep_as_write {
+                        self.write_named_mem_loc(&covered_loc, &read_node);
+                    } else {
+                        self.read_named_mem_loc(&covered_loc, &read_node);
+                    }
                 }
                 read_node
             }
@@ -428,7 +442,7 @@ impl<'ast> IRDAGBuilder<'ast> {
         }
     }
     
-    fn result_to_word(&mut self, res: &IRDAGNodeTempResult) -> Option<GCed<IRDAGNode>> {
+    fn result_to_word(&mut self, res: &IRDAGNodeTempResult, to_be_transferred: bool) -> Option<GCed<IRDAGNode>> {
         match res {
             IRDAGNodeTempResult::Word(word) => Some(word.clone()),
             IRDAGNodeTempResult::LVal(lval) => {
@@ -441,7 +455,8 @@ impl<'ast> IRDAGBuilder<'ast> {
                         let size = lval.ty.size(&self.globals.target_conf);
                         if size <= 16 {
                             // read the variable location
-                            Some(self.read_location(&lval.loc, IRDAGNodeVType::from_caplan_type(&lval.ty).unwrap()))
+                            Some(self.read_location(&lval.loc, IRDAGNodeVType::from_caplan_type(&lval.ty).unwrap(),
+                                to_be_transferred && lval.ty.is_linear()))
                         } else {
                             None
                         }
@@ -451,11 +466,11 @@ impl<'ast> IRDAGBuilder<'ast> {
         }
     }
 
-    fn last_temp_res_to_word(&mut self) -> Option<GCed<IRDAGNode>> {
-        self.last_temp_res.take().and_then(|x| self.result_to_word(&x))
+    fn last_temp_res_to_word(&mut self, to_be_transferred: bool) -> Option<GCed<IRDAGNode>> {
+        self.last_temp_res.take().and_then(|x| self.result_to_word(&x, to_be_transferred))
     }
 
-    fn last_temp_res_to_indexable_lval(&mut self) -> Option<IRDAGLVal> {
+    fn last_temp_res_to_indexable_lval(&mut self, to_be_transferred: bool) -> Option<IRDAGLVal> {
         self.last_temp_res.take().and_then(
             |r| {
                 match r {
@@ -466,9 +481,10 @@ impl<'ast> IRDAGBuilder<'ast> {
                             CaplanType::Array(inner_type, _) =>
                                 Some(IRDAGLVal { ty: *inner_type, loc: loc }),
                             CaplanType::RawPtr(inner_type) =>
-                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::RawPtr(*inner_type))) }),
+                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::RawPtr(*inner_type), false)) }),
                             CaplanType::NonlinPtr(inner_type) =>
-                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::NonlinPtr(*inner_type))) }),
+                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::NonlinPtr(*inner_type), false)) }),
+                            // TODO: add linear capability support
                             _ => None
                         }
                     }
@@ -489,10 +505,10 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn process_int_bin_expr(&mut self, op_type: IRDAGNodeIntBinOpType, expr: &'ast BinaryOperatorExpression) {
         self.visit_expression(&expr.lhs.node,
             &expr.lhs.span);
-        let l = self.last_temp_res_to_word().unwrap();
+        let l = self.last_temp_res_to_word(false).unwrap();
         self.visit_expression(&expr.rhs.node,
             &expr.rhs.span);
-        let r = self.last_temp_res_to_word().unwrap();
+        let r = self.last_temp_res_to_word(false).unwrap();
         let l_ref = l.borrow();
         let r_ref = r.borrow();
         let res_word = 
@@ -509,7 +525,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     // integer unary operator expression
     fn process_int_un_expr(&mut self, op_type: IRDAGNodeIntUnOpType, expr: &'ast UnaryOperatorExpression) {
         self.visit_expression(&expr.operand.node, &expr.operand.span);
-        let r = self.last_temp_res_to_word().unwrap();
+        let r = self.last_temp_res_to_word(false).unwrap();
         let res_word = match &r.borrow().cons {
             IRDAGNodeCons::IntConst(r_const) => self.new_int_const(dag::static_un_op(op_type, *r_const)),
             _ => self.new_int_unop(op_type, &r)
@@ -562,14 +578,14 @@ impl<'ast> IRDAGBuilder<'ast> {
                             for (elem_offset, elem_size) in offset_collection {
                                 let lhs_loc = lhs_loc_base.clone().apply_offset(elem_offset as isize, self);
                                 let rhs_loc = rhs_loc_base.clone().apply_offset(elem_offset as isize, self);
-                                let read_res = self.read_location(&rhs_loc, IRDAGNodeVType::Int); // FIXME: this type should be looked up in type def
+                                let read_res = self.read_location(&rhs_loc, IRDAGNodeVType::Int, false); // FIXME: this type should be looked up in type def
                                 self.write_location(&lhs_loc, &read_res);
                             }
                         }
                     }
                 }
             } else {
-                let rhs_word = self.result_to_word(&rhs).expect("Size mismatch for assignment");
+                let rhs_word = self.result_to_word(&rhs, false).expect("Size mismatch for assignment");
                 self.write_location(&lval.loc, &rhs_word);
             }
 
@@ -583,7 +599,7 @@ impl<'ast> IRDAGBuilder<'ast> {
 impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_if_statement(&mut self, if_statement: &'ast lang_c::ast::IfStatement, span: &'ast Span) {
         self.visit_expression(&if_statement.condition.node, &if_statement.condition.span);
-        let cond = self.last_temp_res_to_word().unwrap();
+        let cond = self.last_temp_res_to_word(false).unwrap();
         let label_then = self.new_label();
         let label_taken = self.new_label();
         let _ = self.new_branch(&label_taken, &cond);
@@ -614,7 +630,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.new_block_reset();
         self.place_label_node(&label_start);
         self.visit_expression(&while_statement.expression.node, &while_statement.expression.span);
-        let cond = self.last_temp_res_to_word().unwrap();
+        let cond = self.last_temp_res_to_word(false).unwrap();
         let _ = self.new_branch(&label_taken, &cond);
         self.new_block_reset();
         let _ = self.new_jump(&label_end);
@@ -644,7 +660,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         if let Some(cond_node) = for_statement.condition.as_ref() {
             self.visit_expression(&cond_node.node, &cond_node.span);
             let label_taken = self.new_label();
-            let cond = self.last_temp_res_to_word().unwrap();
+            let cond = self.last_temp_res_to_word(false).unwrap();
             self.new_branch(&label_taken, &cond);
             self.new_block_reset();
             self.new_jump(&label_end);
@@ -682,7 +698,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.new_block_reset();
         self.place_label_node(&label_cont);
         self.visit_expression(&do_while_statement.expression.node, &do_while_statement.expression.span);
-        let cond = self.last_temp_res_to_word().unwrap();
+        let cond = self.last_temp_res_to_word(false).unwrap();
         self.new_branch(&label_start, &cond);
         self.new_block_reset();
         self.place_label_node(&label_end);
@@ -713,11 +729,11 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.break_targets.pop().unwrap();
         let switch_targets = self.switch_target_info.pop().unwrap();
         self.visit_expression(&switch_statement.expression.node, &switch_statement.expression.span);
-        let val = self.last_temp_res_to_word().unwrap();
+        let val = self.last_temp_res_to_word(false).unwrap();
 
         for (expr, expr_span, target) in switch_targets.targets.iter() {
             self.visit_expression(expr, expr_span);
-            let b_res = self.last_temp_res_to_word().unwrap();
+            let b_res = self.last_temp_res_to_word(false).unwrap();
             let cmp_res = self.new_int_binop(IRDAGNodeIntBinOpType::Eq, 
                 &val, &b_res);
             self.new_branch(target, &cmp_res);
@@ -794,7 +810,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 let inputs = Vec::from_iter(extended_asm_stmt.inputs.iter().map(
                     |inp_op| {
                         self.visit_expression(&inp_op.node.variable_name.node, &inp_op.node.variable_name.span);
-                        let inp_val = self.last_temp_res_to_word().unwrap();
+                        let inp_val = self.last_temp_res_to_word(true).unwrap();
                         IRDAGAsmInput {
                             symb_name: inp_op.node.symbolic_name.as_ref().map(|n| n.node.name.clone()),
                             value: inp_val
@@ -827,7 +843,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             Statement::Return(expr) => {
                 let ret_val_node = expr.as_ref().map(|ret_val_expr| {
                     self.visit_expression(&ret_val_expr.node, &ret_val_expr.span);
-                    self.last_temp_res_to_word().unwrap() // TODO: only 8 byte can be returned
+                    self.last_temp_res_to_word(true).unwrap() // TODO: only 8 byte can be returned
                 });
                 self.new_indom_return(ret_val_node);
                 self.new_block_reset();
@@ -862,7 +878,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             UnaryOperator::Indirection => {
                 // TODO: some basic optimisation
                 self.visit_expression(&unary_operator_expression.operand.node, &unary_operator_expression.operand.span);
-                let r = self.last_temp_res_to_word().unwrap();
+                let r = self.last_temp_res_to_word(false).unwrap();
                 let new_type = match &r.borrow().vtype {
                     IRDAGNodeVType::RawPtr(inner_type) => inner_type.clone(),
                     IRDAGNodeVType::NonlinPtr(inner_type) => inner_type.clone(),
@@ -946,9 +962,9 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             }
             BinaryOperator::Index => {
                 self.visit_expression(&binary_operator_expression.lhs.node, &binary_operator_expression.rhs.span);
-                let lhs = self.last_temp_res_to_indexable_lval().unwrap();
+                let lhs = self.last_temp_res_to_indexable_lval(false).unwrap();
                 self.visit_expression(&binary_operator_expression.rhs.node, &binary_operator_expression.rhs.span);
-                let rhs = self.last_temp_res_to_word().unwrap();
+                let rhs = self.last_temp_res_to_word(false).unwrap();
                 // take address
                 let elem_ty = lhs.ty.clone();
                 // simple optimisation: check whether the index is statically known
@@ -1009,7 +1025,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let args = Vec::from_iter(call_expression.arguments.iter().map(
             |arg_node| {
                 self.visit_expression(&arg_node.node, &arg_node.span);
-                self.last_temp_res_to_word().unwrap()
+                self.last_temp_res_to_word(true).unwrap()
             }
         ));
         self.last_temp_res = Some(IRDAGNodeTempResult::Word(self.new_indom_call(&func_name, args)));
@@ -1025,7 +1041,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
 
         let (ty, loc) = match &member_expression.operator.node {
             MemberOperator::Indirect => {
-                let addr = self.last_temp_res_to_word().unwrap();
+                let addr = self.last_temp_res_to_word(false).unwrap();
                 let ty = addr.borrow().vtype.inner_type().unwrap().clone();
                 (ty, IRDAGMemLoc::Addr(addr.clone()))
             }
@@ -1090,7 +1106,17 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 assert!(self.decl_type.is_none()); // can't have multiple type specifiers
                 self.decl_type = CaplanType::from_ast_type(&type_specifier.node, self.globals);
             }
-            _ => {}
+            DeclarationSpecifier::Extension(extension) => {
+                for ext in extension.iter() {
+                    match &ext.node {
+                        Extension::Attribute(attr) => {
+                            self.type_attr_names.push(attr.name.node.clone());
+                        }
+                        _ => ()
+                    }
+                }
+            }
+            _ => ()
         }
     }
 
@@ -1131,7 +1157,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.visit_declarator(&init_declarator.declarator.node, &init_declarator.declarator.span);
         // add this to local
         let name = self.decl_id_name.take().unwrap();
-        let ty = self.decl_type.as_ref().unwrap().clone();
+        let mut ty = self.decl_type.as_ref().unwrap().clone();
+        // call the type modifiers defined by the type attributes        
+        for attr_name in self.type_attr_names.iter() {
+            assert!(try_modify_type_with_attr(&mut ty, attr_name), "Failed to apply the type attribute {}", attr_name);
+        }
+        eprintln!("Declared new local variable {} with type {:?}", name, ty);
         self.locals.insert(name.clone(),ty.clone());
         let offset_collection = ty.collect_offsets(&self.globals.target_conf);
         for (offset, _) in offset_collection {
@@ -1149,6 +1180,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     }
 
     fn visit_declaration(&mut self, declaration: &'ast lang_c::ast::Declaration, span: &'ast Span) {
+        assert!(self.type_attr_names.is_empty());
         assert!(self.decl_type.is_none()); // not already in a declaration
         for decl_specifier in declaration.specifiers.iter() {
             self.visit_declaration_specifier(&decl_specifier.node, &decl_specifier.span);
@@ -1158,6 +1190,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             self.visit_init_declarator(&init_decl.node, &init_decl.span);
         }
         self.decl_type = None;
+        self.type_attr_names.clear();
     }
 
     fn visit_function_definition(
