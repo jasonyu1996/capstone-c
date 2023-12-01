@@ -678,12 +678,27 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let rs2 = self.prepare_source_reg(&*addr.borrow(), code_printer);
                         if let Some(dyn_offset) = dyn_offset_op {
                             let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
-                            self.unpin_gpr(rs2);
-                            self.unpin_gpr(r_offset);
-                            let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
-                            self.pointer_offset(r_addr, rs2, r_offset, code_printer);
-                            self.unpin_gpr(rs1);
-                            Self::store(rs1, r_addr, *static_offset as isize, v_size, code_printer);
+                            if addr.borrow().vtype.is_linear() {
+                                let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
+                                self.pin_gpr(r_addr);
+                                self.pointer_offset(r_addr, rs2, r_offset, code_printer);
+                                Self::store(rs1, r_addr, *static_offset as isize, v_size, code_printer);
+                                // restore capability
+                                self.unpin_gpr(r_offset);
+                                let r_neg_offset = self.assign_reg_with_hint(node.id, 8, r_offset, code_printer);
+                                code_printer.print_sub(r_neg_offset, GPR_IDX_X0, r_offset).unwrap();
+                                self.pointer_offset(rs2, r_addr, r_neg_offset, code_printer);
+                                self.unpin_gpr(rs1);
+                                self.unpin_gpr(rs2);
+                                self.unpin_gpr(r_addr);
+                            } else {
+                                self.unpin_gpr(rs2);
+                                self.unpin_gpr(r_offset);
+                                let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
+                                self.pointer_offset(r_addr, rs2, r_offset, code_printer);
+                                self.unpin_gpr(rs1);
+                                Self::store(rs1, r_addr, *static_offset as isize, v_size, code_printer);
+                            }
                         } else {
                             self.unpin_gpr(rs1);
                             self.unpin_gpr(rs2);
@@ -757,14 +772,30 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
                         // TODO: if the address is linear, we would need to somehow restore it
                         let rs = self.prepare_source_reg(&*addr.borrow(), code_printer);
-                        let reg_id = self.assign_reg(node.id, res_size, code_printer);
-                        self.unpin_gpr(rs);
                         if let Some(dyn_offset) = dyn_offset_op {
                             let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
-                            self.unpin_gpr(r_offset);
-                            self.pointer_offset(reg_id, rs, r_offset, code_printer); // take care not to clobber rs
-                            Self::load(reg_id, reg_id, *static_offset as isize, res_size, code_printer);
+                            if addr.borrow().vtype.is_linear() {
+                                let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
+                                self.pin_gpr(r_addr);
+                                let reg_id = self.assign_reg(node.id, res_size, code_printer);
+                                self.pointer_offset(reg_id, rs, r_offset, code_printer);
+                                // restore capability
+                                self.unpin_gpr(r_offset);
+                                let r_neg_offset = self.assign_reg_with_hint(node.id, 8, r_offset, code_printer);
+                                code_printer.print_sub(r_neg_offset, GPR_IDX_X0, r_offset).unwrap();
+                                self.pointer_offset(rs, r_addr, r_neg_offset, code_printer);
+                                self.unpin_gpr(r_addr);
+                                self.unpin_gpr(rs);
+                            } else {
+                                self.unpin_gpr(rs);
+                                self.unpin_gpr(r_offset);
+                                let reg_id = self.assign_reg(node.id, res_size, code_printer);
+                                self.pointer_offset(reg_id, rs, r_offset, code_printer); // take care not to clobber rs
+                                Self::load(reg_id, reg_id, *static_offset as isize, res_size, code_printer);
+                            }
                         } else {
+                            self.unpin_gpr(rs);
+                            let reg_id = self.assign_reg(node.id, res_size, code_printer);
                             Self::load(reg_id, rs, *static_offset as isize, res_size, code_printer);
                         }
                     }
@@ -866,12 +897,27 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
                             let rs = self.prepare_source_reg(&*addr.borrow(), code_printer);
                             if let Some(dyn_offset) = dyn_offset_op {
-                                let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
-                                self.unpin_gpr(rs);
-                                self.unpin_gpr(r_offset);
-                                let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
-                                self.pointer_offset(r_addr, rs, r_offset, code_printer);
-                                Self::store(*reg, r_addr, *static_offset as isize, out.size, code_printer);
+                                if addr.borrow().vtype.is_linear() {
+                                    let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                                    let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
+                                    self.pin_gpr(r_addr);
+                                    self.pointer_offset(r_addr, rs, r_offset, code_printer);
+                                    Self::store(*reg, r_addr, *static_offset as isize, out.size, code_printer);
+                                    self.unpin_gpr(r_offset);
+                                    // restore the capability in rs
+                                    let r_neg_offset = self.assign_reg_with_hint(node.id, 8, r_offset, code_printer);
+                                    code_printer.print_sub(r_neg_offset, GPR_IDX_X0, r_offset).unwrap();
+                                    self.pointer_offset(rs, r_addr, r_neg_offset, code_printer);
+                                    self.unpin_gpr(rs);
+                                    self.unpin_gpr(r_addr);
+                                } else {
+                                    let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                                    self.unpin_gpr(rs);
+                                    self.unpin_gpr(r_offset);
+                                    let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
+                                    self.pointer_offset(r_addr, rs, r_offset, code_printer);
+                                    Self::store(*reg, r_addr, *static_offset as isize, out.size, code_printer);
+                                }
                             } else {
                                 self.unpin_gpr(rs);
                                 Self::store(*reg, rs, *static_offset as isize, out.size, code_printer);

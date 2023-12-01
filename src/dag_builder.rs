@@ -84,9 +84,11 @@ impl<'ast> IRDAGBuilder<'ast> {
     /* Low level operations (add nodes etc.) */
 
     pub fn add_dep(a: &GCed<IRDAGNode>, dep: &GCed<IRDAGNode>) {
-        eprintln!("Depends: {} depends on {}", a.borrow().id, dep.borrow().id);
-        (**dep).borrow_mut().add_to_rev_deps(a);
-        (**a).borrow_mut().inc_dep_count();
+        if a.borrow().id != dep.borrow().id {
+            eprintln!("Depends: {} depends on {}", a.borrow().id, dep.borrow().id);
+            (**dep).borrow_mut().add_to_rev_deps(a);
+            (**a).borrow_mut().inc_dep_count();
+        }
     }
 
     pub fn add_dep_mem_loc(a: &GCed<IRDAGNode>, dep: &IRDAGMemLoc) {
@@ -181,7 +183,6 @@ impl<'ast> IRDAGBuilder<'ast> {
     pub fn new_read(&mut self, mem_loc: IRDAGMemLoc, ty: IRDAGNodeVType) -> GCed<IRDAGNode> {
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
-            // TODO: should be looked up, assuming int for now
             ty,
             IRDAGNodeCons::Read(mem_loc.clone()),
             false
@@ -497,6 +498,8 @@ impl<'ast> IRDAGBuilder<'ast> {
                                 Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::RawPtr(*inner_type), false), 0, None) }),
                             CaplanType::NonlinPtr(inner_type) =>
                                 Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::NonlinPtr(*inner_type), false), 0, None) }),
+                            CaplanType::LinPtr(inner_type) =>
+                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::LinPtr(*inner_type), false), 0, None) }),
                             // TODO: add linear capability support
                             _ => None
                         }
@@ -978,14 +981,15 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 // take address
                 let elem_ty = lhs.ty.clone();
                 // simple optimisation: check whether the index is statically known
-                let rhs_cons = &rhs.borrow().cons;
-                if let IRDAGNodeCons::IntConst(int_const) = rhs_cons {
+                let rhs_ref = rhs.borrow();
+                if let IRDAGNodeCons::IntConst(int_const) = &rhs_ref.cons {
                     let offset = elem_ty.size(&self.globals.target_conf) as u64 * *int_const;
                     let loc = lhs.loc.apply_offset(offset as isize, self);
                     self.last_temp_res = Some(IRDAGNodeTempResult::LVal(
                         IRDAGLVal { ty: elem_ty, loc: loc }
                     ));
                 } else {
+                    drop(rhs_ref);
                     let elem_size_const = self.new_int_const(elem_ty.size(&self.globals.target_conf) as u64);
                     let offset = self.new_int_binop(
                         IRDAGNodeIntBinOpType::Mul,
