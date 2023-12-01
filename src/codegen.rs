@@ -905,7 +905,6 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 self.get_global_var_pointer(rs, &named_mem_loc.var_name, code_printer);
                                 self.pointer_offset(rs, rs, r_offset, code_printer);
                                 Self::store(*reg, rs, named_mem_loc.offset as isize, out.size, code_printer);
-                                assert!(self.globals.target_conf.register_width == 8, "Global variable access in Capstone unimplemented");
                             }
                         }
                     }
