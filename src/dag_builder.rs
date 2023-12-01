@@ -53,7 +53,7 @@ pub struct IRDAGBuilder<'ast> {
     break_targets: Vec<GCed<IRDAGNode>>,
     continue_targets: Vec<GCed<IRDAGNode>>,
     switch_target_info: Vec<SwitchTargetInfo<'ast>>,
-    globals: &'ast CaplanGlobalContext,
+    pub globals: &'ast CaplanGlobalContext,
     last_func_ident: Option<String>,
     id_counter: u64,
 }
@@ -91,7 +91,12 @@ impl<'ast> IRDAGBuilder<'ast> {
 
     pub fn add_dep_mem_loc(a: &GCed<IRDAGNode>, dep: &IRDAGMemLoc) {
         match &dep {
-            IRDAGMemLoc::Addr(addr) => Self::add_dep(&a, addr),
+            IRDAGMemLoc::Addr(addr, _, dyn_offset_op) => {
+                Self::add_dep(&a, addr);
+                if let Some(dyn_offset) = dyn_offset_op {
+                    Self::add_dep(&a, dyn_offset);
+                }
+            }
             IRDAGMemLoc::Named(_) => (),
             IRDAGMemLoc::NamedWithDynOffset(_, dyn_offset, _) => Self::add_dep(&a, dyn_offset)
         }
@@ -334,11 +339,11 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     // look up local variable
-    fn lookup_local<'a>(&'a mut self, v: &str) -> Option<&'a mut CaplanType> {
+    pub fn lookup_local<'a>(&'a mut self, v: &str) -> Option<&'a mut CaplanType> {
         self.locals.get_mut(v)
     }
 
-    fn lookup_local_imm<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
+    pub fn lookup_local_imm<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
         self.locals.get(v)
     }
 
@@ -365,7 +370,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn read_location(&mut self, loc: &IRDAGMemLoc, ty: IRDAGNodeVType, dep_as_write: bool) -> GCed<IRDAGNode> {
         // ty might be a capability
         match loc {
-            IRDAGMemLoc::Addr(_) => self.new_read(loc.clone(), ty),
+            IRDAGMemLoc::Addr(_, _, _) => self.new_read(loc.clone(), ty),
             IRDAGMemLoc::Named(named_mem_loc) => {
                 let ty_size = ty.size();
                 let read_node = self.new_read(loc.clone(), ty);
@@ -400,15 +405,23 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn get_address(&mut self, lval: IRDAGLVal) -> GCed<IRDAGNode> {
         // TODO: need to adjust the type
         match lval.loc {
-            IRDAGMemLoc::Addr(addr) => {
+            IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
                 eprintln!("Get address type {:?} {:?}, ", lval.ty, addr.borrow().vtype);
-                if addr.borrow().vtype.size() == 16 { // is capability
+                let mut res = if addr.borrow().vtype.size() == 16 { // is capability
                     let size = lval.ty.size(&self.globals.target_conf);
                     let res = self.new_cap_resize(&addr, size);
                     res
                 } else {
                     addr
+                };
+                if let Some(dyn_offset) = dyn_offset_op {
+                    res = self.new_int_binop(IRDAGNodeIntBinOpType::Add, &res, &dyn_offset);
                 }
+                if static_offset != 0 {
+                    let const_offset = self.new_int_const(static_offset as u64);
+                    res = self.new_int_binop(IRDAGNodeIntBinOpType::Add, &res, &const_offset);
+                }
+                res
             }
             IRDAGMemLoc::Named(named) => self.new_address_of(named, lval.ty),
             IRDAGMemLoc::NamedWithDynOffset(named, dyn_offset, offset_range) => {
@@ -422,7 +435,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn write_location(&mut self, loc: &IRDAGMemLoc, val: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let size = val.borrow().vtype.size();
         match loc {
-            IRDAGMemLoc::Addr(_) => self.new_write(loc.clone(), val),
+            IRDAGMemLoc::Addr(_, _, _) => self.new_write(loc.clone(), val),
             IRDAGMemLoc::Named(named_mem_loc) => {
                 let write_node = self.new_write(loc.clone(), val);
                 self.write_named_mem_loc(named_mem_loc, &write_node);
@@ -481,9 +494,9 @@ impl<'ast> IRDAGBuilder<'ast> {
                             CaplanType::Array(inner_type, _) =>
                                 Some(IRDAGLVal { ty: *inner_type, loc: loc }),
                             CaplanType::RawPtr(inner_type) =>
-                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::RawPtr(*inner_type), false)) }),
+                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::RawPtr(*inner_type), false), 0, None) }),
                             CaplanType::NonlinPtr(inner_type) =>
-                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::NonlinPtr(*inner_type), false)) }),
+                                Some(IRDAGLVal { ty: *inner_type.clone(), loc: IRDAGMemLoc::Addr(self.read_location(&loc, IRDAGNodeVType::NonlinPtr(*inner_type), false), 0, None) }),
                             // TODO: add linear capability support
                             _ => None
                         }
@@ -492,7 +505,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                         let vtype = word.borrow().vtype.clone();
                         match vtype {
                             IRDAGNodeVType::RawPtr(inner_type) =>
-                                Some(IRDAGLVal { ty: inner_type, loc: IRDAGMemLoc::Addr(word) }),
+                                Some(IRDAGLVal { ty: inner_type, loc: IRDAGMemLoc::Addr(word, 0, None) }),
                             _ => None
                         }
                     }
@@ -876,17 +889,14 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 };
             }
             UnaryOperator::Indirection => {
+                // dereference a pointer
                 // TODO: some basic optimisation
                 self.visit_expression(&unary_operator_expression.operand.node, &unary_operator_expression.operand.span);
                 let r = self.last_temp_res_to_word(false).unwrap();
-                let new_type = match &r.borrow().vtype {
-                    IRDAGNodeVType::RawPtr(inner_type) => inner_type.clone(),
-                    IRDAGNodeVType::NonlinPtr(inner_type) => inner_type.clone(),
-                    _ => panic!("Invalid type for indirection access: {:?}", r.borrow().vtype)
-                };
+                let new_type = r.borrow().vtype.inner_type().expect("Invalid type for indirection access").clone();
                 self.last_temp_res = Some(IRDAGNodeTempResult::LVal(IRDAGLVal {
                     ty: new_type,
-                    loc: IRDAGMemLoc::Addr(r)
+                    loc: IRDAGMemLoc::Addr(r, 0, None)
                 }));
             }
             _ => panic!("Unsupported unary operator {:?}", unary_operator_expression.operator.node)
@@ -980,15 +990,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                     let offset = self.new_int_binop(
                         IRDAGNodeIntBinOpType::Mul,
                         &elem_size_const, &rhs);
-                    let loc = match lhs.loc {
-                        IRDAGMemLoc::Addr(addr) => IRDAGMemLoc::Addr(self.new_int_binop(IRDAGNodeIntBinOpType::Add, &addr, &offset)),
-                        IRDAGMemLoc::Named(named) => {
-                            let addr_range = named.offset..(named.offset + self.lookup_local_imm(&named.var_name).unwrap().size(&self.globals.target_conf));
-                            IRDAGMemLoc::NamedWithDynOffset(named, offset, addr_range)
-                        }
-                        IRDAGMemLoc::NamedWithDynOffset(named, dyn_offset, offset_range) =>
-                            IRDAGMemLoc::NamedWithDynOffset(named, self.new_int_binop(IRDAGNodeIntBinOpType::Add, &dyn_offset, &offset), offset_range)
-                    };
+                    let loc = lhs.loc.clone().apply_dyn_offset(&offset, self);
                     self.last_temp_res = Some(IRDAGNodeTempResult::LVal(
                         IRDAGLVal { ty: elem_ty, loc: loc }
                     ));
@@ -1043,7 +1045,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             MemberOperator::Indirect => {
                 let addr = self.last_temp_res_to_word(false).unwrap();
                 let ty = addr.borrow().vtype.inner_type().unwrap().clone();
-                (ty, IRDAGMemLoc::Addr(addr.clone()))
+                (ty, IRDAGMemLoc::Addr(addr.clone(), 0, None))
             }
             MemberOperator::Direct => {
                 let lhs = self.last_temp_res.take().unwrap();

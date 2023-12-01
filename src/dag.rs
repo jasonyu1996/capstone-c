@@ -112,7 +112,8 @@ pub enum IRDAGMemLoc {
     Named(IRDAGNamedMemLoc),
     // static location + dynamic offset with possible range recorded
     NamedWithDynOffset(IRDAGNamedMemLoc, GCed<IRDAGNode>, OffsetRange),
-    Addr(GCed<IRDAGNode>)
+    // base (potentially linear) + static offset + dynamic offset
+    Addr(GCed<IRDAGNode>, usize, Option<GCed<IRDAGNode>>)
 }
 
 impl IRDAGMemLoc {
@@ -122,16 +123,33 @@ impl IRDAGMemLoc {
             self
         } else {
             match self {
-                IRDAGMemLoc::Addr(addr) => {
+                IRDAGMemLoc::Addr(addr, static_offset, dyn_offset) => {
                     let const_node = dag_builder.new_int_const(offset as u64);
-                    IRDAGMemLoc::Addr(dag_builder.new_int_binop(IRDAGNodeIntBinOpType::Add,
-                        &addr, &const_node))
+                    IRDAGMemLoc::Addr(addr, static_offset.checked_add_signed(offset).unwrap(), dyn_offset)
                 }
                 IRDAGMemLoc::Named(named_mem_loc) =>
                     IRDAGMemLoc::Named(named_mem_loc.apply_offset(offset)),
                 IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) =>
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc.apply_offset(offset), dyn_offset, offset_range)
             }
+        }
+    }
+
+    pub fn apply_dyn_offset(self, dyn_offset: &GCed<IRDAGNode>, dag_builder: &mut IRDAGBuilder) -> Self {
+        match self {
+            IRDAGMemLoc::Addr(addr, static_offset, None) =>
+                IRDAGMemLoc::Addr(addr, static_offset, Some(dyn_offset.clone())),
+            IRDAGMemLoc::Addr(addr, static_offset, Some(old_dyn_offset)) =>
+                IRDAGMemLoc::Addr(addr, static_offset, Some(dag_builder.new_int_binop(IRDAGNodeIntBinOpType::Add, &old_dyn_offset, dyn_offset))),
+            IRDAGMemLoc::Named(named_mem_loc) => {
+                // FIXME: handle when it is global
+                let addr_range = named_mem_loc.offset..(named_mem_loc.offset + dag_builder.lookup_local_imm(&named_mem_loc.var_name).unwrap().size(&dag_builder.globals.target_conf));
+                IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset.clone(), addr_range)
+            }
+            IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, old_dyn_offset, addr_range) =>
+                IRDAGMemLoc::NamedWithDynOffset(named_mem_loc,
+                    dag_builder.new_int_binop(IRDAGNodeIntBinOpType::Add, &old_dyn_offset, dyn_offset),
+                    addr_range)
         }
     }
 

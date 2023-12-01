@@ -301,7 +301,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     if self.vars[var_id].state.dirty {
                         // need to write back if it's dirty
                         let slot_id = self.vars[var_id].state.stack_slot;
-                        Self::store(reg_id, GPR_IDX_SP, self.stack_frame.spill_stack_slot_offset(slot_id) as isize, *size, code_printer);
+                        Self::store(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(slot_id) as isize, *size, code_printer);
                     }
                     self.vars[var_id].state.loc = VarLocation::StackSlot;
                     true
@@ -476,8 +476,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
 
-    fn prepare_source_reg_specified<T>(&mut self, source_node_id: IRDAGNodeId,
+    fn prepare_source_reg_specified<T>(&mut self, source_node: &IRDAGNode,
             target_reg_id: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        let source_node_id = source_node.id;
         let temp_state = self.temps.get(&source_node_id).unwrap();
         let size = match temp_state.loc {
             TempLocation::GPR(reg_id) => {
@@ -507,8 +508,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
 
-    fn prepare_source_reg<T>(&mut self, source_node_id: IRDAGNodeId, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
-        eprintln!("Prepare reg for source node {}", source_node_id);
+    fn prepare_source_reg<T>(&mut self, source_node: &IRDAGNode, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
+        let source_node_id = source_node.id;
+        eprintln!("Prepare reg for source node {} of type {:?}", source_node_id, source_node.vtype);
         let temp_state = self.temps.get(&source_node_id).unwrap();
         // bring it to register
         let (reg_id, size) = match temp_state.loc {
@@ -561,8 +563,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             IRDAGNodeCons::IntBinOp(op_type, s1, s2) => {
-                let rs1 = self.prepare_source_reg(s1.borrow().id, code_printer);
-                let rs2 = self.prepare_source_reg(s2.borrow().id, code_printer);
+                let rs1 = self.prepare_source_reg(&*s1.borrow(), code_printer);
+                let rs2 = self.prepare_source_reg(&*s2.borrow(), code_printer);
                 assert_eq!(s2.borrow().vtype.size(), 8);
                 let res_size = node.vtype.size();
                 self.unpin_gpr(rs1);
@@ -595,7 +597,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             IRDAGNodeCons::IntUnOp(op_type, source) => {
                 let res_size = source.borrow().vtype.size();
-                let rs = self.prepare_source_reg(source.borrow().id, code_printer);
+                let rs = self.prepare_source_reg(&*source.borrow(), code_printer);
                 self.unpin_gpr(rs);
                 let rd = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
                 match op_type {
@@ -623,7 +625,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let v_size = source.borrow().vtype.size();
                 match &loc {
                     IRDAGMemLoc::Named(named_mem_loc) => {
-                        let rs = self.prepare_source_reg(source.borrow().id, code_printer);
+                        let rs = self.prepare_source_reg(&*source.borrow(), code_printer);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(rs);
                             let rd = self.assign_reg_with_hint(node.id, v_size, rs, code_printer);
@@ -653,8 +655,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
                         // FIXME: invalidate all variables in register covered in offset range
 
-                        let r_val = self.prepare_source_reg(source.borrow().id, code_printer);
-                        let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
+                        let r_val = self.prepare_source_reg(&*source.borrow(), code_printer);
+                        let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
                         self.unpin_gpr(r_offset);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             let rd = self.assign_reg_with_hint(node.id, self.globals.target_conf.register_width, r_offset, code_printer);
@@ -671,12 +673,22 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             Self::store(r_val, rd, named_mem_loc.offset as isize, v_size, code_printer);
                         }
                     }
-                    IRDAGMemLoc::Addr(addr) => {
-                        let rs1 = self.prepare_source_reg(source.borrow().id, code_printer);
-                        let rs2 = self.prepare_source_reg(addr.borrow().id, code_printer);
-                        self.unpin_gpr(rs1);
-                        self.unpin_gpr(rs2);
-                        Self::store(rs1, rs2, 0, v_size, code_printer);
+                    IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
+                        let rs1 = self.prepare_source_reg(&*source.borrow(), code_printer);
+                        let rs2 = self.prepare_source_reg(&*addr.borrow(), code_printer);
+                        if let Some(dyn_offset) = dyn_offset_op {
+                            let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                            self.unpin_gpr(rs2);
+                            self.unpin_gpr(r_offset);
+                            let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
+                            self.pointer_offset(r_addr, rs2, r_offset, code_printer);
+                            self.unpin_gpr(rs1);
+                            Self::store(rs1, r_addr, *static_offset as isize, v_size, code_printer);
+                        } else {
+                            self.unpin_gpr(rs1);
+                            self.unpin_gpr(rs2);
+                            Self::store(rs1, rs2, *static_offset as isize, v_size, code_printer);
+                        }
                     }
                 }
             }
@@ -709,7 +721,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                     let stack_slot = var_info.state.stack_slot;
                                     let reg_id = self.assign_reg(node.id, res_size, code_printer);
                                     let var_info_mut = self.vars.get_mut(var_id).unwrap();
-                                    var_info_mut.state.dirty = false; // just loaded, not dirty
+                                    var_info_mut.state.dirty = node.vtype.is_linear(); // just loaded, not dirty, but writeback is necessary if the read value is linear
                                     var_info_mut.state.loc = VarLocation::GPR(reg_id);
                                     Self::load(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize, res_size, code_printer);
                                     reg_id
@@ -726,7 +738,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
                         // FIXME: write back everything dirty in offset range
 
-                        let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
+                        let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
                         // get address
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                             self.unpin_gpr(r_offset);
@@ -742,11 +754,19 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             Self::load(rd, rd, named_mem_loc.offset as isize, res_size, code_printer);
                         }
                     }
-                    IRDAGMemLoc::Addr(addr) => {
-                        let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
+                    IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
+                        // TODO: if the address is linear, we would need to somehow restore it
+                        let rs = self.prepare_source_reg(&*addr.borrow(), code_printer);
                         let reg_id = self.assign_reg(node.id, res_size, code_printer);
                         self.unpin_gpr(rs);
-                        Self::load(reg_id, rs, 0, res_size, code_printer);
+                        if let Some(dyn_offset) = dyn_offset_op {
+                            let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                            self.unpin_gpr(r_offset);
+                            self.pointer_offset(reg_id, rs, r_offset, code_printer); // take care not to clobber rs
+                            Self::load(reg_id, reg_id, *static_offset as isize, res_size, code_printer);
+                        } else {
+                            Self::load(reg_id, rs, *static_offset as isize, res_size, code_printer);
+                        }
                     }
                 }
             }
@@ -758,7 +778,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             IRDAGNodeCons::Branch(target, cond) => {
-                let rs = self.prepare_source_reg(cond.borrow().id, code_printer);
+                let rs = self.prepare_source_reg(&*cond.borrow(), code_printer);
                 self.unpin_gpr(rs);
                 if let IRDAGNodeCons::Label(Some(blk_id)) = target.borrow().cons {
                     code_printer.print_branch_label(&self.gen_func_block_label(func_name, blk_id), rs).unwrap();
@@ -768,7 +788,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             IRDAGNodeCons::InDomReturn(ret_val) => {
                 if let Some(ret_val_node) = ret_val.as_ref() {
-                    let rs = self.prepare_source_reg(ret_val_node.borrow().id, code_printer);
+                    let rs = self.prepare_source_reg(&*ret_val_node.borrow(), code_printer);
                     self.unpin_gpr(rs);
                     if rs != GPR_IDX_A0 {
                         self.move_reg(GPR_IDX_A0, rs, code_printer);
@@ -779,7 +799,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             IRDAGNodeCons::InDomCall(callee, arguments) => {
                 for (arg_idx, arg) in arguments.iter().enumerate() {
                     let arg_reg = GPR_PARAMS[arg_idx];
-                    self.prepare_source_reg_specified(arg.borrow().id, arg_reg, code_printer);
+                    self.prepare_source_reg_specified(&*arg.borrow(), arg_reg, code_printer);
                 }
                 for arg_idx in 0..arguments.len() {
                     self.unpin_gpr(GPR_PARAMS[arg_idx]);
@@ -821,7 +841,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 ));
                 let input_regs = Vec::from_iter(inputs.iter().map(
                     |inp| {
-                        self.prepare_source_reg(inp.value.borrow().id, code_printer)
+                        self.prepare_source_reg(&*inp.value.borrow(), code_printer)
                     }
                 ));
                 // unpin inputs only
@@ -843,10 +863,19 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 // write back result to output locations
                 for (reg, out) in output_regs.iter().zip(outputs.iter()) {
                     match &out.loc {
-                        IRDAGMemLoc::Addr(addr) => {
-                            let rs = self.prepare_source_reg(addr.borrow().id, code_printer);
-                            self.unpin_gpr(rs);
-                            Self::store(*reg, rs, 0, out.size, code_printer);
+                        IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
+                            let rs = self.prepare_source_reg(&*addr.borrow(), code_printer);
+                            if let Some(dyn_offset) = dyn_offset_op {
+                                let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                                self.unpin_gpr(rs);
+                                self.unpin_gpr(r_offset);
+                                let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
+                                self.pointer_offset(r_addr, rs, r_offset, code_printer);
+                                Self::store(*reg, r_addr, *static_offset as isize, out.size, code_printer);
+                            } else {
+                                self.unpin_gpr(rs);
+                                Self::store(*reg, rs, *static_offset as isize, out.size, code_printer);
+                            }
                         }
                         IRDAGMemLoc::Named(named_mem_loc) => {
                             if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
@@ -861,7 +890,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             }
                         }
                         IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, range) => {
-                            let r_offset = self.prepare_source_reg(dyn_offset.borrow().id, code_printer);
+                            let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
                             self.unpin_gpr(r_offset);
                             if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
                                 let rd = self.assign_reg_with_hint(node.id, self.globals.target_conf.register_width,
@@ -884,7 +913,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             IRDAGNodeCons::CapResize(src, size) => {
-                let rs = self.prepare_source_reg(src.borrow().id, code_printer);
+                let rs = self.prepare_source_reg(&*src.borrow(), code_printer);
                 self.unpin_gpr(rs);
                 let rd = self.assign_reg_with_hint(node.id, src.borrow().vtype.size(), rs, code_printer);
                 self.pointer_bound_imm(rd, rs, *size, code_printer);
