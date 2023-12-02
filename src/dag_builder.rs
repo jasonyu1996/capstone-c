@@ -309,12 +309,16 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     fn new_cap_resize(&mut self, v: &GCed<IRDAGNode>, size: usize) -> GCed<IRDAGNode> {
-        let res = new_gced(IRDAGNode::new(
+        let mut node = IRDAGNode::new(
             self.id_counter,
             v.borrow().vtype.clone(),
             IRDAGNodeCons::CapResize(v.clone(), size),
             false
-        ));
+        );
+        if v.borrow().vtype.is_linear() {
+            node.add_destruct(v.borrow().id);
+        }
+        let res = new_gced(node);
         Self::add_dep(&res, &v);
         self.add_nonlabel_node(&res);
         res
@@ -408,19 +412,17 @@ impl<'ast> IRDAGBuilder<'ast> {
         match lval.loc {
             IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
                 eprintln!("Get address type {:?} {:?}, ", lval.ty, addr.borrow().vtype);
-                let mut res = if addr.borrow().vtype.size() == 16 { // is capability
-                    let size = lval.ty.size(&self.globals.target_conf);
-                    let res = self.new_cap_resize(&addr, size);
-                    res
-                } else {
-                    addr
-                };
+                let mut res = addr;
                 if let Some(dyn_offset) = dyn_offset_op {
                     res = self.new_int_binop(IRDAGNodeIntBinOpType::Add, &res, &dyn_offset);
                 }
                 if static_offset != 0 {
                     let const_offset = self.new_int_const(static_offset as u64);
                     res = self.new_int_binop(IRDAGNodeIntBinOpType::Add, &res, &const_offset);
+                }
+                if res.borrow().vtype.size() == 16 { // is capability
+                    let size = lval.ty.size(&self.globals.target_conf);
+                    res = self.new_cap_resize(&res, size);
                 }
                 res
             }
@@ -581,7 +583,7 @@ impl<'ast> IRDAGBuilder<'ast> {
         if let IRDAGNodeTempResult::LVal(lval) = lhs {
             let orig_lval = lval.clone();
             let size = lval.ty.size(&self.globals.target_conf);
-            if size > 8 {
+            if size > self.globals.target_conf.register_width {
                 match rhs {
                     IRDAGNodeTempResult::Word(_) => panic!("Size mismatch for assignment"),
                     IRDAGNodeTempResult::LVal(rhs_lval) => {

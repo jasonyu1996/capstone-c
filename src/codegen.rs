@@ -959,8 +959,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             IRDAGNodeCons::CapResize(src, size) => {
                 let rs = self.prepare_source_reg(&*src.borrow(), code_printer);
-                self.unpin_gpr(rs);
-                let rd = self.assign_reg_with_hint(node.id, src.borrow().vtype.size(), rs, code_printer);
+                let rd = if src.borrow().vtype.is_linear() {
+                    let rd = self.assign_reg(node.id, src.borrow().vtype.size(), code_printer);
+                    self.unpin_gpr(rs);
+                    rd
+                } else {
+                    self.unpin_gpr(rs);
+                    self.assign_reg_with_hint(node.id, src.borrow().vtype.size(), rs, code_printer)
+                };
                 self.pointer_bound_imm(rd, rs, *size, code_printer);
             }
             _ => {
@@ -1095,6 +1101,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }, 0, &self.globals.target_conf);
         }
 
+        let mut stack_bottom : Vec<GCed<IRDAGNode>> = Vec::new();
         // for each basic block, do a topo sort
         for (blk_id, block) in func.dag.blocks.iter().enumerate() {
             if block.is_empty() {
@@ -1117,8 +1124,15 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     let mut rev_dep_m = rev_dep.borrow_mut();
                     rev_dep_m.dep_count -= 1;
                     if rev_dep_m.dep_count == 0 && !rev_dep_m.cons.is_control_flow() {
-                        self.op_topo_stack.push(rev_dep.clone());
+                        if rev_dep_m.destructs.is_empty() {
+                            self.op_topo_stack.push(rev_dep.clone());
+                        } else {
+                            stack_bottom.push(rev_dep.clone());
+                        }
                     }
+                }
+                if self.op_topo_stack.is_empty() {
+                    self.op_topo_stack.append(&mut stack_bottom);
                 }
             }
             // check that all nodes have dep_count = 0

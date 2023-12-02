@@ -68,6 +68,8 @@ pub struct IRDAGNode {
     pub cons: IRDAGNodeCons,
     // does evaluating this node have side effects?
     pub side_effects: bool,
+    // evaluating this note destructs the results of those nodes
+    pub destructs: Vec<IRDAGNodeId>,
     // reverse dependencies
     pub rev_deps: Vec<GCed<IRDAGNode>>,
     // number of dependencies
@@ -283,9 +285,15 @@ impl IRDAGNode {
             vtype: vtype,
             cons: cons,
             side_effects: side_effects,
+            destructs: Vec::new(),
             rev_deps: Vec::new(),
             dep_count: 0
         }
+    }
+
+    pub fn add_destruct(&mut self, destructed_node_id: IRDAGNodeId) {
+        self.side_effects = true; // destructing other nodes is considered as a side effect
+        self.destructs.push(destructed_node_id);
     }
 
     pub fn add_to_rev_deps(&mut self, other: &GCed<IRDAGNode>) {
