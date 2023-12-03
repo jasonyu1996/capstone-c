@@ -1,9 +1,10 @@
 use core::panic;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::codegen::code_printer::REG_NAMES;
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
+use crate::lang_defs::CaplanType;
 use crate::target_conf::CaplanABI;
 use crate::utils::{GCed, align_up_to};
 
@@ -59,7 +60,7 @@ struct VarState {
 
 struct VarInfo {
     state: VarState,
-    size: usize
+    ty: CaplanType
 }
 
 struct TempState {
@@ -233,7 +234,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             Self::store(GPR_PARAMS[param_idx],
                 GPR_IDX_SP,
                 self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
-                self.vars[var_id].size,
+                self.vars[var_id].ty.size(&self.globals.target_conf),
                 code_printer
             );
         }
@@ -303,7 +304,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let slot_id = self.vars[var_id].state.stack_slot;
                         Self::store(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(slot_id) as isize, *size, code_printer);
                     }
+                    self.temps.get_mut(node_id).unwrap().loc = TempLocation::Nowhere;
                     self.vars[var_id].state.loc = VarLocation::StackSlot;
+                    self.vars[var_id].state.dirty = false;
+                    self.gpr_states[reg_id] = GPRState::Free;
                     true
                 } else {
                     false
@@ -323,8 +327,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             code_printer.print_store_to_stack(reg_id, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
             self.stack_frame.take_spill_slots(spill_slot, node_id, size);
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::SpilledStackSlot(spill_slot, size);
+            self.gpr_states[reg_id] = GPRState::Free;
         }
-        self.gpr_states[reg_id] = GPRState::Free;
     }
 
     fn spill_reg_if_taken<T>(&mut self, reg_id: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
@@ -339,6 +343,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 } else {
                     self.spill_reg(reg_id, node_id, code_printer);
                 }
+                assert!(matches!(self.gpr_states[reg_id], GPRState::Free));
             }
             GPRState::Reserved => panic!("Attempting to spill reserved reg"),
             GPRState::Pinned(node_id, _) => panic!("Attempting to spill pinned reg for node {}", node_id)
@@ -496,7 +501,16 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 self.stack_frame.free_spill_slots(spill_slot, size);
                 size
             }
-            TempLocation::Nowhere => panic!("Nowhere to find the source node")
+            TempLocation::Nowhere => {
+                if let Some(var_id) = temp_state.var {
+                    let size = self.vars[var_id].ty.size(&self.globals.target_conf);
+                    self.spill_reg_if_taken(target_reg_id, code_printer);
+                    code_printer.print_load_from_stack(target_reg_id, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot)).unwrap();
+                    size
+                } else {
+                    panic!("Nowhere to find the source node");
+                }
+            }
         };
         let temp_state = self.temps.get_mut(&source_node_id).unwrap();
         temp_state.loc = TempLocation::GPR(target_reg_id);
@@ -522,7 +536,15 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 (r, size)
             }
             TempLocation::Nowhere => {
-                panic!("Source temporary has not been evaluated.");
+                if let Some(var_id) = temp_state.var {
+                    let size = self.vars[var_id].ty.size(&self.globals.target_conf);
+                    let r = self.assign_reg(source_node_id, size, code_printer); // this already records the temp location in reg
+                    self.spill_reg_if_taken(r, code_printer);
+                    code_printer.print_load_from_stack(r, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot)).unwrap();
+                    (r, size)
+                } else {
+                    panic!("Nowhere to find the source node");
+                }
             }
         };
         let temp_state = self.temps.get_mut(&source_node_id).unwrap();
@@ -553,6 +575,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             eprintln!("Skipped");
             return;
         }
+        eprintln!("Rev dep count = {}, side effects = {}", node.rev_deps.len(), node.side_effects);
         match &node.cons {
             IRDAGNodeCons::IntConst(val) => {
                 if *val == 0 {
@@ -569,6 +592,18 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let res_size = node.vtype.size();
                 self.unpin_gpr(rs1);
                 self.unpin_gpr(rs2);
+
+                if s1.borrow().vtype.is_linear() {
+                    // ok the original value is garbage now
+                    self.gpr_states[rs1] = GPRState::Free;
+                    let temp_ref = self.temps.get_mut(&s1.borrow().id).unwrap();
+                    temp_ref.loc = TempLocation::Nowhere;
+                    if let Some(var_id) = temp_ref.var {
+                        self.vars[var_id].state.dirty = false;
+                        self.vars[var_id].state.loc = VarLocation::StackSlot; /* Actually should be nowhere */
+                    }
+                }
+
                 let rd = self.assign_reg_with_hint(node.id, res_size, rs1, code_printer);
                 // let rd = self.assign_reg(node.id, res_size, code_printer);
                 match op_type {
@@ -988,11 +1023,6 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 });
             }
         }
-
-        for var_info in self.vars.iter() {
-            assert!(!var_info.state.dirty);
-            assert!(matches!(var_info.state.loc, VarLocation::StackSlot));
-        }
     }
 
     // reset for starting labeled basic block
@@ -1007,6 +1037,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         self.stack_frame.clear_spill_slots();
 
         self.codegen_block_unlabeled_reset(func_name, block, code_printer);
+
+        for var_info in self.vars.iter() {
+            assert!(!var_info.state.dirty);
+            assert!(matches!(var_info.state.loc, VarLocation::StackSlot));
+        }
     }
 
     fn codegen_block_reset<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
@@ -1019,28 +1054,47 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
     fn codegen_block_end_cleanup<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // write back all dirty variables
-        for var_info in self.vars.iter_mut() {
-            match var_info.state.loc {
-                VarLocation::GPR(reg_id) => {
-                    if var_info.state.dirty {
-                        let stack_slot = var_info.state.stack_slot;
-                        Self::store(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize, var_info.size, code_printer);
-                        var_info.state.dirty = false;
+        let (need_cleanup, deps) = match block.exit_node.as_ref() {
+            Some(exit_node) => {
+                let deps = Vec::from_iter(exit_node.borrow().deps.iter().cloned());
+                if matches!(&exit_node.borrow().cons, IRDAGNodeCons::InDomReturn(_)) {
+                    (false, deps)
+                } else {
+                    (true, deps)
+                }
+            }
+            _ => (true, Vec::new())
+        };
+        // Non-dependencies: always clean up
+        // Dependencies:
+        // - Nonlinear: write back dirty values, but leave results in register
+        // - Linear: do nothing. The node implementation is responsible for any writeback if necessary
+        if need_cleanup {
+            for var_info in self.vars.iter_mut() {
+                match var_info.state.loc {
+                    VarLocation::GPR(reg_id) => {
+                        if var_info.state.dirty {
+                            let stack_slot = var_info.state.stack_slot;
+                            Self::store(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize,
+                                var_info.ty.size(&self.globals.target_conf), code_printer);
+                            var_info.state.dirty = false;
+                        }
+                        if let GPRState::Taken(node_id, _) = self.gpr_states[reg_id] {
+                            self.temps.get_mut(&node_id).unwrap().loc = TempLocation::Nowhere;
+                        }
+                        var_info.state.loc = VarLocation::StackSlot;
+                        self.gpr_states[reg_id] = GPRState::Free;
+                    },
+                    VarLocation::StackSlot => {
+                        assert!(!var_info.state.dirty);
                     }
-                    if let GPRState::Taken(node_id, _) = self.gpr_states[reg_id] {
-                        self.temps.get_mut(&node_id).unwrap().var = None;
-                    }
-                    var_info.state.loc = VarLocation::StackSlot;
-                },
-                VarLocation::StackSlot => {
-                    assert!(!var_info.state.dirty);
                 }
             }
         }
         if let Some(exit_node) = block.exit_node.as_ref() {
-            let exit_node_ref = exit_node.borrow();
+            let mut exit_node_ref = exit_node.borrow_mut();
             self.generate_node(func_name, &*&exit_node_ref, code_printer);
-            for rev_dep in exit_node_ref.rev_deps.iter() {
+            while let Some(rev_dep) = exit_node_ref.rev_deps.pop() {
                 let mut rev_dep_m = rev_dep.borrow_mut();
                 rev_dep_m.dep_count -= 1;
             }
@@ -1074,28 +1128,28 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     stack_slot: stack_slot,
                     dirty: false
                 },
-                size: param_size
+                ty: param.ty.clone()
             });
         }
 
         for (local_name, local_type) in func.locals.iter() {
             let align_log = if local_type.alignment(&self.globals.target_conf) == 8 { 3 } else { 4 };
             let base_offset = align_up_to(self.stack_frame.tot_stack_slot_size, align_log);
-            local_type.visit_offset(&mut|offset, size| {
+            local_type.visit_offset(&mut|offset, ty| {
                 let mem_loc = IRDAGNamedMemLoc {
                     var_name: local_name.clone(),
                     offset: offset
                 };
                 let var_id = self.vars.len();
                 self.vars_to_ids.insert(mem_loc, var_id);
-                let stack_slot = self.stack_frame.allocate_stack_slot_specified_offset(offset + base_offset, size);
+                let stack_slot = self.stack_frame.allocate_stack_slot_specified_offset(offset + base_offset, ty.size(&self.globals.target_conf));
                 self.vars.push(VarInfo {
                     state: VarState {
                         loc: VarLocation::StackSlot,
                         stack_slot: stack_slot,
                         dirty: false
                     },
-                    size: size
+                    ty: ty
                 });
                
             }, 0, &self.globals.target_conf);
@@ -1118,9 +1172,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
             while let Some(node) = self.op_topo_stack.pop() {
-                let node_ref = node.borrow();
+                let mut node_ref = node.borrow_mut();
                 self.generate_node(&func.name, &*node_ref, &mut main_code_printer);
-                for rev_dep in node_ref.rev_deps.iter() {
+                while let Some(rev_dep) = node_ref.rev_deps.pop() {
                     let mut rev_dep_m = rev_dep.borrow_mut();
                     rev_dep_m.dep_count -= 1;
                     if rev_dep_m.dep_count == 0 && !rev_dep_m.cons.is_control_flow() {

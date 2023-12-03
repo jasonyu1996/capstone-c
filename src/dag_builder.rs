@@ -87,7 +87,7 @@ impl<'ast> IRDAGBuilder<'ast> {
         if a.borrow().id != dep.borrow().id {
             eprintln!("Depends: {} depends on {}", a.borrow().id, dep.borrow().id);
             (**dep).borrow_mut().add_to_rev_deps(a);
-            (**a).borrow_mut().inc_dep_count();
+            (**a).borrow_mut().add_to_deps(dep);
         }
     }
 
@@ -181,11 +181,12 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     pub fn new_read(&mut self, mem_loc: IRDAGMemLoc, ty: IRDAGNodeVType) -> GCed<IRDAGNode> {
+        let side_effects = ty.is_linear();
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
             ty,
             IRDAGNodeCons::Read(mem_loc.clone()),
-            false
+            side_effects
         ));
         Self::add_dep_mem_loc(&res, &mem_loc);
         self.add_nonlabel_node(&res);
@@ -336,6 +337,38 @@ impl<'ast> IRDAGBuilder<'ast> {
         }
         self.visit_function_definition(ast, span);
         // self.dag.pretty_print();
+
+        // some optimisation
+        loop {
+            let mut changed = false;
+            for block in self.dag.blocks.iter() {
+                for node in block.dag.iter() {
+                    let mut node_ref = node.borrow_mut();
+                    if node_ref.rev_deps.is_empty() && !node_ref.side_effects {
+                        // this is pointless, disassociate it from its deps
+                        let deps = std::mem::replace(&mut node_ref.deps, Vec::new());
+                        node_ref.dep_count = 0;
+                        let id = node_ref.id;
+                        drop(node_ref);
+                        for dep_node in deps {
+                            let mut dep_ref = dep_node.borrow_mut();
+                            let idx = dep_ref.rev_deps.iter().enumerate().find_map(|(idx, n)| {
+                                if n.borrow().id == id {
+                                    Some(idx)
+                                } else {
+                                    None
+                                }
+                            }).unwrap();
+                            dep_ref.rev_deps.remove(idx);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     // consume the builder and get the dag
@@ -375,7 +408,11 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn read_location(&mut self, loc: &IRDAGMemLoc, ty: IRDAGNodeVType, dep_as_write: bool) -> GCed<IRDAGNode> {
         // ty might be a capability
         match loc {
-            IRDAGMemLoc::Addr(_, _, _) => self.new_read(loc.clone(), ty),
+            IRDAGMemLoc::Addr(base, _, _) => {
+                let read_node = self.new_read(loc.clone(), ty);
+                self.use_base_address(base, &read_node);
+                read_node
+            }
             IRDAGMemLoc::Named(named_mem_loc) => {
                 let ty_size = ty.size();
                 let read_node = self.new_read(loc.clone(), ty);
@@ -435,10 +472,28 @@ impl<'ast> IRDAGBuilder<'ast> {
         }
     }
 
+    fn use_base_address(&mut self, base: &GCed<IRDAGNode>, node: &GCed<IRDAGNode>) {
+        let base_ref = base.borrow();
+        if base_ref.vtype.is_linear() {
+            // read from a linear capability
+            // count as a write to it
+            if let IRDAGNodeCons::Read(mem_loc) = &base_ref.cons {
+                if let Some(named_loc) = mem_loc.get_named_mem_loc().cloned() {
+                    drop(base_ref);
+                    self.write_named_mem_loc(&named_loc, node);
+                }
+            }
+        }
+    }
+
     fn write_location(&mut self, loc: &IRDAGMemLoc, val: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
         let size = val.borrow().vtype.size();
         match loc {
-            IRDAGMemLoc::Addr(_, _, _) => self.new_write(loc.clone(), val),
+            IRDAGMemLoc::Addr(base, _, _) => {
+                let write_node = self.new_write(loc.clone(), val);
+                self.use_base_address(base, &write_node);
+                write_node
+            }
             IRDAGMemLoc::Named(named_mem_loc) => {
                 let write_node = self.new_write(loc.clone(), val);
                 self.write_named_mem_loc(named_mem_loc, &write_node);
@@ -796,7 +851,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             AsmStatement::GnuBasic(basic_asm) => {
                 let asm = basic_asm.node.concat().replace("\"", "");
                 // place it in a separate basic block to maintain order (TODO: we might not want to do this)
-                self.new_block_reset();
                 self.new_asm(asm, Vec::new(), Vec::new());
                 self.new_block_reset();
             }
@@ -835,7 +889,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                         }
                     }
                 ));
-                // since asm is placed in a new block, we don't need to worry about read-write re-ordering
                 self.new_asm(asm_template, outputs, inputs);
                 self.new_block_reset();
             }

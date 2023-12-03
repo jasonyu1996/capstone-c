@@ -72,7 +72,8 @@ pub struct IRDAGNode {
     pub destructs: Vec<IRDAGNodeId>,
     // reverse dependencies
     pub rev_deps: Vec<GCed<IRDAGNode>>,
-    // number of dependencies
+    // dependencies
+    pub deps: Vec<GCed<IRDAGNode>>,
     pub dep_count: u64
 }
 
@@ -152,6 +153,14 @@ impl IRDAGMemLoc {
                 IRDAGMemLoc::NamedWithDynOffset(named_mem_loc,
                     dag_builder.new_int_binop(IRDAGNodeIntBinOpType::Add, &old_dyn_offset, dyn_offset),
                     addr_range)
+        }
+    }
+
+    pub fn get_named_mem_loc(&self) -> Option<&IRDAGNamedMemLoc> {
+        match self {
+            IRDAGMemLoc::Named(named_loc) => Some(named_loc),
+            IRDAGMemLoc::NamedWithDynOffset(named_loc, _, _) => Some(named_loc),
+            IRDAGMemLoc::Addr(_, _, _) => None
         }
     }
 
@@ -287,6 +296,7 @@ impl IRDAGNode {
             side_effects: side_effects,
             destructs: Vec::new(),
             rev_deps: Vec::new(),
+            deps: Vec::new(),
             dep_count: 0
         }
     }
@@ -300,7 +310,8 @@ impl IRDAGNode {
         self.rev_deps.push(other.clone());
     }
 
-    pub fn inc_dep_count(&mut self) {
+    pub fn add_to_deps(&mut self, other: &GCed<IRDAGNode>) {
+        self.deps.push(other.clone());
         self.dep_count += 1;
     }
 }

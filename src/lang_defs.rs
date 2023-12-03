@@ -185,7 +185,7 @@ impl CaplanType {
         }
     }
 
-    pub fn visit_offset<V>(&self, visitor: &mut V, base_offset: usize, target_conf: &CaplanTargetConf) where V: FnMut(usize, usize) {
+    pub fn visit_offset<V>(&self, visitor: &mut V, base_offset: usize, target_conf: &CaplanTargetConf) where V: FnMut(usize, CaplanType) {
         match self {
             CaplanType::Array(elem_t, elem_n) => {
                 let mut offset = base_offset;
@@ -204,14 +204,14 @@ impl CaplanType {
                     field.ty.visit_offset(visitor, base_offset + field.offset, target_conf);
                 }
             }
-            _ => visitor(base_offset, self.size(target_conf))
+            _ => visitor(base_offset, self.clone())
         }
     }
 
-    pub fn collect_offsets(&self, target_conf: &CaplanTargetConf) -> Vec<(usize, usize)> {
-        let mut res : Vec<(usize, usize)> = Vec::new();
-        self.visit_offset(&mut |offset, size| {
-            res.push((offset, size))
+    pub fn collect_offsets(&self, target_conf: &CaplanTargetConf) -> Vec<(usize, CaplanType)> {
+        let mut res : Vec<(usize, CaplanType)> = Vec::new();
+        self.visit_offset(&mut |offset, ty| {
+            res.push((offset, ty))
         }, 0, target_conf);
         res
     }

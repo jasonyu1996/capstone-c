@@ -1,7 +1,7 @@
 use std::{collections::{HashSet, HashMap}, process::id};
 
-use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator, DeclarationSpecifier, TypeSpecifier, StructKind, StructDeclaration}, span::Span};
-use crate::{dag::IRDAG, lang_defs::CaplanStruct, target_conf::CaplanTargetConf};
+use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator, DeclarationSpecifier, TypeSpecifier, StructKind, StructDeclaration, Extension}, span::Span};
+use crate::{dag::IRDAG, lang_defs::{CaplanStruct, try_modify_type_with_attr}, target_conf::CaplanTargetConf};
 use crate::dag_builder::IRDAGBuilder;
 use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
@@ -20,6 +20,7 @@ impl CaplanParam {
 
 struct CaplanParamBuilder<'ctx> {
     param: CaplanParam,
+    attrs: Vec<String>,
     globals: &'ctx CaplanGlobalContext
 }
 
@@ -27,12 +28,16 @@ impl<'ctx> CaplanParamBuilder<'ctx> {
     fn new(globals: &'ctx CaplanGlobalContext) -> Self {
         Self {
             param: CaplanParam { name: String::new(), ty: CaplanType::Void },
+            attrs: Vec::new(),
             globals: globals
         }
     }
 
     fn build(&mut self, ast: &'ctx ParameterDeclaration, span: &'ctx Span) {
         self.visit_parameter_declaration(ast, span);
+        for a in self.attrs.iter() {
+            assert!(try_modify_type_with_attr(&mut self.param.ty, a), "Unrecognised type attribute \"{}\" for type {:?}", a, self.param.ty);
+        }
     }
 
     fn into_param(self) -> CaplanParam {
@@ -51,6 +56,13 @@ impl<'ast> ParserVisit<'ast> for CaplanParamBuilder<'ast> {
                 self.param.name = id_node.node.name.clone();
             },
             _ => {}
+        }
+    }
+
+    fn visit_extension(&mut self, extension: &'ast lang_c::ast::Extension, span: &'ast Span) {
+        match extension {
+            Extension::Attribute(attr) => self.attrs.push(attr.name.node.clone()),
+            _ => ()
         }
     }
 
