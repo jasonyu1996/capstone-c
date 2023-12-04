@@ -216,7 +216,6 @@ pub enum IRDAGNodeCons {
     IntConst(u64),
     IntBinOp(IRDAGNodeIntBinOpType, GCed<IRDAGNode>, GCed<IRDAGNode>),
     IntUnOp(IRDAGNodeIntUnOpType, GCed<IRDAGNode>),
-    IncOffset(GCed<IRDAGNode>, GCed<IRDAGNode>),
     // conditional branch
     Branch(GCed<IRDAGNode>, GCed<IRDAGNode>),
     // unconditional jump
@@ -225,12 +224,8 @@ pub enum IRDAGNodeCons {
     Switch(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // in-domain call
     InDomCall(String, Vec<GCed<IRDAGNode>>),
-    // domain call
-    DomCall(GCed<IRDAGNode>, Vec<GCed<IRDAGNode>>),
     // in-domain return
     InDomReturn(Option<GCed<IRDAGNode>>),
-    // domain return, a capability needed
-    DomReturn(GCed<IRDAGNode>),
     // local, parameter or global variable
     Read(IRDAGMemLoc),
     // write to local, parameter or global variable
@@ -255,14 +250,11 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::IntConst(arg0) => f.debug_tuple("IntConst").field(arg0).finish(),
             Self::IntBinOp(arg0, _, _) => f.debug_tuple("IntBinOp").field(arg0).finish(),
             Self::IntUnOp(arg0, _) => f.debug_tuple("IntUnOp").field(arg0).finish(),
-            Self::IncOffset(_, _) => write!(f, "IncOffset"),
             Self::Branch(_, _) => write!(f, "Branch"),
             Self::Jump(_) => write!(f, "Jump"),
             Self::Switch(_, _) => write!(f, "Switch"),
             Self::InDomCall(_, _) => write!(f, "InDomCall"),
-            Self::DomCall(_, _) => write!(f, "DomCall"),
             Self::InDomReturn(_) => write!(f, "InDomReturn"),
-            Self::DomReturn(_) => write!(f, "DomReturn"),
             Self::Read(_) => write!(f, "Read"),
             Self::Write(_, _) => write!(f, "Write"),
             Self::CapResize(_, _) => write!(f, "CapResize"),
@@ -281,10 +273,10 @@ impl IRDAGNodeCons {
             IRDAGNodeCons::Jump(_) => true,
             IRDAGNodeCons::Switch(_, _) => true,
             IRDAGNodeCons::InDomCall(_, _) => true,
-            IRDAGNodeCons::DomCall(_, _) => true,
             IRDAGNodeCons::InDomReturn(_) => true,
-            IRDAGNodeCons::DomReturn(_) => true,
             IRDAGNodeCons::Asm(_, _, _) => true, // potentially control-flow, conservatively treat it as such
+            IRDAGNodeCons::Intrinsic(intrinsic, args) =>
+                intrinsic.is_control_flow(),
             _ => {
                 false
             }

@@ -117,6 +117,7 @@ impl<'ast> IRDAGBuilder<'ast> {
         if node.borrow().cons.is_control_flow() {
             last_block.exit_node = Some(node.clone());
             self.new_block();
+            self.new_block_reset();
         }
     }
 
@@ -136,7 +137,9 @@ impl<'ast> IRDAGBuilder<'ast> {
             if self.dag.blocks.last().unwrap().dag.is_empty() {
                 self.current_block_id()
             } else {
-                self.new_block()
+                let blk_id = self.new_block();
+                self.new_block_reset();
+                blk_id
             };
         let last_block = self.dag.blocks.last_mut().unwrap();
         assert!(last_block.dag.is_empty()); // must be the first node to add
@@ -716,21 +719,16 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let label_then = self.new_label();
         let label_taken = self.new_label();
         let _ = self.new_branch(&label_taken, &cond);
-        self.new_block_reset();
         let _ = self.new_jump(&label_then);
-        self.new_block_reset();
         self.place_label_node(&label_taken);
         self.visit_statement(&if_statement.then_statement.node, &if_statement.then_statement.span);
         if let Some(else_statement_node) = if_statement.else_statement.as_ref() {
             let label_end = self.new_label();
             let _ = self.new_jump(&label_end);
-            self.new_block_reset();
             self.place_label_node(&label_then);
             self.visit_statement(&else_statement_node.node, &else_statement_node.span);
-            self.new_block_reset();
             self.place_label_node(&label_end);
         } else {
-            self.new_block_reset();
             self.place_label_node(&label_then);
         }
     }
@@ -740,18 +738,14 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         let label_taken = self.new_label();
         let label_end = self.new_label();
         self.push_loop_info(&label_end, &label_start);
-        self.new_block_reset();
         self.place_label_node(&label_start);
         self.visit_expression(&while_statement.expression.node, &while_statement.expression.span);
         let cond = self.last_temp_res_to_word(false).unwrap();
         let _ = self.new_branch(&label_taken, &cond);
-        self.new_block_reset();
         let _ = self.new_jump(&label_end);
-        self.new_block_reset();
         self.place_label_node(&label_taken);
         self.visit_statement(&while_statement.statement.node, &while_statement.statement.span);
         let _ = self.new_jump(&label_start);
-        self.new_block_reset();
         self.place_label_node(&label_end);
         self.pop_loop_info();
     }
@@ -768,27 +762,22 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.push_loop_info(&label_end, &label_cont);
 
         self.visit_for_initializer(&for_statement.initializer.node, &for_statement.initializer.span);
-        self.new_block_reset();
         self.place_label_node(&label_start);
         if let Some(cond_node) = for_statement.condition.as_ref() {
             self.visit_expression(&cond_node.node, &cond_node.span);
             let label_taken = self.new_label();
             let cond = self.last_temp_res_to_word(false).unwrap();
             self.new_branch(&label_taken, &cond);
-            self.new_block_reset();
             self.new_jump(&label_end);
-            self.new_block_reset();
             self.place_label_node(&label_taken);
         }
 
         self.visit_statement(&for_statement.statement.node, &for_statement.statement.span);
-        self.new_block_reset();
         self.place_label_node(&label_cont);
         if let Some(step_node) = for_statement.step.as_ref() {
             self.visit_expression(&step_node.node, &step_node.span);
         }
         self.new_jump(&label_start);
-        self.new_block_reset();
         self.place_label_node(&label_end);
         
         self.pop_loop_info();
@@ -805,15 +794,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
 
         self.push_loop_info(&label_end, &label_cont);
 
-        self.new_block_reset();
         self.place_label_node(&label_start);
         self.visit_statement(&do_while_statement.statement.node, &do_while_statement.statement.span);
-        self.new_block_reset();
         self.place_label_node(&label_cont);
         self.visit_expression(&do_while_statement.expression.node, &do_while_statement.expression.span);
         let cond = self.last_temp_res_to_word(false).unwrap();
         self.new_branch(&label_start, &cond);
-        self.new_block_reset();
         self.place_label_node(&label_end);
 
         self.pop_loop_info();
@@ -833,10 +819,8 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         self.break_targets.push(label_skip_expr.clone());
 
         self.new_jump(&label_skip_stmt);
-        self.new_block_reset();
         self.visit_statement(&switch_statement.statement.node, &switch_statement.statement.span);
         self.new_jump(&label_skip_expr);
-        self.new_block_reset();
         self.place_label_node(&label_skip_stmt);
 
         self.break_targets.pop().unwrap();
@@ -850,15 +834,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             let cmp_res = self.new_int_binop(IRDAGNodeIntBinOpType::Eq, 
                 &val, &b_res);
             self.new_branch(target, &cmp_res);
-            self.new_block_reset();
         }
 
         if let Some(default_target) = switch_targets.default_target.as_ref() {
             self.new_jump(default_target);
-            self.new_block_reset();
         }
 
-        self.new_block_reset();
         self.place_label_node(&label_skip_expr);
     }
 
@@ -866,14 +847,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         match label {
             Label::Case(expr) => {
                 let label = self.new_label();
-                self.new_block_reset();
                 self.place_label_node(&label);
 
                 self.switch_target_info.last_mut().unwrap().targets.push((&expr.node, &expr.span, label));
             }
             Label::Default => {
                 let label = self.new_label();
-                self.new_block_reset();
                 self.place_label_node(&label);
 
                 let last_switch_target_info = self.switch_target_info.last_mut().unwrap();
@@ -892,7 +871,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 let asm = basic_asm.node.concat().replace("\"", "");
                 // place it in a separate basic block to maintain order (TODO: we might not want to do this)
                 self.new_asm(asm, Vec::new(), Vec::new());
-                self.new_block_reset();
             }
             AsmStatement::GnuExtended(extended_asm_stmt) => {
                 let asm_template = extended_asm_stmt.template.node.concat().replace("\"", "");
@@ -930,7 +908,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                     }
                 ));
                 self.new_asm(asm_template, outputs, inputs);
-                self.new_block_reset();
             }
         }
     }
@@ -939,11 +916,9 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         match statement {
             Statement::Continue => {
                 self.new_jump(&self.continue_targets.last().unwrap().clone());
-                self.new_block_reset();
             }
             Statement::Break => {
                 self.new_jump(&self.break_targets.last().unwrap().clone());
-                self.new_block_reset();
             }
             Statement::Expression(None) => (),
             Statement::Expression(Some(expr_node)) => self.visit_expression(&expr_node.node, &expr_node.span),
@@ -957,7 +932,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                     self.last_temp_res_to_word(true).unwrap() // TODO: only 8 byte can be returned
                 });
                 self.new_indom_return(ret_val_node);
-                self.new_block_reset();
             }
             Statement::Compound(compound) =>
                 compound.iter().for_each(|block_item_node| self.visit_block_item(&block_item_node.node, &block_item_node.span)),
@@ -1132,11 +1106,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             }
         ));
         self.last_temp_res = Some(match func_ident {
-            IRDAGFuncIdent::Name(func_name) => {
-                let res = IRDAGNodeTempResult::Word(self.new_indom_call(&func_name, args));
-                self.new_block_reset();
-                res
-            }
+            IRDAGFuncIdent::Name(func_name) => IRDAGNodeTempResult::Word(self.new_indom_call(&func_name, args)),
             IRDAGFuncIdent::Intrinsic(intrinsic) => IRDAGNodeTempResult::Word(self.new_intrinsic_call(intrinsic, args))
         });
     }

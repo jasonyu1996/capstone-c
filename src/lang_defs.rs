@@ -330,6 +330,13 @@ impl IntrinsicFunction {
             IntrinsicFunction::Seal => SEAL_DESTRUCTIVES
         } 
     }
+
+    pub fn is_control_flow(&self) -> bool {
+        match self {
+            IntrinsicFunction::Mrev | IntrinsicFunction::Revoke
+            | IntrinsicFunction::Seal => false
+        }
+    }
 }
 
 const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
