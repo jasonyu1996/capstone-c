@@ -552,6 +552,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         temp_state.rev_deps_to_eval -= 1;
         if let Some(var_id) = temp_state.var {
             self.vars[var_id].state.loc = VarLocation::GPR(reg_id);
+            self.vars[var_id].state.dirty = self.vars[var_id].ty.is_linear();
         }
         self.gpr_states[reg_id] = GPRState::Pinned(source_node_id, size);
         reg_id
@@ -755,7 +756,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             // local variable
 
                             // look at current location of the variable
-                            let _ = match var_info.state.loc {
+                            match var_info.state.loc {
                                 VarLocation::GPR(reg_id) => {
                                     // already in a register
                                     // just grab the register
@@ -764,17 +765,17 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                     }
                                     self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(reg_id);
                                     self.gpr_states[reg_id] = GPRState::Taken(node.id, node.vtype.size());
-                                    reg_id
                                 }
                                 VarLocation::StackSlot => {
                                     // need to load from stack
-                                    let stack_slot = var_info.state.stack_slot;
-                                    let reg_id = self.assign_reg(node.id, res_size, code_printer);
-                                    let var_info_mut = self.vars.get_mut(var_id).unwrap();
-                                    var_info_mut.state.dirty = node.vtype.is_linear(); // just loaded, not dirty, but writeback is necessary if the read value is linear
-                                    var_info_mut.state.loc = VarLocation::GPR(reg_id);
-                                    Self::load(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize, res_size, code_printer);
-                                    reg_id
+                                    // let stack_slot = var_info.state.stack_slot;
+                                    // let reg_id = self.assign_reg(node.id, res_size, code_printer);
+                                    // let var_info_mut = self.vars.get_mut(var_id).unwrap();
+                                    // var_info_mut.state.dirty = node.vtype.is_linear(); // just loaded, not dirty, but writeback is necessary if the read value is linear
+                                    // var_info_mut.state.loc = VarLocation::GPR(reg_id);
+                                    // Self::load(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize, res_size, code_printer);
+                                    
+                                    // only load lazily later
                                 }
                             };
                             self.temps.get_mut(&node.id).unwrap().var = Some(var_id);

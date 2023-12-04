@@ -349,6 +349,7 @@ impl<'ast> IRDAGBuilder<'ast> {
                         let deps = std::mem::replace(&mut node_ref.deps, Vec::new());
                         node_ref.dep_count = 0;
                         let id = node_ref.id;
+                        eprintln!("Pruned node {}", id);
                         drop(node_ref);
                         for dep_node in deps {
                             let mut dep_ref = dep_node.borrow_mut();
