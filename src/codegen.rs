@@ -864,6 +864,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 code_printer.print_jump_label(&self.gen_func_ret_label(func_name)).unwrap();
             }
             IRDAGNodeCons::InDomCall(callee, arguments) => {
+                let ret_val_size = node.vtype.size();
+
                 for (arg_idx, arg) in arguments.iter().enumerate() {
                     let arg_reg = GPR_PARAMS[arg_idx];
                     self.prepare_source_reg_specified(&*arg.borrow(), arg_reg, code_printer);
@@ -887,7 +889,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 code_printer.print_load_from_stack(GPR_IDX_RA, self.stack_frame.spill_stack_slot_offset(ra_spill_slot)).unwrap();
                 
                 assert!(matches!(self.gpr_states[GPR_IDX_A0], GPRState::Free));
-                self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, 8);
+                self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, ret_val_size);
                 self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
             }
             IRDAGNodeCons::Asm(asm, outputs, inputs) => {

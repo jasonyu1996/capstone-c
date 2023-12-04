@@ -1,6 +1,6 @@
 use std::{collections::{HashSet, HashMap}, process::id};
 
-use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator, DeclarationSpecifier, TypeSpecifier, StructKind, StructDeclaration, Extension}, span::Span};
+use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator, DeclarationSpecifier, TypeSpecifier, StructKind, StructDeclaration, Extension, Declaration}, span::Span};
 use crate::{dag::IRDAG, lang_defs::{CaplanStruct, try_modify_type_with_attr}, target_conf::CaplanTargetConf};
 use crate::dag_builder::IRDAGBuilder;
 use crate::lang_defs::CaplanType;
@@ -85,7 +85,7 @@ pub struct CaplanFunction {
 
 pub struct CaplanGlobalContext {
     pub target_conf: CaplanTargetConf,
-    pub func_decls: HashSet<String>,
+    pub func_decls: HashMap<String, CaplanType>,
     pub struct_defs: HashMap<String, GCed<CaplanStruct>>,
     pub global_vars: Vec<CaplanType>,
     pub global_vars_to_ids: HashMap<String, usize>
@@ -95,7 +95,7 @@ impl CaplanGlobalContext {
     fn new(target_conf: CaplanTargetConf) -> Self {
         Self {
             target_conf: target_conf,
-            func_decls: HashSet::new(),
+            func_decls: HashMap::new(),
             struct_defs: HashMap::new(),
             global_vars: Vec::new(),
             global_vars_to_ids: HashMap::new()
@@ -105,7 +105,9 @@ impl CaplanGlobalContext {
 
 struct CaplanFunctionBuilder<'ctx> {
     func: CaplanFunction,
-    globals: &'ctx mut CaplanGlobalContext
+    globals: &'ctx mut CaplanGlobalContext,
+    ret_type_attrs: Vec<String>,
+    in_declaration_specifier: bool
 }
 
 impl<'ctx> CaplanFunctionBuilder<'ctx> {
@@ -118,7 +120,9 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
                 dag: IRDAG::new(),
                 locals: HashMap::new()
             },
-            globals: globals
+            globals: globals,
+            ret_type_attrs: Vec::new(),
+            in_declaration_specifier: false
         }
     }
 
@@ -128,16 +132,22 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
         match func_identifier {
             DeclaratorKind::Identifier(id_node) => {
                 self.func.name = id_node.node.name.clone();
-                self.globals.func_decls.insert(id_node.node.name.clone());
             },
             _ => {}
         }
         self.visit_function_definition(ast, span);
+        for attr in self.ret_type_attrs.iter() {
+            assert!(try_modify_type_with_attr(&mut self.func.ret_type, attr));
+        }
+        self.globals.func_decls.insert(self.func.name.clone(), self.func.ret_type.clone());
+
+        eprintln!("Function name: {}", self.func.name);
+        eprintln!("Function return type: {:?}", self.func.ret_type);
+        eprintln!("Function parameters: {:?}", self.func.params);
+
         let mut dag_builder = IRDAGBuilder::new(&*self.globals);
         dag_builder.build(ast, span, &self.func.params);
         (self.func.dag, self.func.locals) = dag_builder.into_dag();
-        eprintln!("Function name: {}", self.func.name);
-        eprintln!("Function parameters: {:?}", self.func.params);
     }
 
     fn into_func(self) -> CaplanFunction {
@@ -145,13 +155,6 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
     }
 }
 
-pub struct CaplanTranslationUnit {
-    pub globals: CaplanGlobalContext,
-    pub functions: Vec<CaplanFunction>,
-    in_global_context: bool,
-    last_type: Option<CaplanType>,
-    last_ident_names: Vec<String>
-}
 
 impl<'ast> ParserVisit<'ast> for CaplanFunctionBuilder<'ast> {
     fn visit_function_declarator(
@@ -165,7 +168,51 @@ impl<'ast> ParserVisit<'ast> for CaplanFunctionBuilder<'ast> {
             self.func.params.push(param_builder.into_param());
         }
     }
+
+    fn visit_type_specifier(&mut self, type_specifier: &'ast TypeSpecifier, span: &'ast Span) {
+        self.func.ret_type = CaplanType::from_ast_type(type_specifier, &self.globals).unwrap();
+    }
+
+    fn visit_function_definition(
+            &mut self,
+            function_definition: &'ast FunctionDefinition,
+            span: &'ast Span,
+        ) {
+        self.in_declaration_specifier = true;
+        function_definition.specifiers.iter().for_each(|specifier| self.visit_declaration_specifier(&specifier.node, &specifier.span));
+        self.in_declaration_specifier = false;
+        self.visit_declarator(&function_definition.declarator.node, &function_definition.declarator.span);
+        function_definition.declarations.iter().for_each(|declaration| self.visit_declaration(&declaration.node, &declaration.span));
+        self.visit_statement(&function_definition.statement.node, &function_definition.statement.span);
+    }
+
+    fn visit_attribute(&mut self, attribute: &'ast lang_c::ast::Attribute, span: &'ast Span) {
+        if self.in_declaration_specifier {
+            // we only deal with attributes for the whole declaration, which is considered as applying to the return type
+            self.ret_type_attrs.push(attribute.name.node.clone());
+        }
+    }
+
+    fn visit_derived_declarator(
+            &mut self,
+            derived_declarator: &'ast DerivedDeclarator,
+            span: &'ast Span,
+        ) {
+        match derived_declarator {
+            DerivedDeclarator::Function(function_declarator) => self.visit_function_declarator(&function_declarator.node, &function_declarator.span),
+            _ => self.func.ret_type.decorate_from_ast(derived_declarator, &self.globals.target_conf)
+        }
+    }
+
 }
+pub struct CaplanTranslationUnit {
+    pub globals: CaplanGlobalContext,
+    pub functions: Vec<CaplanFunction>,
+    in_global_context: bool,
+    last_type: Option<CaplanType>,
+    last_ident_names: Vec<String>
+}
+
 
 impl CaplanTranslationUnit {
     pub fn from_ast(ast: &TranslationUnit, target_conf: CaplanTargetConf) -> Self {
@@ -209,7 +256,7 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
         match derived_declarator {
             DerivedDeclarator::KRFunction(identifiers) => {
                 for ident in identifiers.iter() {
-                    self.globals.func_decls.insert(ident.node.name.clone());
+                    panic!("KR function not supported");
                 }
             }
             _ => self.last_type.as_mut().unwrap().decorate_from_ast(derived_declarator, &self.globals.target_conf)

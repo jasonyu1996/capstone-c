@@ -266,9 +266,10 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     pub fn new_indom_call(&mut self, callee: &str, args: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        let ret_type = self.globals.func_decls.get(callee).and_then(|cty| IRDAGNodeVType::from_caplan_type(cty)).unwrap();
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
-            IRDAGNodeVType::Int,
+            ret_type,
             IRDAGNodeCons::InDomCall(String::from(callee), args.clone()),
             true
         ));
@@ -1073,7 +1074,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 ty: ty.clone(),
                 loc: IRDAGMemLoc::Named(IRDAGNamedMemLoc { var_name: identifier.name.clone(), offset: 0 })
             }));
-        } else if self.globals.func_decls.contains(&identifier.name) {
+        } else if self.globals.func_decls.contains_key(&identifier.name) {
             assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(identifier.name.clone());
         } else {
