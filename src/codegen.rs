@@ -901,7 +901,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         self.unpin_gpr(rs);
                         code_printer.print_mrev(reg_id, rs).unwrap();
                     }
-                    IntrinsicFunction::Revoke => {
+                    IntrinsicFunction::Revoke | IntrinsicFunction::Seal => {
                         // destruct the parameter
                         let arg_ref = arguments[0].borrow();
                         let rs = self.prepare_source_reg(&*arg_ref, code_printer);
@@ -915,10 +915,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         drop(arg_ref);
 
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
-                        if rs != reg_id {
-                            code_printer.print_movc(reg_id, rs).unwrap();
+                        if matches!(intrinsic, IntrinsicFunction::Revoke) {
+                            if rs != reg_id {
+                                code_printer.print_movc(reg_id, rs).unwrap();
+                            }
+                            code_printer.print_revoke(reg_id).unwrap();
+                        } else {
+                            code_printer.print_seal(reg_id, rs).unwrap();
                         }
-                        code_printer.print_revoke(reg_id).unwrap();
                     }
                 }
             }

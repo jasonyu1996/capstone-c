@@ -281,11 +281,16 @@ pub fn try_modify_type_with_attr(ty: &mut CaplanType, attr_name: &str) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub enum IntrinsicFunction {
     Mrev,
-    Revoke
+    Revoke,
+    Seal
 }
 
+const MREV_DESTRUCTIVES : &'static [usize] = &[];
+const REVOKE_DESTRUCTIVES : &'static [usize] = &[0];
+const SEAL_DESTRUCTIVES : &'static [usize] = &[0];
+
 impl IntrinsicFunction {
-    pub fn get_return_type(&self, arg_types: &[&IRDAGNodeVType]) -> Option<IRDAGNodeVType> {
+    pub fn get_return_type(&self, arg_types: &[&IRDAGNodeVType], _: &CaplanTargetConf) -> Option<IRDAGNodeVType> {
         match self {
             IntrinsicFunction::Mrev => {
                 if arg_types.len() < 1 {
@@ -306,13 +311,31 @@ impl IntrinsicFunction {
                 }
                 
             }
+            IntrinsicFunction::Seal => {
+                if arg_types.len() < 1 {
+                    None
+                } else if let IRDAGNodeVType::LinPtr(_) = arg_types[0] {
+                    Some(IRDAGNodeVType::Dom)
+                } else {
+                    None
+                }
+            }
         }
+    }
+
+    pub fn get_destructives(&self) -> &[usize] {
+        match self {
+            IntrinsicFunction::Mrev => MREV_DESTRUCTIVES,
+            IntrinsicFunction::Revoke => REVOKE_DESTRUCTIVES,
+            IntrinsicFunction::Seal => SEAL_DESTRUCTIVES
+        } 
     }
 }
 
-pub const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
+const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__mrev", IntrinsicFunction::Mrev),
-    ("__revoke", IntrinsicFunction::Revoke)
+    ("__revoke", IntrinsicFunction::Revoke),
+    ("__seal", IntrinsicFunction::Seal)
 ];
 
 pub fn lookup_intrinsic(name: &str) -> Option<IntrinsicFunction> {

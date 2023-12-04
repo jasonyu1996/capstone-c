@@ -24,7 +24,8 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("stc(rs1, rs2, offset)", ".insn s 0x5b, 0x4, rs1, offset(rs2)"),
     ("shrinkto(rd, rs, size)", ".insn i 0x5b, 0x0, rd, size(rs)"),
     ("mrev(rd, rs)", ".insn r 0x5b, 0x1, 0x8, rd, rs, x0"),
-    ("revoke(rs)", ".insn r 0x5b, 0x1, 0x0, x0, rs, x0")
+    ("revoke(rs)", ".insn r 0x5b, 0x1, 0x0, x0, rs, x0"),
+    ("seal(rd, rs)", ".insn r 0x5b, 0x1, 0x7, rd, rs, x0")
 ];
 
 pub struct CodePrinter<T> where T: Write {
@@ -288,6 +289,11 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_revoke(&mut self, rs: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}revoke({})", INST_INDENT, REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_seal(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}seal({}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
         Ok(())
     }
 }

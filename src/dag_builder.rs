@@ -295,7 +295,8 @@ impl<'ast> IRDAGBuilder<'ast> {
     pub fn new_intrinsic_call(&mut self, intrinsic: IntrinsicFunction, args: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
         let arg_refs = Vec::from_iter(args.iter().map(|node| node.borrow()));
         let ret_type = intrinsic.get_return_type(
-            &Vec::from_iter(arg_refs.iter().map(|r| &r.vtype))
+            &Vec::from_iter(arg_refs.iter().map(|r| &r.vtype)),
+            &self.globals.target_conf
         ).expect("Bad types for intrinsic call");
         drop(arg_refs); // this is so stupid
         let mut res_node = IRDAGNode::new(
@@ -304,12 +305,8 @@ impl<'ast> IRDAGBuilder<'ast> {
             IRDAGNodeCons::Intrinsic(intrinsic, args.clone()),
             true // let's assume intrinsics all have side effects
         );
-        match intrinsic {
-            IntrinsicFunction::Revoke => {
-                // revocation destructs the original capability
-                res_node.add_destruct(args[0].borrow().id);
-            }
-            IntrinsicFunction::Mrev => ()
+        for destructive in intrinsic.get_destructives() {
+            res_node.add_destruct(args[*destructive].borrow().id);
         }
         let res = new_gced(res_node);
         for arg in args.iter() {
