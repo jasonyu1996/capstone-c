@@ -1,4 +1,4 @@
-use crate::{utils::{GCed, new_gced}, lang_defs::CaplanType, target_conf::CaplanTargetConf, dag_builder::IRDAGBuilder};
+use crate::{utils::{GCed, new_gced}, lang_defs::{CaplanType, IntrinsicFunction}, target_conf::CaplanTargetConf, dag_builder::IRDAGBuilder};
 
 pub type IRDAGNodeId = u64;
 
@@ -8,7 +8,7 @@ pub enum IRDAGNodeVType {
     Void,
     Int,
     Dom,
-    Rev,
+    Rev(CaplanType),
     RawPtr(CaplanType), // TODO: probably we don't need this info here
     LinPtr(CaplanType),
     NonlinPtr(CaplanType),
@@ -21,7 +21,7 @@ impl IRDAGNodeVType {
             IRDAGNodeVType::Void => 8,
             IRDAGNodeVType::Int => 8,
             IRDAGNodeVType::Dom => 16,
-            IRDAGNodeVType::Rev => 16,
+            IRDAGNodeVType::Rev(_) => 16,
             IRDAGNodeVType::RawPtr(_) => 8,
             IRDAGNodeVType::LinPtr(_) => 16,
             IRDAGNodeVType::NonlinPtr(_) => 16,
@@ -34,7 +34,7 @@ impl IRDAGNodeVType {
         match self {
             IRDAGNodeVType::LinPtr(_) => true,
             IRDAGNodeVType::Dom => true,
-            IRDAGNodeVType::Rev => true,
+            IRDAGNodeVType::Rev(_) => true,
             _ => false
         }
     }
@@ -44,6 +44,7 @@ impl IRDAGNodeVType {
             CaplanType::Void => Some(IRDAGNodeVType::Void),
             CaplanType::Dom => Some(IRDAGNodeVType::Dom),
             CaplanType::Int => Some(IRDAGNodeVType::Int),
+            CaplanType::Rev(inner_type) => Some(IRDAGNodeVType::Rev(*inner_type.clone())),
             CaplanType::RawPtr(inner_type) => Some(IRDAGNodeVType::RawPtr(*inner_type.clone())),
             CaplanType::LinPtr(inner_type) => Some(IRDAGNodeVType::LinPtr(*inner_type.clone())),
             CaplanType::NonlinPtr(inner_type) => Some(IRDAGNodeVType::NonlinPtr(*inner_type.clone())),
@@ -56,6 +57,7 @@ impl IRDAGNodeVType {
             IRDAGNodeVType::RawPtr(inner_type) => Some(inner_type),
             IRDAGNodeVType::LinPtr(inner_type) => Some(inner_type),
             IRDAGNodeVType::NonlinPtr(inner_type) => Some(inner_type),
+            IRDAGNodeVType::Rev(inner_type) => Some(inner_type),
             _ => None
         }
     }
@@ -241,7 +243,9 @@ pub enum IRDAGNodeCons {
     // take the address of a symbol
     AddressOf(IRDAGNamedMemLoc),
     // inline assembly
-    Asm(String, Vec<IRDAGAsmOutput>, Vec<IRDAGAsmInput>)
+    Asm(String, Vec<IRDAGAsmOutput>, Vec<IRDAGAsmInput>),
+    // intrinsic functions
+    Intrinsic(IntrinsicFunction, Vec<GCed<IRDAGNode>>)
 }
 
 impl std::fmt::Debug for IRDAGNodeCons {
@@ -264,7 +268,8 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::CapResize(_, _) => write!(f, "CapResize"),
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
             Self::AddressOf(_) => write!(f, "AddressOf"),
-            Self::Asm(arg0, _, _) => f.debug_tuple("Asm").field(arg0).finish()
+            Self::Asm(arg0, _, _) => f.debug_tuple("Asm").field(arg0).finish(),
+            Self::Intrinsic(arg0, _) => f.debug_tuple("Intrinsic").field(arg0).finish()
         }
     }
 }

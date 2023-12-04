@@ -1,10 +1,10 @@
 use core::panic;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::codegen::code_printer::REG_NAMES;
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
-use crate::lang_defs::CaplanType;
+use crate::lang_defs::{CaplanType, IntrinsicFunction};
 use crate::target_conf::CaplanABI;
 use crate::utils::{GCed, align_up_to};
 
@@ -891,6 +891,36 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 assert!(matches!(self.gpr_states[GPR_IDX_A0], GPRState::Free));
                 self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, ret_val_size);
                 self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
+            }
+            IRDAGNodeCons::Intrinsic(intrinsic, arguments) => {
+                let res_size = node.vtype.size();
+                match intrinsic {
+                    IntrinsicFunction::Mrev => {
+                        let rs = self.prepare_source_reg(&*arguments[0].borrow(), code_printer);
+                        let reg_id = self.assign_reg(node.id, res_size, code_printer);
+                        self.unpin_gpr(rs);
+                        code_printer.print_mrev(reg_id, rs).unwrap();
+                    }
+                    IntrinsicFunction::Revoke => {
+                        // destruct the parameter
+                        let arg_ref = arguments[0].borrow();
+                        let rs = self.prepare_source_reg(&*arg_ref, code_printer);
+                        let temp_ref = self.temps.get_mut(&arg_ref.id).unwrap();
+                        temp_ref.loc = TempLocation::Nowhere;
+                        if let Some(var_id) = &temp_ref.var {
+                            self.vars[*var_id].state.dirty = false;
+                            self.vars[*var_id].state.loc = VarLocation::StackSlot;
+                        }
+                        self.gpr_states[rs] = GPRState::Free; 
+                        drop(arg_ref);
+
+                        let reg_id = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
+                        if rs != reg_id {
+                            code_printer.print_movc(reg_id, rs).unwrap();
+                        }
+                        code_printer.print_revoke(reg_id).unwrap();
+                    }
+                }
             }
             IRDAGNodeCons::Asm(asm, outputs, inputs) => {
                 eprintln!("asm with {} inputs and {} outputs", inputs.len(), outputs.len());

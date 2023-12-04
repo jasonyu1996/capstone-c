@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use lang_c::ast::{TypeSpecifier as ASTTypeSpecifier, DerivedDeclarator, ArraySize, Expression, Constant};
-use crate::{utils::GCed, lang::CaplanGlobalContext, target_conf::{CaplanTargetConf, self}};
+use crate::{utils::GCed, lang::CaplanGlobalContext, target_conf::{CaplanTargetConf, self}, dag::IRDAGNodeVType};
 
 #[derive(Debug, Clone)]
 pub struct CaplanStructField {
@@ -21,7 +21,7 @@ pub enum CaplanType {
     Void,
     Int,
     Dom,
-    Rev, // revocatio capability; let's not record the type here (programmer beware)
+    Rev(Box<CaplanType>), // revocation capability
     Array(Box<CaplanType>, usize), // element type and length
     LinPtr(Box<CaplanType>),
     NonlinPtr(Box<CaplanType>),
@@ -36,7 +36,7 @@ impl std::fmt::Debug for CaplanType {
             CaplanType::Void => write!(f, "Void"),
             CaplanType::Int => write!(f, "Int"),
             CaplanType::Dom => write!(f, "Dom"),
-            CaplanType::Rev => write!(f, "Rev"),
+            CaplanType::Rev(inner_type) => f.debug_tuple("Rev").field(inner_type).finish(),
             CaplanType::Array(inner_type, n) => 
                 f.debug_tuple("Array").field(inner_type).field(n).finish(),
             CaplanType::LinPtr(inner_type) =>
@@ -136,7 +136,7 @@ impl CaplanType {
 
     pub fn is_linear(&self) -> bool {
         match self {
-            CaplanType::LinPtr(_) | CaplanType::Rev | CaplanType::Dom => true,
+            CaplanType::LinPtr(_) | CaplanType::Rev(_) | CaplanType::Dom => true,
             _ => false
         }
     }
@@ -160,7 +160,7 @@ impl CaplanType {
             CaplanType::Void => 8,
             CaplanType::Int => 8,
             CaplanType::Dom => 16,
-            CaplanType::Rev => 16,
+            CaplanType::Rev(_) => 16,
             CaplanType::Array(elem_t, elem_n) => elem_t.size(target_conf) * elem_n,
             CaplanType::LinPtr(_) => 16,
             CaplanType::NonlinPtr(_) => 16,
@@ -175,7 +175,7 @@ impl CaplanType {
             CaplanType::Void => 8,
             CaplanType::Int => 8,
             CaplanType::Dom => 16,
-            CaplanType::Rev => 16,
+            CaplanType::Rev(_) => 16,
             CaplanType::Array(elem_t, elem_n) => elem_t.alignment(target_conf), // TODO: padding possibly needed
             CaplanType::LinPtr(_) => 16,
             CaplanType::NonlinPtr(_) => 16,
@@ -253,7 +253,19 @@ pub const TYPE_ATTRIBUTES : &'static [TypeAttribute<'static>] = &[
             }
         }
     },
-    builtin_type_attr!("rev", CaplanType::Rev),
+    TypeAttribute {
+        name: "rev",
+        type_modifier: &|ty: &mut CaplanType| {
+            let orig_type = std::mem::replace(ty, CaplanType::Void);
+            match orig_type {
+                CaplanType::NonlinPtr(inner_type) | CaplanType::LinPtr(inner_type) => {
+                    *ty = CaplanType::Rev(inner_type);
+                    true
+                }
+                _ => false
+            }
+        }
+    },
     builtin_type_attr!("dom", CaplanType::Dom)
 ];
 
@@ -264,4 +276,53 @@ pub fn try_modify_type_with_attr(ty: &mut CaplanType, attr_name: &str) -> bool {
         }
     }
     false
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum IntrinsicFunction {
+    Mrev,
+    Revoke
+}
+
+impl IntrinsicFunction {
+    pub fn get_return_type(&self, arg_types: &[&IRDAGNodeVType]) -> Option<IRDAGNodeVType> {
+        match self {
+            IntrinsicFunction::Mrev => {
+                if arg_types.len() < 1 {
+                    None
+                } else if let IRDAGNodeVType::LinPtr(inner) = arg_types[0] {
+                    Some(IRDAGNodeVType::Rev(inner.clone()))
+                } else {
+                    None
+                }
+            }
+            IntrinsicFunction::Revoke => {
+                if arg_types.len() < 1 {
+                    None
+                } else if let IRDAGNodeVType::Rev(inner) = arg_types[0] {
+                    Some(IRDAGNodeVType::LinPtr(inner.clone())) // TODO: what to do with uninitialised capabilities
+                } else {
+                    None
+                }
+                
+            }
+        }
+    }
+}
+
+pub const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
+    ("__mrev", IntrinsicFunction::Mrev),
+    ("__revoke", IntrinsicFunction::Revoke)
+];
+
+pub fn lookup_intrinsic(name: &str) -> Option<IntrinsicFunction> {
+    INTRINSIC_FUNCS.iter().find_map(
+        |(i_name, intrinsic)| {
+            if *i_name == name {
+                Some(*intrinsic)
+            } else {
+                None
+            }
+        }
+    )
 }
