@@ -324,7 +324,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
             let spill_slot = self.stack_frame.find_free_spill_slot(size);
             // TODO: 16-byte spilling
-            code_printer.print_store_to_stack(reg_id, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
+            Self::store(reg_id, GPR_IDX_SP, self.stack_frame.spill_stack_slot_offset(spill_slot) as isize, size, code_printer);
             self.stack_frame.take_spill_slots(spill_slot, node_id, size);
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::SpilledStackSlot(spill_slot, size);
             self.gpr_states[reg_id] = GPRState::Free;
@@ -497,7 +497,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             TempLocation::SpilledStackSlot(spill_slot, size) => {
                 self.spill_reg_if_taken(target_reg_id, code_printer);
-                code_printer.print_load_from_stack(target_reg_id, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
+                Self::load(target_reg_id, GPR_IDX_SP, self.stack_frame.spill_stack_slot_offset(spill_slot) as isize, size, code_printer);
                 self.stack_frame.free_spill_slots(spill_slot, size);
                 size
             }
@@ -505,7 +505,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 if let Some(var_id) = temp_state.var {
                     let size = self.vars[var_id].ty.size(&self.globals.target_conf);
                     self.spill_reg_if_taken(target_reg_id, code_printer);
-                    code_printer.print_load_from_stack(target_reg_id, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot)).unwrap();
+                    Self::load(target_reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize, size, code_printer);
                     size
                 } else {
                     panic!("Nowhere to find the source node");
@@ -532,7 +532,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             TempLocation::SpilledStackSlot(spill_slot, size) => {
                 let r = self.assign_reg(source_node_id, size, code_printer); // this already records the temp location in reg
                 self.stack_frame.free_spill_slots(spill_slot, size);
-                code_printer.print_load_from_stack(r, self.stack_frame.spill_stack_slot_offset(spill_slot)).unwrap();
+                Self::load(r, GPR_IDX_SP, self.stack_frame.spill_stack_slot_offset(spill_slot) as isize, size, code_printer);
                 (r, size)
             }
             TempLocation::Nowhere => {
@@ -540,7 +540,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     let size = self.vars[var_id].ty.size(&self.globals.target_conf);
                     let r = self.assign_reg(source_node_id, size, code_printer); // this already records the temp location in reg
                     self.spill_reg_if_taken(r, code_printer);
-                    code_printer.print_load_from_stack(r, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot)).unwrap();
+                    Self::load(r, GPR_IDX_SP, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize, size, code_printer);
                     (r, size)
                 } else {
                     panic!("Nowhere to find the source node");
