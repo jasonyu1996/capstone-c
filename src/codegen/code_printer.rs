@@ -25,7 +25,9 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("shrinkto(rd, rs, size)", ".insn i 0x5b, 0x0, rd, size(rs)"),
     ("mrev(rd, rs)", ".insn r 0x5b, 0x1, 0x8, rd, rs, x0"),
     ("revoke(rs)", ".insn r 0x5b, 0x1, 0x0, x0, rs, x0"),
-    ("seal(rd, rs)", ".insn r 0x5b, 0x1, 0x7, rd, rs, x0")
+    ("seal(rd, rs)", ".insn r 0x5b, 0x1, 0x7, rd, rs, x0"),
+    ("domcall(rd, rs)", ".insn r 0x5b, 0x1, 0x20, rd, rs, x0"),
+    ("domreturn(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x21, rd, rs1, rs2")
 ];
 
 pub struct CodePrinter<T> where T: Write {
@@ -294,6 +296,16 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_seal(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}seal({}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_domreturn(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}domreturn({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
+
+    pub fn print_domcall(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}domcall({}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
         Ok(())
     }
 }

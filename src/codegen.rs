@@ -570,6 +570,17 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
     }
 
+    // this assumes that the value is currently in a register
+    fn destruct_temp_value(&mut self, reg: RegId, node: &IRDAGNode) {
+        let temp_ref = self.temps.get_mut(&node.id).unwrap();
+        temp_ref.loc = TempLocation::Nowhere;
+        if let Some(var_id) = &temp_ref.var {
+            self.vars[*var_id].state.dirty = false;
+            self.vars[*var_id].state.loc = VarLocation::StackSlot;
+        }
+        self.gpr_states[reg] = GPRState::Free; 
+    }
+
     fn generate_node<T>(&mut self, func_name: &str, node: &IRDAGNode, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         eprintln!("Codegen for node {} ({:?})", node.id, node.cons);
         if node.rev_deps.is_empty() && !node.side_effects {
@@ -905,13 +916,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         // destruct the parameter
                         let arg_ref = arguments[0].borrow();
                         let rs = self.prepare_source_reg(&*arg_ref, code_printer);
-                        let temp_ref = self.temps.get_mut(&arg_ref.id).unwrap();
-                        temp_ref.loc = TempLocation::Nowhere;
-                        if let Some(var_id) = &temp_ref.var {
-                            self.vars[*var_id].state.dirty = false;
-                            self.vars[*var_id].state.loc = VarLocation::StackSlot;
-                        }
-                        self.gpr_states[rs] = GPRState::Free; 
+                        self.destruct_temp_value(rs, &*arg_ref);
                         drop(arg_ref);
 
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
@@ -923,6 +928,35 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         } else {
                             code_printer.print_seal(reg_id, rs).unwrap();
                         }
+                    }
+                    IntrinsicFunction::DomCall => {
+                        // TODO: now we assume that everything is saved by the hardware (not true)
+                        // TODO: handle arguments and return values
+                        // TODO: save context
+                        let dom_ref = arguments[0].borrow();
+                        let r_dom = self.prepare_source_reg(&*dom_ref, code_printer);
+                        self.destruct_temp_value(r_dom, &*dom_ref);
+                        drop(dom_ref);
+
+                        let reg_id = self.assign_reg_with_hint(node.id, res_size, r_dom, code_printer);
+                        // to hold the renewed domain
+                        code_printer.print_domcall(reg_id, r_dom).unwrap();
+                        
+                        // TODO: restore context
+                    }
+                    IntrinsicFunction::DomReturn => {
+                        // TODO: add separate synchronous and asynchronous versions
+                        let ret_dom_ref = arguments[0].borrow();
+                        let r_ret_dom = self.prepare_source_reg(&*ret_dom_ref, code_printer);
+                        let rs2 = self.prepare_source_reg(&*arguments[1].borrow(), code_printer);
+                        let rs3 = self.prepare_source_reg(&*arguments[2].borrow(), code_printer);
+
+                        self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
+                        drop(ret_dom_ref);
+                        self.unpin_gpr(rs2);
+                        self.unpin_gpr(rs3);
+
+                        code_printer.print_domreturn(r_ret_dom, rs2, rs3).unwrap();
                     }
                 }
             }

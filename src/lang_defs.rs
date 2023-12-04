@@ -282,12 +282,10 @@ pub fn try_modify_type_with_attr(ty: &mut CaplanType, attr_name: &str) -> bool {
 pub enum IntrinsicFunction {
     Mrev,
     Revoke,
-    Seal
+    Seal,
+    DomCall,
+    DomReturn
 }
-
-const MREV_DESTRUCTIVES : &'static [usize] = &[];
-const REVOKE_DESTRUCTIVES : &'static [usize] = &[0];
-const SEAL_DESTRUCTIVES : &'static [usize] = &[0];
 
 impl IntrinsicFunction {
     pub fn get_return_type(&self, arg_types: &[&IRDAGNodeVType], _: &CaplanTargetConf) -> Option<IRDAGNodeVType> {
@@ -320,21 +318,54 @@ impl IntrinsicFunction {
                     None
                 }
             }
+            IntrinsicFunction::DomCall => {
+                if arg_types.len() < 1 {
+                    None
+                } else if let IRDAGNodeVType::Dom = arg_types[0] {
+                    Some(IRDAGNodeVType::Dom)
+                } else {
+                    None
+                }
+            }
+            IntrinsicFunction::DomReturn => {
+                if arg_types.len() < 3 {
+                    None
+                } else {
+                    match (&arg_types[0], &arg_types[1], &arg_types[2]) {
+                        // TODO: add dedicated type for sealed-return capability
+                        (IRDAGNodeVType::Dom, IRDAGNodeVType::Int, IRDAGNodeVType::Int) => Some(IRDAGNodeVType::Void),
+                        _ => None
+                    }
+                }
+            }
         }
     }
 
-    pub fn get_destructives(&self) -> &[usize] {
+    pub fn get_destructives(&self, arg_types: &[&IRDAGNodeVType]) -> Vec<usize> {
         match self {
-            IntrinsicFunction::Mrev => MREV_DESTRUCTIVES,
-            IntrinsicFunction::Revoke => REVOKE_DESTRUCTIVES,
-            IntrinsicFunction::Seal => SEAL_DESTRUCTIVES
+            IntrinsicFunction::Mrev => vec![],
+            IntrinsicFunction::Revoke => vec![0],
+            IntrinsicFunction::Seal => vec![0],
+            IntrinsicFunction::DomCall => arg_types.into_iter().enumerate().filter_map(|(idx, ty)| 
+                if ty.is_linear() {
+                    Some(idx)
+                } else {
+                    None
+                }).collect(),
+            IntrinsicFunction::DomReturn => vec![0]
+                // if arg_types.get(1).filter(|x| x.is_linear()).is_some() {
+                //     vec![0, 1]
+                // } else {
+                    // ![0]
+                // }
         } 
     }
 
     pub fn is_control_flow(&self) -> bool {
         match self {
             IntrinsicFunction::Mrev | IntrinsicFunction::Revoke
-            | IntrinsicFunction::Seal => false
+            | IntrinsicFunction::Seal => false,
+            IntrinsicFunction::DomCall | IntrinsicFunction::DomReturn => true
         }
     }
 }
@@ -342,7 +373,9 @@ impl IntrinsicFunction {
 const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__mrev", IntrinsicFunction::Mrev),
     ("__revoke", IntrinsicFunction::Revoke),
-    ("__seal", IntrinsicFunction::Seal)
+    ("__seal", IntrinsicFunction::Seal),
+    ("__domcall", IntrinsicFunction::DomCall),
+    ("__domreturn", IntrinsicFunction::DomReturn)
 ];
 
 pub fn lookup_intrinsic(name: &str) -> Option<IntrinsicFunction> {

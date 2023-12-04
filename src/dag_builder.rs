@@ -296,11 +296,10 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     pub fn new_intrinsic_call(&mut self, intrinsic: IntrinsicFunction, args: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
-        let arg_refs = Vec::from_iter(args.iter().map(|node| node.borrow()));
-        let ret_type = intrinsic.get_return_type(
-            &Vec::from_iter(arg_refs.iter().map(|r| &r.vtype)),
-            &self.globals.target_conf
-        ).expect("Bad types for intrinsic call");
+        let arg_refs: Vec<_> = args.iter().map(|node| node.borrow()).collect();
+        let arg_types: Vec<_> = arg_refs.iter().map(|r| &r.vtype).collect();
+        let ret_type = intrinsic.get_return_type(&arg_types, &self.globals.target_conf).expect("Bad types for intrinsic call");
+        let destructives = intrinsic.get_destructives(&arg_types);
         drop(arg_refs); // this is so stupid
         let mut res_node = IRDAGNode::new(
             self.id_counter,
@@ -308,8 +307,8 @@ impl<'ast> IRDAGBuilder<'ast> {
             IRDAGNodeCons::Intrinsic(intrinsic, args.clone()),
             true // let's assume intrinsics all have side effects
         );
-        for destructive in intrinsic.get_destructives() {
-            res_node.add_destruct(args[*destructive].borrow().id);
+        for de in destructives {
+            res_node.add_destruct(args[de].borrow().id);
         }
         let res = new_gced(res_node);
         for arg in args.iter() {
