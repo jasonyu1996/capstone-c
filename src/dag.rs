@@ -42,6 +42,15 @@ impl IRDAGNodeVType {
         }
     }
 
+    pub fn is_capability(&self) -> bool {
+        match self {
+            IRDAGNodeVType::LinPtr(_) | IRDAGNodeVType::Dom
+            | IRDAGNodeVType::NonlinPtr(_) | IRDAGNodeVType::DomAsync
+            | IRDAGNodeVType::Rev(_) | IRDAGNodeVType::DomRet => true,
+            _ => false
+        }
+    }
+
     pub fn from_caplan_type(caplan_type: &CaplanType) -> Option<Self> {
         match caplan_type {
             CaplanType::Void => Some(IRDAGNodeVType::Void),

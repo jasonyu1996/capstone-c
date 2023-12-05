@@ -1099,6 +1099,23 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             code_printer.print_domreturn(r_ret_dom, rs2, GPR_IDX_X0).unwrap();
                         }
                     }
+                    IntrinsicFunction::Capfield => {
+                        let arg_ref = arguments[0].borrow();
+                        let rs1 = self.prepare_source_reg(&*arg_ref, code_printer);
+                        let rd = if !arg_ref.vtype.is_linear() {
+                            self.unpin_gpr(rs1);
+                            self.assign_reg_with_hint(node.id, 8, rs1, code_printer)
+                        } else {
+                            let rd = self.assign_reg(node.id, 8, code_printer);
+                            self.unpin_gpr(rs1);
+                            rd
+                        };
+                        if let IRDAGNodeCons::IntConst(imm) = &arguments[1].borrow().cons {
+                            code_printer.print_lcc(rd, rs1, *imm).unwrap();
+                        } else {
+                            panic!("Capfield arg1 must be a const literal");
+                        }
+                    }
                 }
             }
             IRDAGNodeCons::Asm(asm, outputs, inputs) => {

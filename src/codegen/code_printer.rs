@@ -31,6 +31,7 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("domcall(rd, rs)", ".insn r 0x5b, 0x1, 0x20, rd, rs, x0"),
     ("domreturn(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x21, rd, rs1, rs2"),
     ("ccsrrw(rd, ccsr, rs)", ".insn i 0x5b, 0x7, rd, ccsr(rs)"),
+    ("lcc(rd, rs, imm)", ".insn r 0x5b, 0x1, 0x4, rd, rs, x##imm"),
     ("ctvec", "0x000"),
     ("cih", "0x001"),
     ("cepc", "0x002"),
@@ -329,6 +330,11 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_ccsrrw(&mut self, rd: RegId, rs: RegId, ccsr: &str) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}ccsrrw({}, {}, {})", INST_INDENT, REG_NAMES[rd], ccsr, REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_lcc(&mut self, rd: RegId, rs: RegId, imm: u64) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}lcc({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], imm)?;
         Ok(())
     }
 }

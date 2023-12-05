@@ -145,6 +145,15 @@ impl CaplanType {
         }
     }
 
+    pub fn is_capability(&self) -> bool {
+        match self {
+            CaplanType::LinPtr(_) | CaplanType::Dom
+            | CaplanType::NonlinPtr(_) | CaplanType::DomAsync
+            | CaplanType::Rev(_) | CaplanType::DomRet => true,
+            _ => false
+        }
+    }
+
     pub fn make_pointer(&mut self, target_conf: &CaplanTargetConf) {
         target_conf.make_pointer(self);
     }
@@ -296,7 +305,8 @@ pub enum IntrinsicFunction {
     Delin,
     Tighten,
     DomCall,
-    DomReturn
+    DomReturn,
+    Capfield
 }
 
 impl IntrinsicFunction {
@@ -370,6 +380,15 @@ impl IntrinsicFunction {
                     }
                 }
             }
+            IntrinsicFunction::Capfield => {
+                if arg_types.len() < 2 {
+                    None
+                } else if matches!(arg_types[1], IRDAGNodeVType::Int) && arg_types[0].is_capability() {
+                    Some(IRDAGNodeVType::Int)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -391,12 +410,13 @@ impl IntrinsicFunction {
                 // } else {
                     // None
                 // }).collect(),
-            IntrinsicFunction::DomReturn => vec![0]
+            IntrinsicFunction::DomReturn => vec![0],
                 // if arg_types.get(1).filter(|x| x.is_linear()).is_some() {
                 //     vec![0, 1]
                 // } else {
                     // ![0]
                 // }
+            IntrinsicFunction::Capfield => vec![]
         } 
     }
 
@@ -404,7 +424,7 @@ impl IntrinsicFunction {
         match self {
             IntrinsicFunction::Mrev | IntrinsicFunction::Revoke
             | IntrinsicFunction::Seal | IntrinsicFunction::Delin 
-            | IntrinsicFunction::Tighten => false,
+            | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield => false,
             IntrinsicFunction::DomCall | IntrinsicFunction::DomReturn => true
         }
     }
@@ -417,7 +437,8 @@ const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__delin", IntrinsicFunction::Delin),
     ("__tighten", IntrinsicFunction::Tighten),
     ("__domcall", IntrinsicFunction::DomCall),
-    ("__domreturn", IntrinsicFunction::DomReturn)
+    ("__domreturn", IntrinsicFunction::DomReturn),
+    ("__capfield", IntrinsicFunction::Capfield)
 ];
 
 pub fn lookup_intrinsic(name: &str) -> Option<IntrinsicFunction> {
