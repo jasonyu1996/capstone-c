@@ -35,6 +35,7 @@ enum VarLocation {
 enum TempLocation {
     SpilledStackSlot(usize, usize),
     GPR(RegId),
+    Const(u64), // constant value
     Nowhere
 }
 
@@ -501,6 +502,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 self.stack_frame.free_spill_slots(spill_slot, size);
                 size
             }
+            TempLocation::Const(const_val) => {
+                self.spill_reg_if_taken(target_reg_id, code_printer);
+                code_printer.print_li(target_reg_id, const_val).unwrap();
+                8
+            }
             TempLocation::Nowhere => {
                 if let Some(var_id) = temp_state.var {
                     let size = self.vars[var_id].ty.size(&self.globals.target_conf);
@@ -534,6 +540,16 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 self.stack_frame.free_spill_slots(spill_slot, size);
                 Self::load(r, GPR_IDX_SP, self.stack_frame.spill_stack_slot_offset(spill_slot) as isize, size, code_printer);
                 (r, size)
+            }
+            TempLocation::Const(const_val) => {
+                if const_val == 0 {
+                    self.temps.get_mut(&source_node_id).unwrap().loc = TempLocation::GPR(GPR_IDX_X0);
+                    (GPR_IDX_X0, 8)
+                } else {
+                    let reg_id = self.assign_reg(source_node_id, 8, code_printer);
+                    code_printer.print_li(reg_id, const_val).unwrap();
+                    (reg_id, 8)
+                }
             }
             TempLocation::Nowhere => {
                 if let Some(var_id) = temp_state.var {
@@ -590,12 +606,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         eprintln!("Rev dep count = {}, side effects = {}", node.rev_deps.len(), node.side_effects);
         match &node.cons {
             IRDAGNodeCons::IntConst(val) => {
-                if *val == 0 {
-                    self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_X0);
-                } else {
-                    let reg_id = self.assign_reg(node.id, 8, code_printer);
-                    code_printer.print_li(reg_id, *val).unwrap();
-                }
+                self.temps.get_mut(&node.id).unwrap().loc = TempLocation::Const(*val);
             }
             IRDAGNodeCons::IntBinOp(op_type, s1, s2) => {
                 let rs1 = self.prepare_source_reg(&*s1.borrow(), code_printer);
