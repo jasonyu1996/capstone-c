@@ -283,6 +283,8 @@ pub enum IntrinsicFunction {
     Mrev,
     Revoke,
     Seal,
+    Delin,
+    Tighten,
     DomCall,
     DomReturn
 }
@@ -318,6 +320,25 @@ impl IntrinsicFunction {
                     None
                 }
             }
+            IntrinsicFunction::Delin => {
+                if arg_types.len() < 1 {
+                    None
+                } else if let IRDAGNodeVType::LinPtr(inner) = arg_types[0] {
+                    Some(IRDAGNodeVType::NonlinPtr(inner.clone()))
+                } else {
+                    None
+                }
+            }
+            IntrinsicFunction::Tighten => {
+                if arg_types.len() < 2 {
+                    None
+                } else {
+                    match arg_types[0] {
+                        IRDAGNodeVType::LinPtr(_) | IRDAGNodeVType::NonlinPtr(_) => Some(arg_types[0].clone()),
+                        _ => None
+                    }
+                }
+            }
             IntrinsicFunction::DomCall => {
                 if arg_types.len() < 1 {
                     None
@@ -346,6 +367,13 @@ impl IntrinsicFunction {
             IntrinsicFunction::Mrev => vec![],
             IntrinsicFunction::Revoke => vec![0],
             IntrinsicFunction::Seal => vec![0],
+            IntrinsicFunction::Delin => vec![0],
+            IntrinsicFunction::Tighten =>
+                if arg_types[0].is_linear() {
+                    vec![0]
+                } else {
+                    vec![]
+                },
             IntrinsicFunction::DomCall => arg_types.into_iter().enumerate().filter_map(|(idx, ty)| 
                 if ty.is_linear() {
                     Some(idx)
@@ -364,7 +392,8 @@ impl IntrinsicFunction {
     pub fn is_control_flow(&self) -> bool {
         match self {
             IntrinsicFunction::Mrev | IntrinsicFunction::Revoke
-            | IntrinsicFunction::Seal => false,
+            | IntrinsicFunction::Seal | IntrinsicFunction::Delin 
+            | IntrinsicFunction::Tighten => false,
             IntrinsicFunction::DomCall | IntrinsicFunction::DomReturn => true
         }
     }
@@ -374,6 +403,8 @@ const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__mrev", IntrinsicFunction::Mrev),
     ("__revoke", IntrinsicFunction::Revoke),
     ("__seal", IntrinsicFunction::Seal),
+    ("__delin", IntrinsicFunction::Delin),
+    ("__tighten", IntrinsicFunction::Tighten),
     ("__domcall", IntrinsicFunction::DomCall),
     ("__domreturn", IntrinsicFunction::DomReturn)
 ];

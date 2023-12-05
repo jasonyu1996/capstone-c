@@ -26,6 +26,8 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("mrev(rd, rs)", ".insn r 0x5b, 0x1, 0x8, rd, rs, x0"),
     ("revoke(rs)", ".insn r 0x5b, 0x1, 0x0, x0, rs, x0"),
     ("seal(rd, rs)", ".insn r 0x5b, 0x1, 0x7, rd, rs, x0"),
+    ("delin(rd)", ".insn r 0x5b, 0x1, 0x3, rd, x0, x0"),
+    ("tighten(rd, rs, imm)", ".insn r 0x5b, 0x1, 0x2, rd, rs, imm"),
     ("domcall(rd, rs)", ".insn r 0x5b, 0x1, 0x20, rd, rs, x0"),
     ("domreturn(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x21, rd, rs1, rs2")
 ];
@@ -296,6 +298,16 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_seal(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}seal({}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_delin(&mut self, rd: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}delin({})", INST_INDENT, REG_NAMES[rd])?;
+        Ok(())
+    }
+
+    pub fn print_tighten(&mut self, rd: RegId, rs: RegId, imm: u64) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}tighten({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], imm)?;
         Ok(())
     }
 

@@ -912,7 +912,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         self.unpin_gpr(rs);
                         code_printer.print_mrev(reg_id, rs).unwrap();
                     }
-                    IntrinsicFunction::Revoke | IntrinsicFunction::Seal => {
+                    IntrinsicFunction::Revoke | IntrinsicFunction::Seal | IntrinsicFunction::Delin => {
                         // destruct the parameter
                         let arg_ref = arguments[0].borrow();
                         let rs = self.prepare_source_reg(&*arg_ref, code_printer);
@@ -920,13 +920,42 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         drop(arg_ref);
 
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
-                        if matches!(intrinsic, IntrinsicFunction::Revoke) {
-                            if rs != reg_id {
-                                code_printer.print_movc(reg_id, rs).unwrap();
+                        match intrinsic {
+                            IntrinsicFunction::Revoke => {
+                                if rs != reg_id {
+                                    code_printer.print_movc(reg_id, rs).unwrap();
+                                }
+                                code_printer.print_revoke(reg_id).unwrap();
                             }
-                            code_printer.print_revoke(reg_id).unwrap();
+                            IntrinsicFunction::Delin => {
+                                if rs != reg_id {
+                                    code_printer.print_movc(reg_id, rs).unwrap();
+                                }
+                                code_printer.print_delin(reg_id).unwrap();
+                            }
+                            IntrinsicFunction::Seal => {
+                                code_printer.print_seal(reg_id, rs).unwrap();
+                            }
+                            _ => panic!("Should not reach here")
+                        }
+                    }
+                    IntrinsicFunction::Tighten => {
+                        let arg_ref = arguments[0].borrow();
+                        let rs = self.prepare_source_reg(&*arg_ref, code_printer);
+                        let rs_destructed = arg_ref.vtype.is_linear();
+                        if rs_destructed {
+                            self.destruct_temp_value(rs, &*arg_ref);
                         } else {
-                            code_printer.print_seal(reg_id, rs).unwrap();
+                            self.unpin_gpr(rs);
+                        }
+                        drop(arg_ref);
+
+                        let arg_ref = arguments[1].borrow();
+                        if let IRDAGNodeCons::IntConst(perms) = &arg_ref.cons {
+                            let rd = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
+                            code_printer.print_tighten(rd, rs, *perms).unwrap();
+                        } else {
+                            panic!("Second parameter of tighten should be a constant literal");
                         }
                     }
                     IntrinsicFunction::DomCall => {
