@@ -29,7 +29,13 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("delin(rd)", ".insn r 0x5b, 0x1, 0x3, rd, x0, x0"),
     ("tighten(rd, rs, imm)", ".insn r 0x5b, 0x1, 0x2, rd, rs, x##imm"),
     ("domcall(rd, rs)", ".insn r 0x5b, 0x1, 0x20, rd, rs, x0"),
-    ("domreturn(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x21, rd, rs1, rs2")
+    ("domreturn(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x21, rd, rs1, rs2"),
+    ("ccsrrw(rd, ccsr, rs)", ".insn i 0x5b, 0x7, rd, ccsr(rs)"),
+    ("ctvec", "0x000"),
+    ("cih", "0x001"),
+    ("cepc", "0x002"),
+    ("cmmu", "0x003"),
+    ("cscratch", "0x004")
 ];
 
 pub struct CodePrinter<T> where T: Write {
@@ -318,6 +324,11 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_domcall(&mut self, rd: RegId, rs: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}domcall({}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs])?;
+        Ok(())
+    }
+
+    pub fn print_ccsrrw(&mut self, rd: RegId, rs: RegId, ccsr: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}ccsrrw({}, {}, {})", INST_INDENT, REG_NAMES[rd], ccsr, REG_NAMES[rs])?;
         Ok(())
     }
 }

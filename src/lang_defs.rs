@@ -21,6 +21,8 @@ pub enum CaplanType {
     Void,
     Int,
     Dom,
+    DomRet,
+    DomAsync, // asynchronous sealed-return cap
     Rev(Box<CaplanType>), // revocation capability
     Array(Box<CaplanType>, usize), // element type and length
     LinPtr(Box<CaplanType>),
@@ -36,6 +38,8 @@ impl std::fmt::Debug for CaplanType {
             CaplanType::Void => write!(f, "Void"),
             CaplanType::Int => write!(f, "Int"),
             CaplanType::Dom => write!(f, "Dom"),
+            CaplanType::DomRet => write!(f, "DomRet"),
+            CaplanType::DomAsync => write!(f, "DomAsync"),
             CaplanType::Rev(inner_type) => f.debug_tuple("Rev").field(inner_type).finish(),
             CaplanType::Array(inner_type, n) => 
                 f.debug_tuple("Array").field(inner_type).field(n).finish(),
@@ -136,7 +140,7 @@ impl CaplanType {
 
     pub fn is_linear(&self) -> bool {
         match self {
-            CaplanType::LinPtr(_) | CaplanType::Rev(_) | CaplanType::Dom => true,
+            CaplanType::LinPtr(_) | CaplanType::Rev(_) | CaplanType::Dom | CaplanType::DomRet => true,
             _ => false
         }
     }
@@ -160,6 +164,8 @@ impl CaplanType {
             CaplanType::Void => 8,
             CaplanType::Int => 8,
             CaplanType::Dom => 16,
+            CaplanType::DomRet => 16,
+            CaplanType::DomAsync => 16,
             CaplanType::Rev(_) => 16,
             CaplanType::Array(elem_t, elem_n) => elem_t.size(target_conf) * elem_n,
             CaplanType::LinPtr(_) => 16,
@@ -175,6 +181,8 @@ impl CaplanType {
             CaplanType::Void => 8,
             CaplanType::Int => 8,
             CaplanType::Dom => 16,
+            CaplanType::DomRet => 16,
+            CaplanType::DomAsync => 16,
             CaplanType::Rev(_) => 16,
             CaplanType::Array(elem_t, elem_n) => elem_t.alignment(target_conf), // TODO: padding possibly needed
             CaplanType::LinPtr(_) => 16,
@@ -266,7 +274,9 @@ pub const TYPE_ATTRIBUTES : &'static [TypeAttribute<'static>] = &[
             }
         }
     },
-    builtin_type_attr!("dom", CaplanType::Dom)
+    builtin_type_attr!("dom", CaplanType::Dom),
+    builtin_type_attr!("domret", CaplanType::DomRet),
+    builtin_type_attr!("domasync", CaplanType::DomAsync)
 ];
 
 pub fn try_modify_type_with_attr(ty: &mut CaplanType, attr_name: &str) -> bool {
@@ -354,7 +364,8 @@ impl IntrinsicFunction {
                 } else {
                     match (&arg_types[0], &arg_types[1], &arg_types[2]) {
                         // TODO: add dedicated type for sealed-return capability
-                        (IRDAGNodeVType::Dom, IRDAGNodeVType::Int, IRDAGNodeVType::Int) => Some(IRDAGNodeVType::Void),
+                        (IRDAGNodeVType::DomRet, IRDAGNodeVType::Int, IRDAGNodeVType::Int) 
+                        | (IRDAGNodeVType::DomAsync, IRDAGNodeVType::Int, IRDAGNodeVType::Int) => Some(IRDAGNodeVType::Void),
                         _ => None
                     }
                 }
@@ -375,11 +386,11 @@ impl IntrinsicFunction {
                     vec![]
                 },
             IntrinsicFunction::DomCall => arg_types.into_iter().enumerate().filter_map(|(idx, ty)| 
-                if ty.is_linear() {
-                    Some(idx)
-                } else {
-                    None
-                }).collect(),
+                // if ty.is_linear() {
+                    Some(idx)).collect(),
+                // } else {
+                    // None
+                // }).collect(),
             IntrinsicFunction::DomReturn => vec![0]
                 // if arg_types.get(1).filter(|x| x.is_linear()).is_some() {
                 //     vec![0, 1]

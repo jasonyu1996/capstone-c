@@ -597,6 +597,88 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         self.gpr_states[reg] = GPRState::Free; 
     }
 
+    // returns the size of the saved context
+    // rd: register for holding the new domain
+    fn domcall_save_context<T>(&mut self, args_count: usize, rd: RegId, rs: RegId, code_printer: &mut CodePrinter<T>) -> usize where T: std::io::Write {
+        // TODO: for now everything is done inline, but we might want to consider gathering all these in one place for smaller code size
+        // TODO: more CSRs and CCSRs in the domain scope
+        let arg_reg_lo = GPR_IDX_A0;
+        let arg_reg_hi = GPR_IDX_A0 + args_count;
+        let mut neg_stack_offset = 0;
+        // GPRs
+        for reg in 1..GPR_N {
+            if reg == GPR_IDX_SP || (reg >= arg_reg_lo && reg < arg_reg_hi) {
+                continue;
+            }
+            if reg != rd && reg != rs {
+                neg_stack_offset += self.globals.target_conf.register_width;
+                Self::store(reg, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
+            }
+            if reg != rs {
+                code_printer.print_li(reg, 0).unwrap(); // scrub
+            }
+        }
+        // cscratch
+        code_printer.print_ccsrrw(GPR_IDX_T0, GPR_IDX_X0, "cscratch").unwrap();
+        neg_stack_offset += self.globals.target_conf.register_width;
+        Self::store(GPR_IDX_T0, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
+        code_printer.print_li(GPR_IDX_T0, 0).unwrap();
+        code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
+        code_printer.print_li(GPR_IDX_SP, 0).unwrap();
+
+        neg_stack_offset
+    }
+
+    fn domcall_restore_context<T>(&mut self, ctx_size: usize, args_count: usize, rd: RegId, rs: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        let arg_reg_lo = GPR_IDX_A0;
+        let arg_reg_hi = GPR_IDX_A0 + args_count;
+        let mut neg_stack_offset = 0;
+
+        // load sp back
+        code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
+        // restore the original cscratch
+        Self::load(GPR_IDX_T0, GPR_IDX_SP, -(ctx_size as isize), self.globals.target_conf.register_width, code_printer);
+        code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_T0, "cscratch").unwrap();
+
+        // GPRs
+        for reg in 1..GPR_N {
+            if reg == GPR_IDX_SP || (reg >= arg_reg_lo && reg < arg_reg_hi) {
+                continue;
+            }
+            if reg != rd && reg != rs {
+                neg_stack_offset += self.globals.target_conf.register_width;
+                Self::load(reg, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
+            }
+        }
+    }
+
+    // only for synchronous return
+    fn domreturn_save_context<T>(&mut self, rs1: RegId, rs2: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        // TODO: support return value here
+        // store stack pointer on cscratch
+
+        let mut tmp_reg = 1;
+        while tmp_reg == rs1 || tmp_reg == rs2 || tmp_reg == GPR_IDX_SP {
+            tmp_reg += 1;
+        }
+        assert!(tmp_reg < GPR_N);
+
+        // save cscratch
+        code_printer.print_ccsrrw(tmp_reg, GPR_IDX_X0, "cscratch").unwrap();
+        Self::store(tmp_reg, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize),
+            self.globals.target_conf.register_width, code_printer);
+        // save sp in cscratch
+        code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
+
+        // scrub
+        for reg in 1..GPR_N {
+            if reg != rs1 && reg != rs2 {
+                code_printer.print_li(reg, 0).unwrap();
+            }
+        }
+
+    }
+
     fn generate_node<T>(&mut self, func_name: &str, node: &IRDAGNode, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         eprintln!("Codegen for node {} ({:?})", node.id, node.cons);
         if node.rev_deps.is_empty() && !node.side_effects {
@@ -970,33 +1052,52 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         }
                     }
                     IntrinsicFunction::DomCall => {
-                        // TODO: now we assume that everything is saved by the hardware (not true)
-                        // TODO: handle arguments and return values
-                        // TODO: save context
+                        let args_count = arguments.len() - 1;
+                        for (arg_idx, arg) in arguments[1..].iter().enumerate() {
+                            self.prepare_source_reg_specified(&*arg.borrow(), 
+                                GPR_IDX_A0 + arg_idx, code_printer);
+                        }
+
+
                         let dom_ref = arguments[0].borrow();
                         let r_dom = self.prepare_source_reg(&*dom_ref, code_printer);
                         self.destruct_temp_value(r_dom, &*dom_ref);
                         drop(dom_ref);
 
+                        for (arg_idx, arg) in arguments[1..].iter().enumerate() {
+                            self.destruct_temp_value(GPR_IDX_A0 + arg_idx, &*arg.borrow());
+                        }
+
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, r_dom, code_printer);
                         // to hold the renewed domain
+
+                        let ctx_size = self.domcall_save_context(args_count, reg_id, r_dom, code_printer);
                         code_printer.print_domcall(reg_id, r_dom).unwrap();
-                        
-                        // TODO: restore context
+                        self.domcall_restore_context(ctx_size, args_count, reg_id, r_dom, code_printer);
                     }
                     IntrinsicFunction::DomReturn => {
                         // TODO: add separate synchronous and asynchronous versions
                         let ret_dom_ref = arguments[0].borrow();
+                        let is_async = matches!(ret_dom_ref.vtype, IRDAGNodeVType::DomAsync);
                         let r_ret_dom = self.prepare_source_reg(&*ret_dom_ref, code_printer);
                         let rs2 = self.prepare_source_reg(&*arguments[1].borrow(), code_printer);
-                        let rs3 = self.prepare_source_reg(&*arguments[2].borrow(), code_printer);
 
-                        self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
-                        drop(ret_dom_ref);
-                        self.unpin_gpr(rs2);
-                        self.unpin_gpr(rs3);
+                        if is_async {
+                            let rs3 = self.prepare_source_reg(&*arguments[2].borrow(), code_printer);
+                            self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
+                            drop(ret_dom_ref);
+                            self.unpin_gpr(rs2);
+                            self.unpin_gpr(rs3);
 
-                        code_printer.print_domreturn(r_ret_dom, rs2, rs3).unwrap();
+                            code_printer.print_domreturn(r_ret_dom, rs2, rs3).unwrap();
+                        } else {
+                            self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
+                            drop(ret_dom_ref);
+                            self.unpin_gpr(rs2);
+                            self.domreturn_save_context(r_ret_dom, rs2, code_printer);
+                            
+                            code_printer.print_domreturn(r_ret_dom, rs2, GPR_IDX_X0).unwrap();
+                        }
                     }
                 }
             }
@@ -1114,6 +1215,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     self.assign_reg_with_hint(node.id, src.borrow().vtype.size(), rs, code_printer)
                 };
                 self.pointer_bound_imm(rd, rs, *size, code_printer);
+            }
+            IRDAGNodeCons::LocalSymbol(symbol_name) => {
+                let rd = self.assign_reg(node.id, 8, code_printer);
+                code_printer.print_la(rd, &symbol_name).unwrap();
             }
             _ => {
                 panic!("Unrecognised node {:?}", node.cons);

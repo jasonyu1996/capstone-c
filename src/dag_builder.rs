@@ -221,6 +221,17 @@ impl<'ast> IRDAGBuilder<'ast> {
         res
     }
 
+    pub fn new_local_symbol(&mut self, symbol_name: String) -> GCed<IRDAGNode> {
+        let res = new_gced(IRDAGNode::new(
+            self.id_counter,
+            IRDAGNodeVType::Int, // this is always just an address
+            IRDAGNodeCons::LocalSymbol(symbol_name),
+            false
+        ));
+        self.add_nonlabel_node(&res);
+        res
+    }
+
     pub fn new_label(&mut self) -> GCed<IRDAGNode> {
         // label nodes are not added to the list until they are placed
         new_gced(IRDAGNode::new(
@@ -1090,6 +1101,9 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         } else if self.globals.func_decls.contains_key(&identifier.name) {
             assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(IRDAGFuncIdent::Name(identifier.name.clone()));
+            self.last_temp_res = Some(IRDAGNodeTempResult::Word(
+                self.new_local_symbol(identifier.name.clone())
+            ));
         } else {
             panic!("Unable to find identifier {}", identifier.name);
         }

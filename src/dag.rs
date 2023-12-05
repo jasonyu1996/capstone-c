@@ -8,6 +8,8 @@ pub enum IRDAGNodeVType {
     Void,
     Int,
     Dom,
+    DomRet,
+    DomAsync,
     Rev(CaplanType),
     RawPtr(CaplanType), // TODO: probably we don't need this info here
     LinPtr(CaplanType),
@@ -21,6 +23,8 @@ impl IRDAGNodeVType {
             IRDAGNodeVType::Void => 8,
             IRDAGNodeVType::Int => 8,
             IRDAGNodeVType::Dom => 16,
+            IRDAGNodeVType::DomRet => 16,
+            IRDAGNodeVType::DomAsync => 16,
             IRDAGNodeVType::Rev(_) => 16,
             IRDAGNodeVType::RawPtr(_) => 8,
             IRDAGNodeVType::LinPtr(_) => 16,
@@ -32,9 +36,8 @@ impl IRDAGNodeVType {
     // returns if the type is linear (i.e., it cannot be duplicated)
     pub fn is_linear(&self) -> bool {
         match self {
-            IRDAGNodeVType::LinPtr(_) => true,
-            IRDAGNodeVType::Dom => true,
-            IRDAGNodeVType::Rev(_) => true,
+            IRDAGNodeVType::LinPtr(_) | IRDAGNodeVType::Dom
+            | IRDAGNodeVType::Rev(_) | IRDAGNodeVType::DomRet | IRDAGNodeVType::DomAsync => true,
             _ => false
         }
     }
@@ -43,6 +46,8 @@ impl IRDAGNodeVType {
         match caplan_type {
             CaplanType::Void => Some(IRDAGNodeVType::Void),
             CaplanType::Dom => Some(IRDAGNodeVType::Dom),
+            CaplanType::DomRet => Some(IRDAGNodeVType::DomRet),
+            CaplanType::DomAsync => Some(IRDAGNodeVType::DomAsync),
             CaplanType::Int => Some(IRDAGNodeVType::Int),
             CaplanType::Rev(inner_type) => Some(IRDAGNodeVType::Rev(*inner_type.clone())),
             CaplanType::RawPtr(inner_type) => Some(IRDAGNodeVType::RawPtr(*inner_type.clone())),
@@ -237,6 +242,8 @@ pub enum IRDAGNodeCons {
     CapResize(GCed<IRDAGNode>, usize),
     // take the address of a symbol
     AddressOf(IRDAGNamedMemLoc),
+    // local symbollabel
+    LocalSymbol(String),
     // inline assembly
     Asm(String, Vec<IRDAGAsmOutput>, Vec<IRDAGAsmInput>),
     // intrinsic functions
@@ -261,7 +268,8 @@ impl std::fmt::Debug for IRDAGNodeCons {
             Self::Label(arg0) => f.debug_tuple("Label").field(arg0).finish(),
             Self::AddressOf(_) => write!(f, "AddressOf"),
             Self::Asm(arg0, _, _) => f.debug_tuple("Asm").field(arg0).finish(),
-            Self::Intrinsic(arg0, _) => f.debug_tuple("Intrinsic").field(arg0).finish()
+            Self::Intrinsic(arg0, _) => f.debug_tuple("Intrinsic").field(arg0).finish(),
+            Self::LocalSymbol(arg0) => f.debug_tuple("LocalSymbol").field(arg0).finish()
         }
     }
 }
