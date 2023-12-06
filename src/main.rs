@@ -106,6 +106,7 @@ fn main() {
                     eprintln!("{:#?}", preprocessor_error);
                 }
             }
+            std::process::exit(1);
         }
     }
 }
