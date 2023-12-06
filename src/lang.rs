@@ -1,7 +1,7 @@
 use std::{collections::{HashSet, HashMap}, process::id};
 
 use lang_c::{visit::Visit as ParserVisit, ast::{FunctionDefinition, TranslationUnit, DeclaratorKind, ParameterDeclaration, DerivedDeclarator, DeclarationSpecifier, TypeSpecifier, StructKind, StructDeclaration, Extension, Declaration}, span::Span};
-use crate::{dag::IRDAG, lang_defs::{CaplanStruct, try_modify_type_with_attr}, target_conf::CaplanTargetConf};
+use crate::{dag::IRDAG, lang_defs::{CaplanStruct, try_modify_type_with_attr, CaplanEntryType, try_apply_func_attr}, target_conf::CaplanTargetConf};
 use crate::dag_builder::IRDAGBuilder;
 use crate::lang_defs::CaplanType;
 use crate::utils::{GCed, new_gced};
@@ -77,6 +77,7 @@ impl<'ast> ParserVisit<'ast> for CaplanParamBuilder<'ast> {
 
 pub struct CaplanFunction {
     pub name: String,
+    pub entry_type: CaplanEntryType,
     pub ret_type: CaplanType,
     pub params: Vec<CaplanParam>,
     pub locals: HashMap<String, CaplanType>,
@@ -115,6 +116,7 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
         Self {
             func: CaplanFunction {
                 name: String::new(),
+                entry_type: CaplanEntryType::default(),
                 ret_type: CaplanType::Int, // default is int
                 params: Vec::new(),
                 dag: IRDAG::new(),
@@ -137,11 +139,13 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
         }
         self.visit_function_definition(ast, span);
         for attr in self.ret_type_attrs.iter() {
-            assert!(try_modify_type_with_attr(&mut self.func.ret_type, attr));
+            assert!(try_modify_type_with_attr(&mut self.func.ret_type, attr) ||
+                try_apply_func_attr(attr, &mut self.func));
         }
         self.globals.func_decls.insert(self.func.name.clone(), self.func.ret_type.clone());
 
         eprintln!("Function name: {}", self.func.name);
+        eprintln!("Function entry type: {:?}", self.func.entry_type);
         eprintln!("Function return type: {:?}", self.func.ret_type);
         eprintln!("Function parameters: {:?}", self.func.params);
 

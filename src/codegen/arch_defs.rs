@@ -16,3 +16,15 @@ pub const GPR_PARAMS : [RegId; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
 pub const CCSR_DOMAIN_SAVED : &'static [&'static str] = &[
     // "cscratch" // TODO: MORE
 ];
+
+#[repr(u64)]
+pub enum LccField {
+    Valid = 0,
+    Type,
+    Cursor,
+    Base,
+    End,
+    Perms,
+    Async,
+    Reg
+}

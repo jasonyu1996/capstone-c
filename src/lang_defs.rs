@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use lang_c::ast::{TypeSpecifier as ASTTypeSpecifier, DerivedDeclarator, ArraySize, Expression, Constant};
-use crate::{utils::GCed, lang::CaplanGlobalContext, target_conf::{CaplanTargetConf, self}, dag::IRDAGNodeVType};
+use crate::{utils::GCed, lang::{CaplanGlobalContext, CaplanFunction}, target_conf::{CaplanTargetConf, self}, dag::IRDAGNodeVType};
 
 #[derive(Debug, Clone)]
 pub struct CaplanStructField {
@@ -150,6 +150,13 @@ impl CaplanType {
             CaplanType::LinPtr(_) | CaplanType::Dom
             | CaplanType::NonlinPtr(_) | CaplanType::DomAsync
             | CaplanType::Rev(_) | CaplanType::DomRet => true,
+            _ => false
+        }
+    }
+
+    pub fn is_return_dom(&self) -> bool {
+        match self {
+            CaplanType::DomRet | CaplanType::DomAsync => true,
             _ => false
         }
     }
@@ -475,4 +482,41 @@ pub fn lookup_intrinsic(name: &str) -> Option<IntrinsicFunction> {
             }
         }
     )
+}
+
+#[derive(Debug)]
+pub enum CaplanEntryType {
+    CrossDom, // domain entry
+    InDom
+}
+
+impl Default for CaplanEntryType {
+    fn default() -> Self {
+        Self::InDom
+    }
+}
+
+
+pub struct FunctionAttribute<'h> {
+    name: &'h str,
+    apply: &'h dyn Fn(&mut CaplanFunction)
+}
+
+pub const FUNCTION_ATTRIBUTES : &'static [FunctionAttribute<'static>] = &[
+    FunctionAttribute {
+        name: "domentry",
+        apply: &|func| {
+            func.entry_type = CaplanEntryType::CrossDom
+        }
+    }
+];
+
+pub fn try_apply_func_attr(name: &str, func: &mut CaplanFunction) -> bool {
+    for attr in FUNCTION_ATTRIBUTES.iter() {
+        if attr.name == name {
+            (attr.apply)(func);
+            return true;
+        }
+    }
+    false
 }

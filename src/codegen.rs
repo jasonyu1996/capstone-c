@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::codegen::code_printer::REG_NAMES;
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
-use crate::lang_defs::{CaplanType, IntrinsicFunction};
+use crate::lang_defs::{CaplanType, IntrinsicFunction, CaplanEntryType};
 use crate::target_conf::CaplanABI;
 use crate::utils::{GCed, align_up_to};
 
@@ -218,18 +218,35 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         code_printer.print_global_symb(&func_label).unwrap();
         code_printer.print_label(&func_label).unwrap();
 
+        let cross_dom = matches!(func.entry_type, CaplanEntryType::CrossDom);
+
+        if cross_dom {
+            // setup the stack pointer from cscratch
+            code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
+            Self::load(GPR_IDX_T0, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize),
+                self.globals.target_conf.register_width, code_printer);
+            code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_T0, "cscratch").unwrap();
+        }
+
         // now we know how much stack space is needed
         let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log); // this makes sure that all stack frames are aligned
-        let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
-        self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_callee_saved_n) as isize), code_printer);
+
+        if cross_dom {
+            self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -(stack_frame_size as isize), code_printer);
+        } else {
+            let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
+            self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_callee_saved_n) as isize), code_printer);
 
 
-        for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
-            // clobbered callee-saved registers need saving here
-            assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
-            Self::store(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
-            stack_frame_size += self.globals.target_conf.min_alignment;
+            for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
+                // clobbered callee-saved registers need saving here
+                assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
+                Self::store(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
+                stack_frame_size += self.globals.target_conf.min_alignment;
+            }
         }
+
+        assert!(!cross_dom || !func.params.is_empty(), "A domain entry function must have at least one argument");
 
         // shift params to stack
         for (param_idx, param) in func.params.iter().enumerate() {
@@ -238,29 +255,55 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 offset: 0
             };
             let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
-            Self::store(GPR_PARAMS[param_idx],
-                GPR_IDX_SP,
-                self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
-                self.vars[var_id].ty.size(&self.globals.target_conf),
-                code_printer
-            );
+            if cross_dom {
+                if param_idx == 0 {
+                    // the first argument of a domain entry function holds the sealed-return cap
+                    assert!(param.ty.is_return_dom(), "Arg 0 of domain entry function must be of return domain type");
+                    Self::store(GPR_IDX_RA,
+                        GPR_IDX_SP,
+                        self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                        self.vars[var_id].ty.size(&self.globals.target_conf),
+                        code_printer
+                    );
+                } else {
+                    Self::store(GPR_PARAMS[param_idx - 1],
+                        GPR_IDX_SP,
+                        self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                        self.vars[var_id].ty.size(&self.globals.target_conf),
+                        code_printer
+                    );
+                }
+            } else {
+                Self::store(GPR_PARAMS[param_idx],
+                    GPR_IDX_SP,
+                    self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                    self.vars[var_id].ty.size(&self.globals.target_conf),
+                    code_printer
+                );
+            }
         }
     }
 
     fn generate_epilogue<T>(&mut self, func: &CaplanFunction, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        code_printer.print_label(&self.gen_func_ret_label(&func.name)).unwrap();
+        let ret_label = self.gen_func_ret_label(&func.name);
+        code_printer.print_label(&ret_label).unwrap();
 
-        let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log);
+        if matches!(func.entry_type, CaplanEntryType::CrossDom) {
+            // domain entry function needs to return explicitly, so when the end is reached, just loop
+            code_printer.print_jump_label(&ret_label).unwrap();
+        } else {
+            let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log);
 
-        for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
-            // clobbered callee-saved registers need restoring here
-            // TODO: 16 byte loading
-            Self::load(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
-            stack_frame_size += self.globals.target_conf.min_alignment;
+            for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
+                // clobbered callee-saved registers need restoring here
+                // TODO: 16 byte loading
+                Self::load(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
+                stack_frame_size += self.globals.target_conf.min_alignment;
+            }
+
+            self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, stack_frame_size as isize, code_printer);
+            code_printer.print_ret().unwrap();
         }
-
-        self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, stack_frame_size as isize, code_printer);
-        code_printer.print_ret().unwrap();
     }
 
     fn pointer_offset_imm<T>(&self, rd: RegId, rs: RegId, offset: isize, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
@@ -636,8 +679,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
     fn domcall_restore_context<T>(&mut self, ctx_size: usize, args_count: usize, rd: RegId, rs: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        let arg_reg_lo = GPR_IDX_A0;
-        let arg_reg_hi = GPR_IDX_A0 + args_count;
+        let arg_reg_lo = GPR_PARAMS[0];
+        let arg_reg_hi = arg_reg_lo + args_count;
         let mut neg_stack_offset = 0;
 
         // load sp back
@@ -668,6 +711,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             tmp_reg += 1;
         }
         assert!(tmp_reg < GPR_N);
+
+        // reset stack pointer to top
+        code_printer.print_lcc(GPR_IDX_T0, GPR_IDX_SP, LccField::End as u64).unwrap();
+        code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_T0).unwrap();
 
         // save cscratch
         code_printer.print_ccsrrw(tmp_reg, GPR_IDX_X0, "cscratch").unwrap();
@@ -1142,7 +1189,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let args_count = arguments.len() - 1;
                         for (arg_idx, arg) in arguments[1..].iter().enumerate() {
                             self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(), 
-                                GPR_IDX_A0 + arg_idx, code_printer);
+                                GPR_PARAMS[arg_idx], code_printer);
                         }
 
 
@@ -1152,7 +1199,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         drop(dom_ref);
 
                         for (arg_idx, arg) in arguments[1..].iter().enumerate() {
-                            self.destruct_temp_value(GPR_IDX_A0 + arg_idx, &*arg.to_word().unwrap().borrow());
+                            self.destruct_temp_value(GPR_PARAMS[arg_idx], &*arg.to_word().unwrap().borrow());
                         }
 
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, r_dom, code_printer);

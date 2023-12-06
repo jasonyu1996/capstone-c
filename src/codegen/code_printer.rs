@@ -339,6 +339,11 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
+    pub fn print_scc(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}scc({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
+        Ok(())
+    }
+
     pub fn print_split(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}split({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
         Ok(())
