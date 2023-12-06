@@ -306,16 +306,17 @@ pub enum IntrinsicFunction {
     Tighten,
     DomCall,
     DomReturn,
-    Capfield
+    Capfield,
+    Split
 }
 
 impl IntrinsicFunction {
-    pub fn get_return_type(&self, arg_types: &[&IRDAGNodeVType], _: &CaplanTargetConf) -> Option<IRDAGNodeVType> {
+    pub fn get_return_type(&self, arg_types: &[IRDAGNodeVType], _: &CaplanTargetConf) -> Option<IRDAGNodeVType> {
         match self {
             IntrinsicFunction::Mrev => {
                 if arg_types.len() < 1 {
                     None
-                } else if let IRDAGNodeVType::LinPtr(inner) = arg_types[0] {
+                } else if let IRDAGNodeVType::LinPtr(inner) = &arg_types[0] {
                     Some(IRDAGNodeVType::Rev(inner.clone()))
                 } else {
                     None
@@ -324,7 +325,7 @@ impl IntrinsicFunction {
             IntrinsicFunction::Revoke => {
                 if arg_types.len() < 1 {
                     None
-                } else if let IRDAGNodeVType::Rev(inner) = arg_types[0] {
+                } else if let IRDAGNodeVType::Rev(inner) = &arg_types[0] {
                     Some(IRDAGNodeVType::LinPtr(inner.clone())) // TODO: what to do with uninitialised capabilities
                 } else {
                     None
@@ -334,7 +335,7 @@ impl IntrinsicFunction {
             IntrinsicFunction::Seal => {
                 if arg_types.len() < 1 {
                     None
-                } else if let IRDAGNodeVType::LinPtr(_) = arg_types[0] {
+                } else if let IRDAGNodeVType::LinPtr(_) = &arg_types[0] {
                     Some(IRDAGNodeVType::Dom)
                 } else {
                     None
@@ -343,7 +344,7 @@ impl IntrinsicFunction {
             IntrinsicFunction::Delin => {
                 if arg_types.len() < 1 {
                     None
-                } else if let IRDAGNodeVType::LinPtr(inner) = arg_types[0] {
+                } else if let IRDAGNodeVType::LinPtr(inner) = &arg_types[0] {
                     Some(IRDAGNodeVType::NonlinPtr(inner.clone()))
                 } else {
                     None
@@ -362,7 +363,7 @@ impl IntrinsicFunction {
             IntrinsicFunction::DomCall => {
                 if arg_types.len() < 1 {
                     None
-                } else if let IRDAGNodeVType::Dom = arg_types[0] {
+                } else if matches!(arg_types[0], IRDAGNodeVType::Dom) {
                     Some(IRDAGNodeVType::Dom)
                 } else {
                     None
@@ -389,10 +390,30 @@ impl IntrinsicFunction {
                     None
                 }
             }
+            IntrinsicFunction::Split => {
+                if arg_types.len() < 2 {
+                    None
+                } else if matches!(arg_types[1], IRDAGNodeVType::Int) {
+                    match &arg_types[0] {
+                        IRDAGNodeVType::LinPtr(_) | IRDAGNodeVType::NonlinPtr(_) => Some(arg_types[0].clone()),
+                        _ => None
+                    }
+                } else {
+                    None
+                }
+            }
         }
     }
 
-    pub fn get_destructives(&self, arg_types: &[&IRDAGNodeVType]) -> Vec<usize> {
+    // arguments that should be treated as lval
+    pub fn get_writes(&self, arg_types: &[IRDAGNodeVType]) -> Vec<usize> {
+        match self {
+            IntrinsicFunction::Split => vec![0],
+            _ => vec![]
+        } 
+    }
+
+    pub fn get_destructives(&self, arg_types: &[IRDAGNodeVType]) -> Vec<usize> {
         match self {
             IntrinsicFunction::Mrev => vec![],
             IntrinsicFunction::Revoke => vec![0],
@@ -416,7 +437,8 @@ impl IntrinsicFunction {
                 // } else {
                     // ![0]
                 // }
-            IntrinsicFunction::Capfield => vec![]
+            IntrinsicFunction::Capfield => vec![],
+            IntrinsicFunction::Split => vec![]
         } 
     }
 
@@ -424,7 +446,8 @@ impl IntrinsicFunction {
         match self {
             IntrinsicFunction::Mrev | IntrinsicFunction::Revoke
             | IntrinsicFunction::Seal | IntrinsicFunction::Delin 
-            | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield => false,
+            | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield 
+            | IntrinsicFunction::Split => false,
             IntrinsicFunction::DomCall | IntrinsicFunction::DomReturn => true
         }
     }
@@ -438,7 +461,8 @@ const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__tighten", IntrinsicFunction::Tighten),
     ("__domcall", IntrinsicFunction::DomCall),
     ("__domreturn", IntrinsicFunction::DomReturn),
-    ("__capfield", IntrinsicFunction::Capfield)
+    ("__capfield", IntrinsicFunction::Capfield),
+    ("__split", IntrinsicFunction::Split)
 ];
 
 pub fn lookup_intrinsic(name: &str) -> Option<IntrinsicFunction> {

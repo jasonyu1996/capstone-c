@@ -306,25 +306,58 @@ impl<'ast> IRDAGBuilder<'ast> {
         res
     }
 
-    pub fn new_intrinsic_call(&mut self, intrinsic: IntrinsicFunction, args: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
-        let arg_refs: Vec<_> = args.iter().map(|node| node.borrow()).collect();
-        let arg_types: Vec<_> = arg_refs.iter().map(|r| &r.vtype).collect();
+    pub fn new_intrinsic_call(&mut self, intrinsic: IntrinsicFunction, args: Vec<IRDAGNodeTempResult>) -> GCed<IRDAGNode> {
+        let arg_types: Vec<IRDAGNodeVType> = args.iter().map(|r| r.get_vtype().unwrap()).collect();
         let ret_type = intrinsic.get_return_type(&arg_types, &self.globals.target_conf).expect("Bad types for intrinsic call");
         let destructives = intrinsic.get_destructives(&arg_types);
-        drop(arg_refs); // this is so stupid
+        let writes = intrinsic.get_writes(&arg_types);
+
+        let mut intrinsic_args : Vec<IRDAGIntrinsicArg> = args.into_iter().enumerate().map(
+            |(idx, a)| {
+                if writes.contains(&idx) {
+                    if let IRDAGNodeTempResult::LVal(lval) = &a {
+                        assert!(lval.ty.size(&self.globals.target_conf) <= self.globals.target_conf.register_width);
+                        a
+                    } else {
+                        panic!("Intrinsic requires an lval argument");
+                    }
+                } else {
+                    IRDAGIntrinsicArg::Word(self.result_to_word(&a, false).unwrap())
+                }
+            }
+        ).collect();
+
+        for w_idx in writes.iter() {
+            // we assume the intrinsic call also reads the lval arguments
+            let word_res = self.result_to_word(&intrinsic_args[*w_idx], false).unwrap();
+            intrinsic_args.push(IRDAGIntrinsicArg::Word(word_res));
+        }
+
         let mut res_node = IRDAGNode::new(
             self.id_counter,
             ret_type,
-            IRDAGNodeCons::Intrinsic(intrinsic, args.clone()),
+            IRDAGNodeCons::Intrinsic(intrinsic, intrinsic_args.clone()),
             true // let's assume intrinsics all have side effects
         );
+
         for de in destructives {
-            res_node.add_destruct(args[de].borrow().id);
+            if let IRDAGIntrinsicArg::Word(word) = &intrinsic_args[de] {
+                res_node.add_destruct(word.borrow().id);
+            }
         }
         let res = new_gced(res_node);
-        for arg in args.iter() {
-            Self::add_dep(&res, arg);
+
+        for a in intrinsic_args.iter() {
+            match a {
+                IRDAGIntrinsicArg::LVal(lval) => {
+                    self.write_location(&lval.loc, &res, lval.ty.size(&self.globals.target_conf));
+                }
+                IRDAGIntrinsicArg::Word(word) => {
+                    Self::add_dep(&res, word);
+                }
+            }
         }
+
         self.add_nonlabel_node(&res);
         res
     }
@@ -458,15 +491,13 @@ impl<'ast> IRDAGBuilder<'ast> {
     // dep_as_write: treat this as a write when managing dependencies if this read result is linear and is involved in a transfer-type operation
     fn read_location(&mut self, loc: &IRDAGMemLoc, ty: IRDAGNodeVType, dep_as_write: bool) -> GCed<IRDAGNode> {
         // ty might be a capability
+        let read_node = self.new_read(loc.clone(), ty.clone());
         match loc {
             IRDAGMemLoc::Addr(base, _, _) => {
-                let read_node = self.new_read(loc.clone(), ty);
                 self.use_base_address(base, &read_node);
-                read_node
             }
             IRDAGMemLoc::Named(named_mem_loc) => {
                 let ty_size = ty.size();
-                let read_node = self.new_read(loc.clone(), ty);
                 if dep_as_write {
                     self.write_named_mem_loc(named_mem_loc, &read_node);
                     if ty_size == 16 {
@@ -478,10 +509,8 @@ impl<'ast> IRDAGBuilder<'ast> {
                         self.read_named_mem_loc(&named_mem_loc.clone().with_offset(8), &read_node);
                     }
                 }
-                read_node
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
-                let read_node = self.new_read(loc.clone(), ty);
                 for offset in offset_range.clone().step_by(8) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset); // TODO: very brute force
                     if dep_as_write {
@@ -490,9 +519,9 @@ impl<'ast> IRDAGBuilder<'ast> {
                         self.read_named_mem_loc(&covered_loc, &read_node);
                     }
                 }
-                read_node
             }
         }
+        read_node
     }
 
     fn get_address(&mut self, lval: IRDAGLVal) -> GCed<IRDAGNode> {
@@ -537,29 +566,22 @@ impl<'ast> IRDAGBuilder<'ast> {
         }
     }
 
-    fn write_location(&mut self, loc: &IRDAGMemLoc, val: &GCed<IRDAGNode>) -> GCed<IRDAGNode> {
-        let size = val.borrow().vtype.size();
+    fn write_location(&mut self, loc: &IRDAGMemLoc, write_node: &GCed<IRDAGNode>, size: usize) {
         match loc {
             IRDAGMemLoc::Addr(base, _, _) => {
-                let write_node = self.new_write(loc.clone(), val);
-                self.use_base_address(base, &write_node);
-                write_node
+                self.use_base_address(base, write_node);
             }
             IRDAGMemLoc::Named(named_mem_loc) => {
-                let write_node = self.new_write(loc.clone(), val);
-                self.write_named_mem_loc(named_mem_loc, &write_node);
+                self.write_named_mem_loc(named_mem_loc, write_node);
                 if size == 16 {
-                    self.write_named_mem_loc(&named_mem_loc.clone().with_offset(8), &write_node);
+                    self.write_named_mem_loc(&named_mem_loc.clone().with_offset(8), write_node);
                 }
-                write_node
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, _, offset_range) => {
-                let write_node = self.new_write(loc.clone(), val);
                 for offset in offset_range.clone().step_by(8) {
                     let covered_loc = named_mem_loc.clone().with_offset(offset);
-                    self.write_named_mem_loc(&covered_loc, &write_node);
+                    self.write_named_mem_loc(&covered_loc, write_node);
                 }
-                write_node
             }
         }
     }
@@ -705,14 +727,16 @@ impl<'ast> IRDAGBuilder<'ast> {
                                 let lhs_loc = lhs_loc_base.clone().apply_offset(elem_offset as isize, self);
                                 let rhs_loc = rhs_loc_base.clone().apply_offset(elem_offset as isize, self);
                                 let read_res = self.read_location(&rhs_loc, IRDAGNodeVType::Int, false); // FIXME: this type should be looked up in type def
-                                self.write_location(&lhs_loc, &read_res);
+                                let write_node = self.new_write(lhs_loc.clone(), &read_res);
+                                self.write_location(&lhs_loc, &write_node, read_res.borrow().vtype.size());
                             }
                         }
                     }
                 }
             } else {
                 let rhs_word = self.result_to_word(&rhs, false).expect("Size mismatch for assignment");
-                self.write_location(&lval.loc, &rhs_word);
+                let write_node = self.new_write(lval.loc.clone(), &rhs_word);
+                self.write_location(&lval.loc, &write_node, rhs_word.borrow().vtype.size());
             }
 
             self.last_temp_res = Some(IRDAGNodeTempResult::LVal(orig_lval));
@@ -1112,14 +1136,19 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_call_expression(&mut self, call_expression: &'ast CallExpression, span: &'ast Span) {
         self.visit_expression(&call_expression.callee.node, &call_expression.callee.span);
         let func_ident = self.last_func_ident.take().unwrap();
-        let args = Vec::from_iter(call_expression.arguments.iter().map(
+        let args : Vec<_> = call_expression.arguments.iter().map(
             |arg_node| {
                 self.visit_expression(&arg_node.node, &arg_node.span);
-                self.last_temp_res_to_word(false).unwrap()
+                self.last_temp_res.take().unwrap()
             }
-        ));
+        ).collect();
         self.last_temp_res = Some(match func_ident {
-            IRDAGFuncIdent::Name(func_name) => IRDAGNodeTempResult::Word(self.new_indom_call(&func_name, args)),
+            IRDAGFuncIdent::Name(func_name) => {
+                let arg_words = args.iter().map(
+                    |a| self.result_to_word(a, false).unwrap()
+                ).collect();
+                IRDAGNodeTempResult::Word(self.new_indom_call(&func_name, arg_words))
+            }
             IRDAGFuncIdent::Intrinsic(intrinsic) => IRDAGNodeTempResult::Word(self.new_intrinsic_call(intrinsic, args))
         });
     }

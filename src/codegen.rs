@@ -200,7 +200,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             vars_to_ids: HashMap::new(),
             vars: Vec::new(),
             stack_frame: StackFrame::new(),
-            temps: HashMap::new(),
+            temps: HashMap::from(
+                [(ANON_IRDAG_NODE_ID, TempState {
+                    var: None,
+                    loc: TempLocation::Nowhere,
+                    rev_deps_to_eval: 0
+                })]
+            ),
             op_topo_stack: Vec::new(),
             gpr_states: [GPRState::Free; GPR_N],
             gpr_clobbered: [false; GPR_N]
@@ -676,7 +682,88 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 code_printer.print_li(reg, 0).unwrap();
             }
         }
+    }
 
+    // write_through: write back directly to memory, ignoring the registers
+    fn gen_writeback_to_loc<T>(&mut self, loc: &IRDAGMemLoc, reg: RegId, size: usize, write_through: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        match loc {
+            IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
+                let rs = self.prepare_source_reg(&*addr.borrow(), code_printer);
+                if let Some(dyn_offset) = dyn_offset_op {
+                    // this requires us to write back to memory regardless
+                    if addr.borrow().vtype.is_linear() {
+                        let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                        let r_addr = self.assign_reg(ANON_IRDAG_NODE_ID, addr.borrow().vtype.size(), code_printer);
+                        self.pin_gpr(r_addr);
+                        self.pointer_offset(r_addr, rs, r_offset, code_printer);
+                        Self::store(reg, r_addr, *static_offset as isize, size, code_printer);
+                        self.unpin_gpr(r_offset);
+                        // restore the capability in rs
+                        let r_neg_offset = self.assign_reg_with_hint(ANON_IRDAG_NODE_ID, 8, r_offset, code_printer);
+                        code_printer.print_sub(r_neg_offset, GPR_IDX_X0, r_offset).unwrap();
+                        self.pointer_offset(rs, r_addr, r_neg_offset, code_printer);
+                        self.unpin_gpr(rs);
+                        self.unpin_gpr(r_addr);
+                    } else {
+                        let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                        self.unpin_gpr(rs);
+                        self.unpin_gpr(r_offset);
+                        let r_addr = self.assign_reg(ANON_IRDAG_NODE_ID, addr.borrow().vtype.size(), code_printer);
+                        self.pointer_offset(r_addr, rs, r_offset, code_printer);
+                        Self::store(reg, r_addr, *static_offset as isize, size, code_printer);
+                    }
+                } else {
+                    self.unpin_gpr(rs);
+                    Self::store(reg, rs, *static_offset as isize, size, code_printer);
+                }
+            }
+            IRDAGMemLoc::Named(named_mem_loc) => {
+                if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                    if write_through {
+                        Self::store(reg, GPR_IDX_SP,
+                            self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                            size, code_printer);
+                    } else {
+                        match &self.vars[var_id].state.loc {
+                            VarLocation::GPR(r) => assert_eq!(*r, reg),
+                            _ => panic!("Bad register to write back")
+                        }
+                        self.vars[var_id].state.dirty = true; // TODO: not quite correct if the original read value is still needed
+                    }
+                } else {
+                    let rs = self.assign_reg(ANON_IRDAG_NODE_ID, self.globals.target_conf.register_width, code_printer);
+                    self.unpin_gpr(rs);
+                    self.get_global_var_pointer(rs, &named_mem_loc.var_name, code_printer);
+                    Self::store(reg, rs, named_mem_loc.offset as isize, size, code_printer);
+                }
+            }
+            IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, range) => {
+                let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
+                self.unpin_gpr(r_offset);
+                if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
+                    if write_through {
+                        let rd = self.assign_reg_with_hint(ANON_IRDAG_NODE_ID, self.globals.target_conf.register_width,
+                            r_offset, code_printer);
+                        self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
+                        Self::store(reg, rd,
+                            (named_mem_loc.offset + self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot)) as isize,
+                            size, code_printer);
+                    } else {
+                        match &self.vars[var_id].state.loc {
+                            VarLocation::GPR(r) => assert_eq!(*r, reg),
+                            _ => panic!("Bad register to write back")
+                        }
+                        self.vars[var_id].state.dirty = true; // TODO: not quite correct if the original read value is still needed
+                    }
+                } else {
+                    let rs = self.assign_reg(ANON_IRDAG_NODE_ID, self.globals.target_conf.register_width, code_printer);
+                    self.unpin_gpr(rs);
+                    self.get_global_var_pointer(rs, &named_mem_loc.var_name, code_printer);
+                    self.pointer_offset(rs, rs, r_offset, code_printer);
+                    Self::store(reg, rs, named_mem_loc.offset as isize, size, code_printer);
+                }
+            }
+        }
     }
 
     fn generate_node<T>(&mut self, func_name: &str, node: &IRDAGNode, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
@@ -1000,14 +1087,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let res_size = node.vtype.size();
                 match intrinsic {
                     IntrinsicFunction::Mrev => {
-                        let rs = self.prepare_source_reg(&*arguments[0].borrow(), code_printer);
+                        let rs = self.prepare_source_reg(&*arguments[0].to_word().unwrap().borrow(), code_printer);
                         let reg_id = self.assign_reg(node.id, res_size, code_printer);
                         self.unpin_gpr(rs);
                         code_printer.print_mrev(reg_id, rs).unwrap();
                     }
                     IntrinsicFunction::Revoke | IntrinsicFunction::Seal | IntrinsicFunction::Delin => {
                         // destruct the parameter
-                        let arg_ref = arguments[0].borrow();
+                        let arg_ref = arguments[0].to_word().unwrap().borrow();
                         let rs = self.prepare_source_reg(&*arg_ref, code_printer);
                         self.destruct_temp_value(rs, &*arg_ref);
                         drop(arg_ref);
@@ -1033,7 +1120,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         }
                     }
                     IntrinsicFunction::Tighten => {
-                        let arg_ref = arguments[0].borrow();
+                        let arg_ref = arguments[0].to_word().unwrap().borrow();
                         let rs = self.prepare_source_reg(&*arg_ref, code_printer);
                         let rs_destructed = arg_ref.vtype.is_linear();
                         if rs_destructed {
@@ -1043,7 +1130,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         }
                         drop(arg_ref);
 
-                        let arg_ref = arguments[1].borrow();
+                        let arg_ref = arguments[1].to_word().unwrap().borrow();
                         if let IRDAGNodeCons::IntConst(perms) = &arg_ref.cons {
                             let rd = self.assign_reg_with_hint(node.id, res_size, rs, code_printer);
                             code_printer.print_tighten(rd, rs, *perms).unwrap();
@@ -1054,18 +1141,18 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IntrinsicFunction::DomCall => {
                         let args_count = arguments.len() - 1;
                         for (arg_idx, arg) in arguments[1..].iter().enumerate() {
-                            self.prepare_source_reg_specified(&*arg.borrow(), 
+                            self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(), 
                                 GPR_IDX_A0 + arg_idx, code_printer);
                         }
 
 
-                        let dom_ref = arguments[0].borrow();
+                        let dom_ref = arguments[0].to_word().unwrap().borrow();
                         let r_dom = self.prepare_source_reg(&*dom_ref, code_printer);
                         self.destruct_temp_value(r_dom, &*dom_ref);
                         drop(dom_ref);
 
                         for (arg_idx, arg) in arguments[1..].iter().enumerate() {
-                            self.destruct_temp_value(GPR_IDX_A0 + arg_idx, &*arg.borrow());
+                            self.destruct_temp_value(GPR_IDX_A0 + arg_idx, &*arg.to_word().unwrap().borrow());
                         }
 
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, r_dom, code_printer);
@@ -1077,13 +1164,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     }
                     IntrinsicFunction::DomReturn => {
                         // TODO: add separate synchronous and asynchronous versions
-                        let ret_dom_ref = arguments[0].borrow();
+                        let ret_dom_ref = arguments[0].to_word().unwrap().borrow();
                         let is_async = matches!(ret_dom_ref.vtype, IRDAGNodeVType::DomAsync);
                         let r_ret_dom = self.prepare_source_reg(&*ret_dom_ref, code_printer);
-                        let rs2 = self.prepare_source_reg(&*arguments[1].borrow(), code_printer);
+                        let rs2 = self.prepare_source_reg(&*arguments[1].to_word().unwrap().borrow(), code_printer);
 
                         if is_async {
-                            let rs3 = self.prepare_source_reg(&*arguments[2].borrow(), code_printer);
+                            let rs3 = self.prepare_source_reg(&*arguments[2].to_word().unwrap().borrow(), code_printer);
                             self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
                             drop(ret_dom_ref);
                             self.unpin_gpr(rs2);
@@ -1100,7 +1187,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         }
                     }
                     IntrinsicFunction::Capfield => {
-                        let arg_ref = arguments[0].borrow();
+                        let arg_ref = arguments[0].to_word().unwrap().borrow();
                         let rs1 = self.prepare_source_reg(&*arg_ref, code_printer);
                         let rd = if !arg_ref.vtype.is_linear() {
                             self.unpin_gpr(rs1);
@@ -1110,11 +1197,31 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.unpin_gpr(rs1);
                             rd
                         };
-                        if let IRDAGNodeCons::IntConst(imm) = &arguments[1].borrow().cons {
+                        if let IRDAGNodeCons::IntConst(imm) = &arguments[1].to_word().unwrap().borrow().cons {
                             code_printer.print_lcc(rd, rs1, *imm).unwrap();
                         } else {
                             panic!("Capfield arg1 must be a const literal");
                         }
+                    }
+                    IntrinsicFunction::Split => {
+                        // let rs1_lval = self.argument
+                        let a1_lval = arguments[0].to_lval().unwrap();
+                        let a1_word = arguments[2].to_word().unwrap();
+                        let a2_word = arguments[1].to_word().unwrap();
+
+                        let rs1 = self.prepare_source_reg(&*a1_word.borrow(), code_printer);
+                        let rs2 = self.prepare_source_reg(&*a2_word.borrow(), code_printer);
+
+                        self.unpin_gpr(rs2);
+                        let rd = self.assign_reg_with_hint(node.id, self.globals.target_conf.register_width,
+                            rs2, code_printer);
+
+                        // TODO: changing rs1 directly would be problematic if the original data is still needed
+                        // assert_eq!(self.temps.get(&a1_word.borrow().id).unwrap().rev_deps_to_eval, 0);
+                        code_printer.print_split(rd, rs1, rs2).unwrap();
+                    
+                        self.gen_writeback_to_loc(&a1_lval.loc, rs1, 
+                            self.globals.target_conf.register_width, false, code_printer);
                     }
                 }
             }
@@ -1157,67 +1264,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 code_printer.print_asm(&asm_res).unwrap();
                 // write back result to output locations
                 for (reg, out) in output_regs.iter().zip(outputs.iter()) {
-                    match &out.loc {
-                        IRDAGMemLoc::Addr(addr, static_offset, dyn_offset_op) => {
-                            let rs = self.prepare_source_reg(&*addr.borrow(), code_printer);
-                            if let Some(dyn_offset) = dyn_offset_op {
-                                if addr.borrow().vtype.is_linear() {
-                                    let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
-                                    let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
-                                    self.pin_gpr(r_addr);
-                                    self.pointer_offset(r_addr, rs, r_offset, code_printer);
-                                    Self::store(*reg, r_addr, *static_offset as isize, out.size, code_printer);
-                                    self.unpin_gpr(r_offset);
-                                    // restore the capability in rs
-                                    let r_neg_offset = self.assign_reg_with_hint(node.id, 8, r_offset, code_printer);
-                                    code_printer.print_sub(r_neg_offset, GPR_IDX_X0, r_offset).unwrap();
-                                    self.pointer_offset(rs, r_addr, r_neg_offset, code_printer);
-                                    self.unpin_gpr(rs);
-                                    self.unpin_gpr(r_addr);
-                                } else {
-                                    let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
-                                    self.unpin_gpr(rs);
-                                    self.unpin_gpr(r_offset);
-                                    let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
-                                    self.pointer_offset(r_addr, rs, r_offset, code_printer);
-                                    Self::store(*reg, r_addr, *static_offset as isize, out.size, code_printer);
-                                }
-                            } else {
-                                self.unpin_gpr(rs);
-                                Self::store(*reg, rs, *static_offset as isize, out.size, code_printer);
-                            }
-                        }
-                        IRDAGMemLoc::Named(named_mem_loc) => {
-                            if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
-                                Self::store(*reg, GPR_IDX_SP,
-                                    self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
-                                    out.size, code_printer);
-                            } else {
-                                let rs = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
-                                self.unpin_gpr(rs);
-                                self.get_global_var_pointer(rs, &named_mem_loc.var_name, code_printer);
-                                Self::store(*reg, rs, named_mem_loc.offset as isize, out.size, code_printer);
-                            }
-                        }
-                        IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, range) => {
-                            let r_offset = self.prepare_source_reg(&*dyn_offset.borrow(), code_printer);
-                            self.unpin_gpr(r_offset);
-                            if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
-                                let rd = self.assign_reg_with_hint(node.id, self.globals.target_conf.register_width,
-                                    r_offset, code_printer);
-                                self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
-                                Self::store(*reg, rd,
-                                    (named_mem_loc.offset + self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot)) as isize,
-                                    out.size, code_printer);
-                            } else {
-                                let rs = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
-                                self.unpin_gpr(rs);
-                                self.get_global_var_pointer(rs, &named_mem_loc.var_name, code_printer);
-                                self.pointer_offset(rs, rs, r_offset, code_printer);
-                                Self::store(*reg, rs, named_mem_loc.offset as isize, out.size, code_printer);
-                            }
-                        }
-                    }
+                    self.gen_writeback_to_loc(&out.loc, *reg, out.size, true, code_printer);
                     self.unpin_gpr(*reg);
                 }
             }

@@ -32,6 +32,7 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("domreturn(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x21, rd, rs1, rs2"),
     ("ccsrrw(rd, ccsr, rs)", ".insn i 0x5b, 0x7, rd, ccsr(rs)"),
     ("lcc(rd, rs, imm)", ".insn r 0x5b, 0x1, 0x4, rd, rs, x##imm"),
+    ("split(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x6, rd, rs1, rs2"),
     ("ctvec", "0x000"),
     ("cih", "0x001"),
     ("cepc", "0x002"),
@@ -335,6 +336,11 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_lcc(&mut self, rd: RegId, rs: RegId, imm: u64) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}lcc({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], imm)?;
+        Ok(())
+    }
+
+    pub fn print_split(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}split({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
         Ok(())
     }
 }

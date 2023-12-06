@@ -1,6 +1,7 @@
 use crate::{utils::{GCed, new_gced}, lang_defs::{CaplanType, IntrinsicFunction}, target_conf::CaplanTargetConf, dag_builder::IRDAGBuilder};
 
 pub type IRDAGNodeId = u64;
+pub const ANON_IRDAG_NODE_ID : IRDAGNodeId = u64::MAX;
 
 // here the values of all these types can be held in 8/16 bytes
 #[derive(Clone, Debug)]
@@ -87,7 +88,7 @@ pub struct IRDAGNode {
     // evaluating this note destructs the results of those nodes
     pub destructs: Vec<IRDAGNodeId>,
     // reverse dependencies
-    pub rev_deps: Vec<GCed<IRDAGNode>>,
+    pub rev_deps: Vec<GCed<IRDAGNode>>, // TODO: distinguish value dependency and simply order dependency (e.g., read/write)
     // dependencies
     pub deps: Vec<GCed<IRDAGNode>>,
     pub dep_count: u64
@@ -200,6 +201,29 @@ pub enum IRDAGNodeTempResult {
     Word(GCed<IRDAGNode>) 
 }
 
+impl IRDAGNodeTempResult {
+    pub fn get_vtype(&self) -> Option<IRDAGNodeVType> {
+        match self {
+            Self::LVal(lval) => IRDAGNodeVType::from_caplan_type(&lval.ty),
+            Self::Word(word) => Some(word.borrow().vtype.clone())
+        }
+    }
+
+    pub fn to_word(&self) -> Option<&GCed<IRDAGNode>> {
+        match self {
+            Self::Word(word) => Some(word),
+            _ => None
+        }
+    }
+
+    pub fn to_lval(&self) -> Option<&IRDAGLVal> {
+        match self {
+            Self::LVal(lval) => Some(lval),
+            _ => None
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct IRDAGLVal {
     pub ty: CaplanType,
@@ -223,6 +247,8 @@ pub struct IRDAGAsmOutput {
     pub loc: IRDAGMemLoc,
     pub size: usize
 }
+
+pub type IRDAGIntrinsicArg = IRDAGNodeTempResult;
 
 pub enum IRDAGNodeCons {
     Nop, // placeholder
@@ -256,7 +282,7 @@ pub enum IRDAGNodeCons {
     // inline assembly
     Asm(String, Vec<IRDAGAsmOutput>, Vec<IRDAGAsmInput>),
     // intrinsic functions
-    Intrinsic(IntrinsicFunction, Vec<GCed<IRDAGNode>>)
+    Intrinsic(IntrinsicFunction, Vec<IRDAGIntrinsicArg>)
 }
 
 impl std::fmt::Debug for IRDAGNodeCons {
