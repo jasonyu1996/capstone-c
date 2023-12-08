@@ -668,6 +668,29 @@ impl<'ast> IRDAGBuilder<'ast> {
         self.last_temp_res = Some(IRDAGNodeTempResult::Word(res_word));
     }
 
+    fn process_int_assign_bin_expr(&mut self, op_type: IRDAGNodeIntBinOpType, expr: &'ast BinaryOperatorExpression) {
+        self.visit_expression(&expr.lhs.node, &expr.lhs.span);
+        let lhs = self.last_temp_res.take().unwrap();
+        self.visit_expression(&expr.rhs.node, &expr.rhs.span);
+        let rhs = self.last_temp_res.take().unwrap();
+        
+        let l_word = self.result_to_word(&lhs, false).unwrap();
+        let r_word = self.result_to_word(&rhs, false).unwrap();
+        let l_ref = l_word.borrow();
+        let r_ref = r_word.borrow();
+        let res_word = 
+            if let (IRDAGNodeCons::IntConst(l_const), IRDAGNodeCons::IntConst(r_const)) = (&l_ref.cons, &r_ref.cons) {
+                self.new_int_const(dag::static_bin_op(op_type, *l_const, *r_const))
+            } else {
+                drop(l_ref);
+                drop(r_ref); // somehow Rust is stupid
+                self.new_int_binop(op_type, &l_word, &r_word)
+            };
+        let result = IRDAGNodeTempResult::Word(res_word);
+        self.gen_assign(lhs, result.clone());
+        self.last_temp_res = Some(result);
+    }
+
     // integer unary operator expression
     fn process_int_un_expr(&mut self, op_type: IRDAGNodeIntUnOpType, expr: &'ast UnaryOperatorExpression) {
         self.visit_expression(&expr.operand.node, &expr.operand.span);
@@ -1014,6 +1037,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             binary_operator_expression: &'ast lang_c::ast::BinaryOperatorExpression,
             span: &'ast Span,
         ) {
+        macro_rules! handle_bin_expr {
+            ($op:ident) => { self.process_int_bin_expr(IRDAGNodeIntBinOpType::$op, binary_operator_expression) };
+        }
+        macro_rules! handle_bin_assign_expr {
+            ($op:ident) => { self.process_int_assign_bin_expr(IRDAGNodeIntBinOpType::$op, binary_operator_expression) };
+        }
         match binary_operator_expression.operator.node {
             BinaryOperator::Assign => {
                 self.visit_expression(&binary_operator_expression.lhs.node,
@@ -1024,58 +1053,33 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 let rhs = self.last_temp_res.take().unwrap();
                 self.gen_assign(lhs, rhs);
             }
-            BinaryOperator::Plus => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Add, binary_operator_expression);
-            }
-            BinaryOperator::Minus => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Sub, binary_operator_expression);
-            }
-            BinaryOperator::Multiply => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Mul, binary_operator_expression);
-            }
-            BinaryOperator::Divide => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Div, binary_operator_expression);
-            }
-            BinaryOperator::BitwiseAnd => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::And, binary_operator_expression);
-            }
-            BinaryOperator::BitwiseOr => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Or, binary_operator_expression);
-            }
-            BinaryOperator::BitwiseXor => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Xor, binary_operator_expression);
-            }
-            BinaryOperator::ShiftLeft => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Shl, binary_operator_expression);
-            }
-            BinaryOperator::ShiftRight => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Shr, binary_operator_expression);
-            }
-            BinaryOperator::Equals => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Eq, binary_operator_expression);
-            }
-            BinaryOperator::NotEquals => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::NEq, binary_operator_expression);
-            }
-            BinaryOperator::Less => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::LessThan, binary_operator_expression);
-            }
-            BinaryOperator::LessOrEqual => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::LessEq, binary_operator_expression);
-            }
-            BinaryOperator::Greater => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::GreaterThan, binary_operator_expression);
-            }
-            BinaryOperator::GreaterOrEqual => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::GreaterEq, binary_operator_expression);
-            }
+            BinaryOperator::Plus => handle_bin_expr!(Add),
+            BinaryOperator::Minus => handle_bin_expr!(Sub),
+            BinaryOperator::Multiply => handle_bin_expr!(Mul),
+            BinaryOperator::Divide => handle_bin_expr!(Div),
+            BinaryOperator::BitwiseAnd => handle_bin_expr!(And),
+            BinaryOperator::BitwiseOr => handle_bin_expr!(Or),
+            BinaryOperator::BitwiseXor => handle_bin_expr!(Xor),
+            BinaryOperator::ShiftLeft => handle_bin_expr!(Shl),
+            BinaryOperator::ShiftRight => handle_bin_expr!(Shr),
+            BinaryOperator::Equals => handle_bin_expr!(Eq),
+            BinaryOperator::NotEquals => handle_bin_expr!(NEq),
+            BinaryOperator::Less => handle_bin_expr!(LessThan),
+            BinaryOperator::LessOrEqual => handle_bin_expr!(LessEq),
+            BinaryOperator::Greater => handle_bin_expr!(GreaterThan),
+            BinaryOperator::GreaterOrEqual => handle_bin_expr!(GreaterEq),
             // TODO: we use the same for bitwise ops for now
-            BinaryOperator::LogicalAnd => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::And, binary_operator_expression);
-            }
-            BinaryOperator::LogicalOr => {
-                self.process_int_bin_expr(IRDAGNodeIntBinOpType::Or, binary_operator_expression);
-            }
+            BinaryOperator::LogicalAnd => handle_bin_expr!(And),
+            BinaryOperator::LogicalOr => handle_bin_expr!(Or),
+            BinaryOperator::AssignMultiply => handle_bin_assign_expr!(Mul),
+            BinaryOperator::AssignDivide => handle_bin_assign_expr!(Div),
+            BinaryOperator::AssignPlus => handle_bin_assign_expr!(Add),
+            BinaryOperator::AssignMinus => handle_bin_assign_expr!(Sub),
+            BinaryOperator::AssignShiftLeft => handle_bin_assign_expr!(Shl),
+            BinaryOperator::AssignShiftRight => handle_bin_assign_expr!(Shr),
+            BinaryOperator::AssignBitwiseAnd => handle_bin_assign_expr!(And),
+            BinaryOperator::AssignBitwiseOr => handle_bin_assign_expr!(Or),
+            BinaryOperator::AssignBitwiseXor => handle_bin_assign_expr!(Xor),
             BinaryOperator::Index => {
                 self.visit_expression(&binary_operator_expression.lhs.node, &binary_operator_expression.rhs.span);
                 let lhs = self.last_temp_res_to_indexable_lval(false).unwrap();
