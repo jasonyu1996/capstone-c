@@ -228,6 +228,9 @@ impl CaplanTranslationUnit {
             last_ident_names: Vec::new()
         };
         res.visit_translation_unit(ast);
+        assert!(res.functions.iter().filter(
+            |f| matches!(f.entry_type, CaplanEntryType::CrossDom)
+        ).count() <= 1, "A translation unit can have at most one domain entry function.");
         res
     }
 }

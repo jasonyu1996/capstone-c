@@ -17,12 +17,12 @@ use self::code_printer::CodePrinter;
 
 // maintain the global codegen state
 struct GlobalCodeGenContext {
-
+    translation_unit: CaplanTranslationUnit
 }
 
 impl GlobalCodeGenContext {
-    fn new() -> Self {
-        Self {}
+    fn new(translation_unit: CaplanTranslationUnit) -> Self {
+        Self { translation_unit }
     }
 }
 
@@ -213,7 +213,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
     }
 
-    fn generate_prologue<T>(&mut self, func: &CaplanFunction, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+    fn generate_prologue<T>(&mut self, func: &CaplanFunction, ctx: &GlobalCodeGenContext, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         let func_label = self.gen_func_label(&func.name);
         code_printer.print_global_symb(&func_label).unwrap();
         code_printer.print_label(&func_label).unwrap();
@@ -221,11 +221,39 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         let cross_dom = matches!(func.entry_type, CaplanEntryType::CrossDom);
 
         if cross_dom {
-            // setup the stack pointer from cscratch
+            // sp = chunk of initial mem to allocate from
             code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
-            Self::load(GPR_IDX_T0, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize),
-                self.globals.target_conf.register_width, code_printer);
-            code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_T0, "cscratch").unwrap();
+            // t0 = base, t1 = end
+            // TODO: assuming enough space
+            // code_printer.print_lcc(GPR_IDX_T0, GPR_IDX_SP, LccField::Base as u64).unwrap();
+            code_printer.print_lcc(GPR_IDX_T1, GPR_IDX_SP, LccField::End as u64).unwrap();
+            // assuming that the region is 16-byte aligned
+            let cap_table_len = ctx.translation_unit.globals.global_vars.len();
+            if cap_table_len != 0 {
+                code_printer.print_addi(GPR_IDX_T1, GPR_IDX_T1, 
+                    -((cap_table_len * self.globals.target_conf.register_width) as isize)).unwrap();
+                // gp = cap table
+                code_printer.print_split(GPR_IDX_GP, GPR_IDX_SP, GPR_IDX_T1).unwrap();
+                // create capability for each global variable (TODO: we now
+                // assume no external global variable)
+                for (gvar_idx, gvar_type) in ctx.translation_unit.globals.global_vars.iter().enumerate() {
+                    // size rounded up for alignment
+                    let gvar_size = align_up_to(gvar_type.size(&self.globals.target_conf),
+                        self.globals.target_conf.min_alignment_log);
+                    // reserve space
+                    code_printer.print_addi(GPR_IDX_T1, GPR_IDX_T1, -(gvar_size as isize)).unwrap();
+                    code_printer.print_split(GPR_IDX_T2, GPR_IDX_SP, GPR_IDX_T1).unwrap();
+                    // TODO: assuming that all global variables are stored using
+                    // non-linear capabilities for now
+                    code_printer.print_delin(GPR_IDX_T2).unwrap();
+                    // add to the cap table
+                    Self::store(GPR_IDX_T2, GPR_IDX_GP, (self.globals.target_conf.register_width * gvar_idx) as isize,
+                        self.globals.target_conf.register_width, code_printer);
+                }
+            }
+            // the remaining is used as stack
+            // place the cursor at the bottom of the stack (highest address)
+            code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_A2).unwrap();
         }
 
         // now we know how much stack space is needed
@@ -284,7 +312,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
     }
 
-    fn generate_epilogue<T>(&mut self, func: &CaplanFunction, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+    fn generate_epilogue<T>(&mut self, func: &CaplanFunction, _ctx: &GlobalCodeGenContext, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         let ret_label = self.gen_func_ret_label(&func.name);
         code_printer.print_label(&ret_label).unwrap();
 
@@ -1429,7 +1457,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
     // this consumes codegen itself as codegen can only happen once
-    fn codegen<Out>(mut self, func: CaplanFunction, ctx: &mut GlobalCodeGenContext, out: &mut Out) where Out: std::io::Write {
+    fn codegen<Out>(mut self, func: &CaplanFunction, ctx: &GlobalCodeGenContext, out: &mut Out) where Out: std::io::Write {
         eprintln!("Codegen for function {}", func.name);
 
         let mut prologue_code_printer: CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new(), self.globals.target_conf.clone());
@@ -1525,8 +1553,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             self.codegen_block_end_cleanup(&func.name, block, &mut main_code_printer);
         }
         
-        self.generate_prologue(&func, &mut prologue_code_printer);
-        self.generate_epilogue(&func, &mut main_code_printer);
+        self.generate_prologue(&func, ctx, &mut prologue_code_printer);
+        self.generate_epilogue(&func, ctx, &mut main_code_printer);
 
         out.write_all(&prologue_code_printer.get_out()).unwrap();
         out.write_all(&main_code_printer.get_out()).unwrap();
@@ -1535,7 +1563,6 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 }
 
 pub struct CodeGen<Out> where Out: std::io::Write {
-    translation_unit: CaplanTranslationUnit,
     ctx: GlobalCodeGenContext,
     code_printer: CodePrinter<Out>
 }
@@ -1544,8 +1571,7 @@ impl<Out> CodeGen<Out> where Out: std::io::Write {
     pub fn new(translation_unit: CaplanTranslationUnit, out: Out) -> Self {
         let target_conf = translation_unit.globals.target_conf.clone();
         Self {
-            translation_unit: translation_unit,
-            ctx: GlobalCodeGenContext::new(),
+            ctx: GlobalCodeGenContext::new(translation_unit),
             code_printer: CodePrinter::new(out, target_conf)
         }
     }
@@ -1554,30 +1580,30 @@ impl<Out> CodeGen<Out> where Out: std::io::Write {
         self.code_printer.print_defs().unwrap();
         writeln!(&mut self.code_printer.out).unwrap();
 
-        for func in self.translation_unit.functions {
-            let func_codegen = FunctionCodeGen::new(&self.translation_unit.globals);
-            func_codegen.codegen(func, &mut self.ctx, &mut self.code_printer.out);
+        for func in self.ctx.translation_unit.functions.iter() {
+            let func_codegen = FunctionCodeGen::new(&self.ctx.translation_unit.globals);
+            func_codegen.codegen(func, &self.ctx, &mut self.code_printer.out);
         }
 
-        match &self.translation_unit.globals.target_conf.abi {
+        match &self.ctx.translation_unit.globals.target_conf.abi {
             CaplanABI::RISCV64 => {
                 // bss declaration
-                for (var_name, &idx) in self.translation_unit.globals.global_vars_to_ids.iter() {
+                for (var_name, &idx) in self.ctx.translation_unit.globals.global_vars_to_ids.iter() {
                     // TODO: throw the io error out
                     // writeln!(&mut self.code_printer.out, ".align {}", alignment_bits).unwrap();
-                    let var_type = &self.translation_unit.globals.global_vars[idx];
+                    let var_type = &self.ctx.translation_unit.globals.global_vars[idx];
                     writeln!(&mut self.code_printer.out, ".comm {}, {}, {}",
                         var_name,
-                        var_type.size(&self.translation_unit.globals.target_conf),
-                        var_type.alignment(&self.translation_unit.globals.target_conf)).unwrap();
+                        var_type.size(&self.ctx.translation_unit.globals.target_conf),
+                        var_type.alignment(&self.ctx.translation_unit.globals.target_conf)).unwrap();
                 }
             }
             CaplanABI::CapstoneCGNLSD => {
                 // TODO: produce the caplocation table in a special table
                 self.code_printer.print_align(16).unwrap();
                 self.code_printer.print_section(".gct").unwrap();
-                for var_type in self.translation_unit.globals.global_vars.iter() {
-                    self.code_printer.print_u64(var_type.size(&self.translation_unit.globals.target_conf) as u64).unwrap();
+                for var_type in self.ctx.translation_unit.globals.global_vars.iter() {
+                    self.code_printer.print_u64(var_type.size(&self.ctx.translation_unit.globals.target_conf) as u64).unwrap();
                     self.code_printer.print_u64(0x6).unwrap();
                 }
             }
