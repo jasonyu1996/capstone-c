@@ -214,11 +214,15 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
     fn generate_prologue<T>(&mut self, func: &CaplanFunction, ctx: &GlobalCodeGenContext, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        let cross_dom = matches!(func.entry_type, CaplanEntryType::CrossDom);
+
         let func_label = self.gen_func_label(&func.name);
+        if cross_dom {
+            code_printer.print_global_symb("_start").unwrap();
+            code_printer.print_label("_start").unwrap();
+        }
         code_printer.print_global_symb(&func_label).unwrap();
         code_printer.print_label(&func_label).unwrap();
-
-        let cross_dom = matches!(func.entry_type, CaplanEntryType::CrossDom);
 
         if cross_dom {
             // sp = chunk of initial mem to allocate from

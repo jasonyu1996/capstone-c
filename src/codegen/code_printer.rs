@@ -32,6 +32,7 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("domreturn(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x21, rd, rs1, rs2"),
     ("ccsrrw(rd, ccsr, rs)", ".insn i 0x5b, 0x7, rd, ccsr(rs)"),
     ("lcc(rd, rs, imm)", ".insn r 0x5b, 0x1, 0x4, rd, rs, x##imm"),
+    ("scc(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x5, rd, rs1, rs2"),
     ("split(rd, rs1, rs2)", ".insn r 0x5b, 0x1, 0x6, rd, rs1, rs2"),
     ("ctvec", "0x000"),
     ("cih", "0x001"),
