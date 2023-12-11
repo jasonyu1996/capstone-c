@@ -47,6 +47,15 @@ enum GPRState {
     Free
 }
 
+impl GPRState {
+    fn get_node(&self) -> Option<(IRDAGNodeId, usize)> {
+        match self {
+            Self::Taken(node_id, size) | Self::Pinned(node_id, size) => Some((*node_id, *size)),
+            _ => None
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum SpilledStackSlotState {
     Taken(IRDAGNodeId),
@@ -257,7 +266,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             // the remaining is used as stack
             // place the cursor at the bottom of the stack (highest address)
-            code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_A2).unwrap();
+            code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_T1).unwrap();
+            code_printer.print_delin(GPR_IDX_SP).unwrap();
         }
 
         // now we know how much stack space is needed
@@ -470,7 +480,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             |(idx, s)| {
                 *s = GPRState::Taken(node_id, size);
                 self.gpr_clobbered[idx] = true;
-                self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(idx);
+                self.temps.get_mut(&node_id).map(|t| t.loc = TempLocation::GPR(idx));
                 idx
             }
         )
@@ -843,6 +853,21 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
         }
+    }
+
+    fn discard_var_state(&mut self, var_id: VarId) {
+        let v = &mut self.vars[var_id];
+        match v.state.loc {
+            VarLocation::GPR(gpr) => {
+                v.state.dirty = false;
+                if let Some((node_id, _)) = self.gpr_states[gpr].get_node() {
+                    self.temps.get_mut(&node_id).unwrap().loc = TempLocation::Nowhere;
+                }
+                self.gpr_states[gpr] = GPRState::Free;
+            }
+            VarLocation::StackSlot => ()
+        }
+        v.state.loc = VarLocation::StackSlot;
     }
 
     fn generate_node<T>(&mut self, func_name: &str, node: &IRDAGNode, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
@@ -1310,7 +1335,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     |out| {
                         match &out.constraint {
                             IRDAGAsmOutputConstraint::Overwrite => {
-                                let res = self.assign_reg(node.id, out.size, code_printer);
+                                let res = self.assign_reg(ANON_IRDAG_NODE_ID, out.size, code_printer);
                                 self.pin_gpr(res);
                                 res
                             }
@@ -1343,6 +1368,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 code_printer.print_asm(&asm_res).unwrap();
                 // write back result to output locations
                 for (reg, out) in output_regs.iter().zip(outputs.iter()) {
+                    if let Some(named) = out.loc.get_named_mem_loc() {
+                        self.discard_var_state(*self.vars_to_ids.get(named).unwrap());
+                    }
                     self.gen_writeback_to_loc(&out.loc, *reg, out.size, true, code_printer);
                     self.unpin_gpr(*reg);
                 }
