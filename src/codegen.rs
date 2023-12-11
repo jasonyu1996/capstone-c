@@ -27,6 +27,7 @@ impl GlobalCodeGenContext {
 }
 
 
+#[derive(Debug)]
 enum VarLocation {
     StackSlot,
     GPR(RegId)
@@ -62,12 +63,14 @@ enum SpilledStackSlotState {
     Free
 }
 
+#[derive(Debug)]
 struct VarState {
     loc: VarLocation,
     stack_slot: usize,
     dirty: bool
 }
 
+#[derive(Debug)]
 struct VarInfo {
     state: VarState,
     ty: CaplanType
@@ -644,11 +647,20 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             TempLocation::Nowhere => {
                 if let Some(var_id) = temp_state.var {
-                    let size = self.vars[var_id].ty.size(&self.globals.target_conf);
-                    let r = self.assign_reg(source_node_id, size, code_printer); // this already records the temp location in reg
-                    self.spill_reg_if_taken(r, code_printer);
-                    Self::load(r, GPR_IDX_SP, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize, size, code_printer);
-                    (r, size)
+                    let v = &self.vars[var_id];
+                    let size = v.ty.size(&self.globals.target_conf);
+                    let reg_id = match &v.state.loc {
+                        VarLocation::GPR(reg_id) => *reg_id,
+                        VarLocation::StackSlot => {
+                            let r = self.assign_reg(source_node_id, size, code_printer); // this already records the temp location in reg
+                            // self.spill_reg_if_taken(r, code_printer);
+                            Self::load(r, GPR_IDX_SP, self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize, size, code_printer);
+                            self.vars[var_id].state.loc = VarLocation::GPR(r);
+                            self.vars[var_id].state.dirty = self.vars[var_id].ty.is_linear();
+                            r
+                        }
+                    };
+                    (reg_id, size)
                 } else {
                     panic!("Nowhere to find the source node");
                 }
@@ -657,10 +669,6 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         let temp_state = self.temps.get_mut(&source_node_id).unwrap();
         temp_state.loc = TempLocation::GPR(reg_id);
         temp_state.rev_deps_to_eval -= 1;
-        if let Some(var_id) = temp_state.var {
-            self.vars[var_id].state.loc = VarLocation::GPR(reg_id);
-            self.vars[var_id].state.dirty = self.vars[var_id].ty.is_linear();
-        }
         self.gpr_states[reg_id] = GPRState::Pinned(source_node_id, size);
         reg_id
     }
@@ -958,7 +966,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IRDAGMemLoc::Named(named_mem_loc) => {
                         let rs = self.prepare_source_reg(&*source.borrow(), code_printer);
                         if let Some(&var_id) = self.vars_to_ids.get(named_mem_loc) {
-                            self.unpin_gpr(rs);
+                                                        self.unpin_gpr(rs);
                             let rd = self.assign_reg_with_hint(node.id, v_size, rs, code_printer);
                             let var_info = self.vars.get_mut(var_id).unwrap();
                             // look at current location of the variable
@@ -982,7 +990,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
                             Self::store(rs, rd, named_mem_loc.offset as isize, v_size, code_printer);
                         }
-                    }
+                                            }
                     IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset, offset_range) => {
                         // FIXME: invalidate all variables in register covered in offset range
 
