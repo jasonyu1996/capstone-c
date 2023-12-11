@@ -1389,7 +1389,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             IRDAGNodeCons::LocalSymbol(symbol_name) => {
                 let rd = self.assign_reg(node.id, 8, code_printer);
-                code_printer.print_la(rd, &symbol_name).unwrap();
+                code_printer.print_lla(rd, &symbol_name).unwrap();
             }
             _ => {
                 panic!("Unrecognised node {:?}", node.cons);
