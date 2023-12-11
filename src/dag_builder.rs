@@ -112,6 +112,14 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn add_nonlabel_node(&mut self, node: &GCed<IRDAGNode>) {
         let last_block = self.dag.blocks.last_mut().unwrap();
         assert!(last_block.exit_node.is_none()); // we should not have seen an exit node yet
+        
+
+        // FIXME: remove this after adding properly handling of load/store
+        // forcing program order
+        if let Some(last_node) = last_block.dag.last() {
+            Self::add_dep(node, last_node);
+        }
+
         last_block.dag.push(node.clone());
         self.id_counter += 1;
         if node.borrow().cons.is_control_flow() {
@@ -197,7 +205,6 @@ impl<'ast> IRDAGBuilder<'ast> {
             side_effects
         ));
         eprintln!("New read {}", res.borrow().id);
-        eprintln!("Location {:?}", mem_loc);
         Self::add_dep_mem_loc(&res, &mem_loc);
         self.add_nonlabel_node(&res);
         res
@@ -659,7 +666,11 @@ impl<'ast> IRDAGBuilder<'ast> {
         let r_ref = r.borrow();
         let res_word = 
             if let (IRDAGNodeCons::IntConst(l_const), IRDAGNodeCons::IntConst(r_const)) = (&l_ref.cons, &r_ref.cons) {
-                self.new_int_const(dag::static_bin_op(op_type, *l_const, *r_const))
+                let l_const = *l_const;
+                let r_const = *r_const;
+                drop(l_ref);
+                drop(r_ref);
+                self.new_int_const(dag::static_bin_op(op_type, l_const, r_const))
             } else {
                 drop(l_ref);
                 drop(r_ref); // somehow Rust is stupid
@@ -1090,7 +1101,9 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 // simple optimisation: check whether the index is statically known
                 let rhs_ref = rhs.borrow();
                 if let IRDAGNodeCons::IntConst(int_const) = &rhs_ref.cons {
-                    let offset = elem_ty.size(&self.globals.target_conf) as u64 * *int_const;
+                    let int_const = *int_const; // stupid
+                    drop(rhs_ref);
+                    let offset = elem_ty.size(&self.globals.target_conf) as u64 * int_const;
                     let loc = lhs.loc.apply_offset(offset as isize, self);
                     self.last_temp_res = Some(IRDAGNodeTempResult::LVal(
                         IRDAGLVal { ty: elem_ty, loc: loc }

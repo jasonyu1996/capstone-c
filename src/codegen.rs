@@ -763,8 +763,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         assert!(tmp_reg < GPR_N);
 
         // reset stack pointer to top
-        code_printer.print_lcc(GPR_IDX_T0, GPR_IDX_SP, LccField::End as u64).unwrap();
-        code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_T0).unwrap();
+        code_printer.print_lcc(tmp_reg, GPR_IDX_SP, LccField::End as u64).unwrap();
+        code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, tmp_reg).unwrap();
 
         // save cscratch
         code_printer.print_ccsrrw(tmp_reg, GPR_IDX_X0, "cscratch").unwrap();
