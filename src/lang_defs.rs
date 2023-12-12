@@ -296,12 +296,19 @@ pub const TYPE_ATTRIBUTES : &'static [TypeAttribute<'static>] = &[
 ];
 
 pub fn try_modify_type_with_attr(ty: &mut CaplanType, attr_name: &str) -> bool {
-    for attr in TYPE_ATTRIBUTES.iter() {
-        if attr.name == attr_name {
-            return (attr.type_modifier)(ty);
+    match ty {
+        CaplanType::Array(inner_type, _) => {
+            try_modify_type_with_attr(&mut *inner_type, attr_name)
+        }
+        _ => {
+            for attr in TYPE_ATTRIBUTES.iter() {
+                if attr.name == attr_name {
+                    return (attr.type_modifier)(ty);
+                }
+            }
+            false
         }
     }
-    false
 }
 
 #[derive(Clone, Copy, Debug)]

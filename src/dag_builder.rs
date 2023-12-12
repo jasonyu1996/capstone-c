@@ -706,9 +706,17 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn process_int_un_expr(&mut self, op_type: IRDAGNodeIntUnOpType, expr: &'ast UnaryOperatorExpression) {
         self.visit_expression(&expr.operand.node, &expr.operand.span);
         let r = self.last_temp_res_to_word(false).unwrap();
-        let res_word = match &r.borrow().cons {
-            IRDAGNodeCons::IntConst(r_const) => self.new_int_const(dag::static_un_op(op_type, *r_const)),
-            _ => self.new_int_unop(op_type, &r)
+        let r_ref = r.borrow();
+        let res_word = match &r_ref.cons {
+            IRDAGNodeCons::IntConst(r_const) => {
+                let r_const = *r_const;
+                drop(r_ref);
+                self.new_int_const(dag::static_un_op(op_type, r_const))
+            }
+            _ => {
+                drop(r_ref);
+                self.new_int_unop(op_type, &r)
+            }
         };
         self.last_temp_res = Some(IRDAGNodeTempResult::Word(res_word));
     }

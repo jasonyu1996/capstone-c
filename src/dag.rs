@@ -163,8 +163,9 @@ impl IRDAGMemLoc {
                 IRDAGMemLoc::Addr(addr, static_offset, Some(dag_builder.new_int_binop(IRDAGNodeIntBinOpType::Add, &old_dyn_offset, dyn_offset))),
             IRDAGMemLoc::Named(named_mem_loc) => {
                 // FIXME: handle when it is global
-                let addr_range = named_mem_loc.offset..(named_mem_loc.offset + dag_builder.lookup_local_imm(&named_mem_loc.var_name).unwrap().size(&dag_builder.globals.target_conf));
-                IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset.clone(), addr_range)
+                let addr_range = dag_builder.lookup_local_imm(&named_mem_loc.var_name).map(|x| 
+                    named_mem_loc.offset..(named_mem_loc.offset + x.size(&dag_builder.globals.target_conf)));
+                IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, dyn_offset.clone(), addr_range.unwrap_or(0..1))
             }
             IRDAGMemLoc::NamedWithDynOffset(named_mem_loc, old_dyn_offset, addr_range) =>
                 IRDAGMemLoc::NamedWithDynOffset(named_mem_loc,

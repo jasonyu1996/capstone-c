@@ -214,7 +214,8 @@ pub struct CaplanTranslationUnit {
     pub functions: Vec<CaplanFunction>,
     in_global_context: bool,
     last_type: Option<CaplanType>,
-    last_ident_names: Vec<String>
+    last_ident_names: Vec<String>,
+    attrs: Vec<String>
 }
 
 
@@ -225,7 +226,8 @@ impl CaplanTranslationUnit {
             functions: Vec::new(),
             in_global_context: true,
             last_type: None,
-            last_ident_names: Vec::new()
+            last_ident_names: Vec::new(),
+            attrs: Vec::new()
         };
         res.visit_translation_unit(ast);
         assert!(res.functions.iter().filter(
@@ -283,7 +285,11 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
                     assert!(self.last_ident_names.is_empty());
                     self.visit_struct_field(&field.node, &field.span);
                     let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
-                    let last_type = self.last_type.take().unwrap();
+                    let mut last_type = self.last_type.take().unwrap();
+                    for attr in self.attrs.iter() {
+                        assert!(try_modify_type_with_attr(&mut last_type, attr), "Unable to apply type attribute {}", attr);
+                    }
+                    self.attrs.clear();
                     for ident_name in ident_names {
                         struct_def.borrow_mut().add_field(&ident_name, last_type.clone(), &self.globals.target_conf);
                     }
@@ -298,6 +304,13 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
             self.last_type = Some(CaplanType::StructRef(struct_def));
         } else {
             self.last_type = Some(CaplanType::StructRef(self.globals.struct_defs.get(&struct_name).unwrap().clone()));
+        }
+    }
+
+    fn visit_extension(&mut self, extension: &'ast Extension, span: &'ast Span) {
+        match extension {
+            Extension::Attribute(attr) => self.attrs.push(attr.name.node.clone()),
+            _ => ()
         }
     }
 
@@ -326,7 +339,12 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
         for declarator in declaration.declarators.iter() {
             self.visit_init_declarator(&declarator.node, &declarator.span);
         }
-        let ty = self.last_type.take().unwrap();
+        let mut ty = self.last_type.take().unwrap();
+        for attr in self.attrs.iter() {
+            assert!(try_modify_type_with_attr(&mut ty, attr), "Unable to apply type attribute {}", attr);
+        }
+        self.attrs.clear();
+
         let ident_names = std::mem::replace(&mut self.last_ident_names, Vec::new());
         // ident_names might be empty in the case of struct
         for ident_name in ident_names {
