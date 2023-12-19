@@ -78,6 +78,7 @@ impl<'ast> ParserVisit<'ast> for CaplanParamBuilder<'ast> {
 pub struct CaplanFunction {
     pub name: String,
     pub entry_type: CaplanEntryType,
+    pub needs_reentry: bool,
     pub ret_type: CaplanType,
     pub params: Vec<CaplanParam>,
     pub locals: HashMap<String, CaplanType>,
@@ -118,6 +119,7 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
                 name: String::new(),
                 entry_type: CaplanEntryType::default(),
                 ret_type: CaplanType::Int, // default is int
+                needs_reentry: false,
                 params: Vec::new(),
                 dag: IRDAG::new(),
                 locals: HashMap::new()

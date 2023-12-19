@@ -227,14 +227,23 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
     fn generate_prologue<T>(&mut self, func: &CaplanFunction, ctx: &GlobalCodeGenContext, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         let cross_dom = matches!(func.entry_type, CaplanEntryType::CrossDom);
-
         let func_label = self.gen_func_label(&func.name);
+
+        if func.needs_reentry {
+            // generates a stub that sets up the stack for re-entry into a
+            // domain
+            code_printer.print_label(&format!("__{}_reentry", func.name)).unwrap();
+            code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
+            if cross_dom {
+                code_printer.print_jump_label(&func_label).unwrap();
+            }
+        }
+
         if cross_dom {
             code_printer.print_global_symb("_start").unwrap();
             code_printer.print_label("_start").unwrap();
+            code_printer.print_label(&format!("__{}_entry", func.name)).unwrap();
         }
-        code_printer.print_global_symb(&func_label).unwrap();
-        code_printer.print_label(&func_label).unwrap();
 
         if cross_dom {
             // sp = chunk of initial mem to allocate from
@@ -272,6 +281,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_T1).unwrap();
             code_printer.print_delin(GPR_IDX_SP).unwrap();
         }
+
+        code_printer.print_global_symb(&func_label).unwrap();
+        code_printer.print_label(&func_label).unwrap();
 
         // now we know how much stack space is needed
         let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log); // this makes sure that all stack frames are aligned

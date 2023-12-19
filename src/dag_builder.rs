@@ -1147,14 +1147,12 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             }));
         } else if let Some(intrinsic) = lookup_intrinsic(&identifier.name) {
             self.last_func_ident = Some(IRDAGFuncIdent::Intrinsic(intrinsic));
-        } else if self.globals.func_decls.contains_key(&identifier.name) {
+        } else {
             assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(IRDAGFuncIdent::Name(identifier.name.clone()));
             self.last_temp_res = Some(IRDAGNodeTempResult::Word(
                 self.new_local_symbol(identifier.name.clone())
             ));
-        } else {
-            panic!("Unable to find identifier {}", identifier.name);
         }
     }
 

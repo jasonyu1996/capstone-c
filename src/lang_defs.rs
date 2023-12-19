@@ -513,7 +513,13 @@ pub const FUNCTION_ATTRIBUTES : &'static [FunctionAttribute<'static>] = &[
     FunctionAttribute {
         name: "domentry",
         apply: &|func| {
-            func.entry_type = CaplanEntryType::CrossDom
+            func.entry_type = CaplanEntryType::CrossDom;
+        }
+    },
+    FunctionAttribute {
+        name: "domreentry",
+        apply: &|func| {
+            func.needs_reentry = true;
         }
     }
 ];
