@@ -229,6 +229,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         let cross_dom = matches!(func.entry_type, CaplanEntryType::CrossDom);
         let func_label = self.gen_func_label(&func.name);
 
+        if func.is_naked {
+            code_printer.print_global_symb(&func_label).unwrap();
+            code_printer.print_label(&func_label).unwrap();
+            return;
+        }
+
         if func.needs_reentry {
             // generates a stub that sets up the stack for re-entry into a
             // domain
@@ -350,6 +356,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
     fn generate_epilogue<T>(&mut self, func: &CaplanFunction, _ctx: &GlobalCodeGenContext, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        if func.is_naked {
+            return;
+        }
+
         let ret_label = self.gen_func_ret_label(&func.name);
         code_printer.print_label(&ret_label).unwrap();
 
@@ -1407,6 +1417,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     self.gen_writeback_to_loc(&out.loc, *reg, out.size, true, code_printer);
                     self.unpin_gpr(*reg);
                 }
+
+                // clean up as this is end of basic block
+                self.gpr_cleanup(code_printer);
             }
             IRDAGNodeCons::CapResize(src, size) => {
                 let rs = self.prepare_source_reg(&*src.borrow(), code_printer);
@@ -1472,6 +1485,30 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         }
     }
 
+    fn gpr_cleanup<T>(&mut self, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        for var_info in self.vars.iter_mut() {
+            match var_info.state.loc {
+                VarLocation::GPR(reg_id) => {
+                    if var_info.state.dirty {
+                        let stack_slot = var_info.state.stack_slot;
+                        Self::store(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize,
+                            var_info.ty.size(&self.globals.target_conf), code_printer);
+                        var_info.state.dirty = false;
+                    }
+                    if let GPRState::Taken(node_id, _) = self.gpr_states[reg_id] {
+                        self.temps.get_mut(&node_id).unwrap().loc = TempLocation::Nowhere;
+                    }
+                    var_info.state.loc = VarLocation::StackSlot;
+                    self.gpr_states[reg_id] = GPRState::Free;
+                },
+                VarLocation::StackSlot => {
+                    assert!(!var_info.state.dirty);
+                }
+            }
+        }
+
+    }
+
     fn codegen_block_end_cleanup<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // write back all dirty variables
         let (need_cleanup, deps) = match block.exit_node.as_ref() {
@@ -1490,26 +1527,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         // - Nonlinear: write back dirty values, but leave results in register
         // - Linear: do nothing. The node implementation is responsible for any writeback if necessary
         if need_cleanup {
-            for var_info in self.vars.iter_mut() {
-                match var_info.state.loc {
-                    VarLocation::GPR(reg_id) => {
-                        if var_info.state.dirty {
-                            let stack_slot = var_info.state.stack_slot;
-                            Self::store(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize,
-                                var_info.ty.size(&self.globals.target_conf), code_printer);
-                            var_info.state.dirty = false;
-                        }
-                        if let GPRState::Taken(node_id, _) = self.gpr_states[reg_id] {
-                            self.temps.get_mut(&node_id).unwrap().loc = TempLocation::Nowhere;
-                        }
-                        var_info.state.loc = VarLocation::StackSlot;
-                        self.gpr_states[reg_id] = GPRState::Free;
-                    },
-                    VarLocation::StackSlot => {
-                        assert!(!var_info.state.dirty);
-                    }
-                }
-            }
+            self.gpr_cleanup(code_printer);
         }
         if let Some(exit_node) = block.exit_node.as_ref() {
             let mut exit_node_ref = exit_node.borrow_mut();

@@ -521,6 +521,12 @@ pub const FUNCTION_ATTRIBUTES : &'static [FunctionAttribute<'static>] = &[
         apply: &|func| {
             func.needs_reentry = true;
         }
+    },
+    FunctionAttribute {
+        name: "naked",
+        apply: &|func| {
+            func.is_naked = true;
+        }
     }
 ];
 

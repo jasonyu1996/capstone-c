@@ -79,6 +79,7 @@ pub struct CaplanFunction {
     pub name: String,
     pub entry_type: CaplanEntryType,
     pub needs_reentry: bool,
+    pub is_naked: bool,
     pub ret_type: CaplanType,
     pub params: Vec<CaplanParam>,
     pub locals: HashMap<String, CaplanType>,
@@ -120,6 +121,7 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
                 entry_type: CaplanEntryType::default(),
                 ret_type: CaplanType::Int, // default is int
                 needs_reentry: false,
+                is_naked: false,
                 params: Vec::new(),
                 dag: IRDAG::new(),
                 locals: HashMap::new()
