@@ -234,6 +234,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             // domain
             code_printer.print_label(&format!("__{}_reentry", func.name)).unwrap();
             code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
+            // load gp
+            Self::load(GPR_IDX_GP, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize) * 2,
+                self.globals.target_conf.register_width, code_printer);
+            // load cscratch
+            Self::load(GPR_IDX_T0, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize),
+                self.globals.target_conf.register_width, code_printer);
+            code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_T0, "cscratch").unwrap();
+
             if cross_dom {
                 code_printer.print_jump_label(&func_label).unwrap();
             }
@@ -312,7 +320,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 offset: 0
             };
             let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
-            if cross_dom {
+            if cross_dom || func.needs_reentry {
                 if param_idx == 0 {
                     // the first argument of a domain entry function holds the sealed-return cap
                     assert!(param.ty.is_return_dom(), "Arg 0 of domain entry function must be of return domain type");
@@ -782,6 +790,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         code_printer.print_ccsrrw(tmp_reg, GPR_IDX_X0, "cscratch").unwrap();
         Self::store(tmp_reg, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize),
             self.globals.target_conf.register_width, code_printer);
+
+        // save gp
+        Self::store(GPR_IDX_GP, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize) * 2,
+            self.globals.target_conf.register_width, code_printer);
+        
         // save sp in cscratch
         code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
 
