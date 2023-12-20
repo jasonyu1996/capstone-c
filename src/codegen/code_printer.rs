@@ -38,7 +38,10 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("cih", "0x001"),
     ("cepc", "0x002"),
     ("cmmu", "0x003"),
-    ("cscratch", "0x004")
+    ("cscratch", "0x004"),
+    ("cis", "0x800"),
+    ("cid", "0x801"),
+    ("offsetmmu", "0x802")
 ];
 
 pub struct CodePrinter<T> where T: Write {
@@ -257,6 +260,10 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
+    pub fn print_csrrw(&mut self, rd: RegId, rs: RegId, csr: &str) -> Result<(), std::io::Error> {
+        writeln!(&mut self.out, "{}csrrw {}, {}, {}", INST_INDENT, REG_NAMES[rd], csr, REG_NAMES[rs])?;
+        Ok(())
+    }
 
     /* Capstone-specific */
 

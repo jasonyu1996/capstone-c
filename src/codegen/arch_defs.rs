@@ -20,9 +20,23 @@ pub const GPR_CALLEE_SAVED_LIST : [RegId; 13] = [2, 8, 9, 18, 19, 20, 21, 22, 23
 pub const GPR_CALLER_SAVED_LIST : [RegId; 16] = [1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31];
 pub const GPR_PARAMS : [RegId; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
 
-pub const CCSR_DOMAIN_SAVED : &'static [&'static str] = &[
-    // "cscratch" // TODO: MORE
-];
+pub const DOM_SAVE_GPR : &'static [RegId] = &[GPR_IDX_RA, GPR_IDX_GP];
+pub const DOM_SAVE_CCSR : &'static [&'static str] = &["cscratch"];
+pub const DOM_SAVE_CCSR_SMODE : &'static [&'static str] = &["cepc"]; // "cmmu"];
+pub const DOM_SAVE_CSR : &'static [&'static str] = &["mcause", "mtval"]; // "mtinst"];
+pub const DOM_SAVE_CSR_SMODE : &'static [&'static str] = &["stvec", "scause", "stval",
+    "sepc", "sscratch", "satp", "offsetmmu"];
+
+pub fn get_dom_save_context(save_s: bool) -> (Box<dyn Iterator<Item=&'static &'static str>>, Box<dyn Iterator<Item=&'static &'static str>>) {
+    if save_s {
+        (
+            Box::new(DOM_SAVE_CCSR.iter().chain(DOM_SAVE_CCSR_SMODE.iter())),
+            Box::new(DOM_SAVE_CSR.iter().chain(DOM_SAVE_CSR_SMODE.iter())),
+        )
+    } else {
+        (Box::new(DOM_SAVE_CCSR.iter()), Box::new(DOM_SAVE_CSR.iter()))
+    }
+}
 
 #[repr(u64)]
 pub enum LccField {

@@ -319,7 +319,9 @@ pub enum IntrinsicFunction {
     Delin,
     Tighten,
     DomCall,
+    DomCallSaveS,
     DomReturn,
+    DomReturnSaveS,
     Capfield,
     Split
 }
@@ -374,7 +376,7 @@ impl IntrinsicFunction {
                     }
                 }
             }
-            IntrinsicFunction::DomCall => {
+            IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS => {
                 if arg_types.len() < 1 {
                     None
                 } else if matches!(arg_types[0], IRDAGNodeVType::Dom) {
@@ -383,7 +385,7 @@ impl IntrinsicFunction {
                     None
                 }
             }
-            IntrinsicFunction::DomReturn => {
+            IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
                 if arg_types.len() < 3 {
                     None
                 } else {
@@ -439,13 +441,14 @@ impl IntrinsicFunction {
                 } else {
                     vec![]
                 },
-            IntrinsicFunction::DomCall => arg_types.into_iter().enumerate().filter_map(|(idx, ty)| 
+            IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS =>
+                arg_types.into_iter().enumerate().filter_map(|(idx, ty)| 
                 // if ty.is_linear() {
                     Some(idx)).collect(),
                 // } else {
                     // None
                 // }).collect(),
-            IntrinsicFunction::DomReturn => vec![0],
+            IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => vec![0],
                 // if arg_types.get(1).filter(|x| x.is_linear()).is_some() {
                 //     vec![0, 1]
                 // } else {
@@ -462,7 +465,8 @@ impl IntrinsicFunction {
             | IntrinsicFunction::Seal | IntrinsicFunction::Delin 
             | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield 
             | IntrinsicFunction::Split => false,
-            IntrinsicFunction::DomCall | IntrinsicFunction::DomReturn => true
+            IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS
+            | IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => true
         }
     }
 }
@@ -474,7 +478,9 @@ const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__delin", IntrinsicFunction::Delin),
     ("__tighten", IntrinsicFunction::Tighten),
     ("__domcall", IntrinsicFunction::DomCall),
+    ("__domcallsaves", IntrinsicFunction::DomCallSaveS),
     ("__domreturn", IntrinsicFunction::DomReturn),
+    ("__domreturnsaves", IntrinsicFunction::DomReturnSaveS),
     ("__capfield", IntrinsicFunction::Capfield),
     ("__split", IntrinsicFunction::Split)
 ];
@@ -503,6 +509,24 @@ impl Default for CaplanEntryType {
     }
 }
 
+#[derive(Debug)]
+pub enum CaplanReentryType {
+    None,
+    NoSMode, // S mode is not saved
+    SMode // S mode is saved
+}
+
+impl Default for CaplanReentryType {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl CaplanReentryType {
+    pub fn needs_reentry(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
 
 pub struct FunctionAttribute<'h> {
     name: &'h str,
@@ -519,7 +543,13 @@ pub const FUNCTION_ATTRIBUTES : &'static [FunctionAttribute<'static>] = &[
     FunctionAttribute {
         name: "domreentry",
         apply: &|func| {
-            func.needs_reentry = true;
+            func.reentry_type = CaplanReentryType::NoSMode;
+        }
+    },
+    FunctionAttribute {
+        name: "domreentryrestores",
+        apply: &|func| {
+            func.reentry_type = CaplanReentryType::SMode;
         }
     },
     FunctionAttribute {

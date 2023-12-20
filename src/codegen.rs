@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::codegen::code_printer::REG_NAMES;
 use crate::dag::*;
 use crate::lang::{CaplanFunction, CaplanTranslationUnit, CaplanGlobalContext};
-use crate::lang_defs::{CaplanType, IntrinsicFunction, CaplanEntryType};
+use crate::lang_defs::{CaplanType, IntrinsicFunction, CaplanEntryType, CaplanReentryType};
 use crate::target_conf::CaplanABI;
 use crate::utils::{GCed, align_up_to};
 
@@ -235,19 +235,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             return;
         }
 
-        if func.needs_reentry {
+        if func.reentry_type.needs_reentry() {
             // generates a stub that sets up the stack for re-entry into a
             // domain
             code_printer.print_label(&format!("__{}_reentry", func.name)).unwrap();
-            code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
-            // load gp
-            Self::load(GPR_IDX_GP, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize) * 2,
-                self.globals.target_conf.register_width, code_printer);
-            // load cscratch
-            Self::load(GPR_IDX_T0, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize),
-                self.globals.target_conf.register_width, code_printer);
-            code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_T0, "cscratch").unwrap();
-
+            self.synchronous_restore_context(0, &[], &[], 
+                matches!(func.reentry_type, CaplanReentryType::SMode), code_printer);
             if cross_dom {
                 code_printer.print_jump_label(&func_label).unwrap();
             }
@@ -326,7 +319,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 offset: 0
             };
             let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
-            if cross_dom || func.needs_reentry {
+            if cross_dom || func.reentry_type.needs_reentry() {
                 if param_idx == 0 {
                     // the first argument of a domain entry function holds the sealed-return cap
                     assert!(param.ty.is_return_dom(), "Arg 0 of domain entry function must be of return domain type");
@@ -728,66 +721,96 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
     // returns the size of the saved context
     // rd: register for holding the new domain
-    fn domcall_save_context<T>(&mut self, args_count: usize, rd: RegId, rs: RegId, code_printer: &mut CodePrinter<T>) -> usize where T: std::io::Write {
+    fn synchronous_save_context<T>(&mut self, args_count: usize, rd: &[RegId], rs: &[RegId],
+            save_s: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // TODO: for now everything is done inline, but we might want to consider gathering all these in one place for smaller code size
         // TODO: more CSRs and CCSRs in the domain scope
         let arg_reg_lo = GPR_IDX_A0;
         let arg_reg_hi = GPR_IDX_A0 + args_count;
         let mut neg_stack_offset = 0;
+
+        let mut tmp_reg = GPR_IDX_T0;
+        while rd.contains(&tmp_reg) || rs.contains(&tmp_reg) || tmp_reg == GPR_IDX_SP || matches!(self.gpr_states[tmp_reg], GPRState::Reserved) {
+            tmp_reg += 1;
+        }
         // GPRs
+        
+        for gpr in DOM_SAVE_GPR.iter() {
+            assert!(!rd.contains(gpr) && !rs.contains(gpr));
+            neg_stack_offset += self.globals.target_conf.register_width;
+            Self::store(*gpr, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
+        }
+
         for reg in 1..GPR_N {
             if reg == GPR_IDX_SP || (reg >= arg_reg_lo && reg < arg_reg_hi) {
                 continue;
             }
-            if reg != rd && reg != rs {
-                neg_stack_offset += self.globals.target_conf.register_width;
-                Self::store(reg, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
-            }
-            if reg != rs {
+            if !rs.contains(&reg) {
                 code_printer.print_li(reg, 0).unwrap(); // scrub
             }
         }
-        // cscratch
-        code_printer.print_ccsrrw(GPR_IDX_T0, GPR_IDX_X0, "cscratch").unwrap();
-        neg_stack_offset += self.globals.target_conf.register_width;
-        Self::store(GPR_IDX_T0, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
-        code_printer.print_li(GPR_IDX_T0, 0).unwrap();
-        code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
-        code_printer.print_li(GPR_IDX_SP, 0).unwrap();
 
-        neg_stack_offset
+        let (save_ccsr_iter, save_csr_iter) = get_dom_save_context(save_s);
+
+        for ccsr in save_ccsr_iter {
+            code_printer.print_ccsrrw(tmp_reg, GPR_IDX_X0, ccsr).unwrap();
+            neg_stack_offset += self.globals.target_conf.register_width;
+            Self::store(tmp_reg, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
+        }
+
+        for csr in save_csr_iter {
+            code_printer.print_csrrw(tmp_reg, GPR_IDX_X0, csr).unwrap();
+            neg_stack_offset += 8;
+            Self::store(tmp_reg, GPR_IDX_SP, -(neg_stack_offset as isize), 8, code_printer);
+        }
+
+        // TODO: GP needs storing
+
+        code_printer.print_li(tmp_reg, 0).unwrap();
+        code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
+        code_printer.print_li(tmp_reg, 0).unwrap();
     }
 
-    fn domcall_restore_context<T>(&mut self, ctx_size: usize, args_count: usize, rd: RegId, rs: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        let arg_reg_lo = GPR_PARAMS[0];
-        let arg_reg_hi = arg_reg_lo + args_count;
+    fn synchronous_restore_context<T>(&mut self, args_count: usize, rd: &[RegId], rs: &[RegId],
+            save_s: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         let mut neg_stack_offset = 0;
 
         // load sp back
         code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
         // restore the original cscratch
-        Self::load(GPR_IDX_T0, GPR_IDX_SP, -(ctx_size as isize), self.globals.target_conf.register_width, code_printer);
-        code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_T0, "cscratch").unwrap();
 
-        // GPRs
-        for reg in 1..GPR_N {
-            if reg == GPR_IDX_SP || (reg >= arg_reg_lo && reg < arg_reg_hi) {
-                continue;
-            }
-            if reg != rd && reg != rs {
-                neg_stack_offset += self.globals.target_conf.register_width;
-                Self::load(reg, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
-            }
+        for gpr in DOM_SAVE_GPR.iter() {
+            assert!(!rd.contains(gpr) && !rs.contains(gpr));
+            neg_stack_offset += self.globals.target_conf.register_width;
+            Self::load(*gpr, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
+        }
+
+        let (save_ccsr_iter, save_csr_iter) = get_dom_save_context(save_s);
+
+        let mut tmp_reg = GPR_IDX_T0;
+        while rd.contains(&tmp_reg) || rs.contains(&tmp_reg) || tmp_reg == GPR_IDX_SP || matches!(self.gpr_states[tmp_reg], GPRState::Reserved) {
+            tmp_reg += 1;
+        }
+
+        for ccsr in save_ccsr_iter {
+            neg_stack_offset += self.globals.target_conf.register_width;
+            Self::load(tmp_reg, GPR_IDX_SP, -(neg_stack_offset as isize), self.globals.target_conf.register_width, code_printer);
+            code_printer.print_ccsrrw(GPR_IDX_X0, tmp_reg, ccsr).unwrap();
+        }
+
+        for csr in save_csr_iter {
+            neg_stack_offset += 8;
+            Self::load(tmp_reg, GPR_IDX_SP, -(neg_stack_offset as isize), 8, code_printer);
+            code_printer.print_csrrw(GPR_IDX_X0, tmp_reg, csr).unwrap();
         }
     }
 
     // only for synchronous return
-    fn domreturn_save_context<T>(&mut self, rs1: RegId, rs2: RegId, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+    fn domreturn_save_context<T>(&mut self, rs1: RegId, rs2: RegId, save_s: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // TODO: support return value here
         // store stack pointer on cscratch
-
         let mut tmp_reg = 1;
-        while tmp_reg == rs1 || tmp_reg == rs2 || tmp_reg == GPR_IDX_SP {
+        while tmp_reg == rs1 || tmp_reg == rs2 || tmp_reg == GPR_IDX_SP || matches!(self.gpr_states[tmp_reg], GPRState::Reserved) {
             tmp_reg += 1;
         }
         assert!(tmp_reg < GPR_N);
@@ -796,24 +819,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         code_printer.print_lcc(tmp_reg, GPR_IDX_SP, LccField::End as u64).unwrap();
         code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, tmp_reg).unwrap();
 
-        // save cscratch
-        code_printer.print_ccsrrw(tmp_reg, GPR_IDX_X0, "cscratch").unwrap();
-        Self::store(tmp_reg, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize),
-            self.globals.target_conf.register_width, code_printer);
-
-        // save gp
-        Self::store(GPR_IDX_GP, GPR_IDX_SP, -(self.globals.target_conf.register_width as isize) * 2,
-            self.globals.target_conf.register_width, code_printer);
-        
-        // save sp in cscratch
-        code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
-
-        // scrub
-        for reg in 1..GPR_N {
-            if reg != rs1 && reg != rs2 {
-                code_printer.print_li(reg, 0).unwrap();
-            }
-        }
+        self.synchronous_save_context(0, &[], &[rs1, rs2], save_s, code_printer);
     }
 
     // write_through: write back directly to memory, ignoring the registers
@@ -1285,13 +1291,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             panic!("Second parameter of tighten should be a constant literal");
                         }
                     }
-                    IntrinsicFunction::DomCall => {
+                    IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS => {
                         let args_count = arguments.len() - 1;
                         for (arg_idx, arg) in arguments[1..].iter().enumerate() {
                             self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(), 
                                 GPR_PARAMS[arg_idx], code_printer);
                         }
-
 
                         let dom_ref = arguments[0].to_word().unwrap().borrow();
                         let r_dom = self.prepare_source_reg(&*dom_ref, code_printer);
@@ -1305,11 +1310,13 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, r_dom, code_printer);
                         // to hold the renewed domain
 
-                        let ctx_size = self.domcall_save_context(args_count, reg_id, r_dom, code_printer);
+                        self.synchronous_save_context(args_count, &[reg_id], &[r_dom], 
+                            matches!(intrinsic, IntrinsicFunction::DomCallSaveS), code_printer);
                         code_printer.print_domcall(reg_id, r_dom).unwrap();
-                        self.domcall_restore_context(ctx_size, args_count, reg_id, r_dom, code_printer);
+                        self.synchronous_restore_context(args_count, &[reg_id], &[r_dom],
+                        matches!(intrinsic, IntrinsicFunction::DomCallSaveS), code_printer);
                     }
-                    IntrinsicFunction::DomReturn => {
+                    IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
                         // TODO: add separate synchronous and asynchronous versions
                         let ret_dom_ref = arguments[0].to_word().unwrap().borrow();
                         let is_async = matches!(ret_dom_ref.vtype, IRDAGNodeVType::DomAsync);
@@ -1328,7 +1335,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
                             drop(ret_dom_ref);
                             self.unpin_gpr(rs2);
-                            self.domreturn_save_context(r_ret_dom, rs2, code_printer);
+                            self.domreturn_save_context(r_ret_dom, rs2, matches!(intrinsic, IntrinsicFunction::DomReturnSaveS), code_printer);
                             
                             code_printer.print_domreturn(r_ret_dom, rs2, GPR_IDX_X0).unwrap();
                         }
