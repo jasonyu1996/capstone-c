@@ -59,9 +59,12 @@ impl<T> CodePrinter<T> where T: Write {
 
     pub fn print_defs(&mut self) -> Result<(), std::io::Error> {
         if matches!(self.target_conf.abi, CaplanABI::CapstoneCGNLSD) {
+            writeln!(&mut self.out, "#ifndef __CAPSTONE_C_BUILTIN__")?;
+            writeln!(&mut self.out, "#define __CAPSTONE_C_BUILTIN__")?;
             for (macro_name, macro_def) in ASM_DEFS_CAPSTONE.iter() {
                 writeln!(&mut self.out, "#define {} {}", *macro_name, *macro_def)?;
             }
+            writeln!(&mut self.out, "#endif")?;
         }
         Ok(())
     }
