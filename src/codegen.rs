@@ -1026,7 +1026,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 self.move_reg(rd, rs, code_printer);
                             }
                         } else {
-                            let rd = self.assign_reg(node.id, v_size, code_printer); // FIXME: the result doesn't actually reside here
+                            let rd = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer); // FIXME: the result doesn't actually reside here
                             self.unpin_gpr(rs);
                             self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
                             Self::store(rs, rd, named_mem_loc.offset as isize, v_size, code_printer);
@@ -1046,7 +1046,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             Self::store(r_val, rd, (named_mem_loc.offset +
                                 self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot)) as isize, v_size, code_printer);
                         } else {
-                            let rd = self.assign_reg(node.id, v_size, code_printer); // FIXME: need to set the result reg correctly
+                            let rd = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer); // FIXME: need to set the result reg correctly
                             self.unpin_gpr(r_val);
                             self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
                             self.pointer_offset(rd, rd, r_offset, code_printer);
