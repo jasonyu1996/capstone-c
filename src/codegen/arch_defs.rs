@@ -21,6 +21,7 @@ pub const GPR_CALLER_SAVED_LIST : [RegId; 16] = [1, 5, 6, 7, 10, 11, 12, 13, 14,
 pub const GPR_PARAMS : [RegId; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
 
 pub const DOM_SAVE_GPR : &'static [RegId] = &[GPR_IDX_RA, GPR_IDX_GP];
+pub const DOM_SAVE_GPR_DOM_BOUNDARY : &'static [RegId] = &[GPR_IDX_GP];
 pub const DOM_SAVE_CCSR : &'static [&'static str] = &["cscratch"];
 pub const DOM_SAVE_CCSR_SMODE : &'static [&'static str] = &["cepc"]; // "cmmu"];
 pub const DOM_SAVE_CSR : &'static [&'static str] = &["mcause", "mtval"]; // "mtinst"];
@@ -36,6 +37,15 @@ pub fn get_dom_save_context(save_s: bool) -> (Box<dyn Iterator<Item=&'static &'s
     } else {
         (Box::new(DOM_SAVE_CCSR.iter()), Box::new(DOM_SAVE_CSR.iter()))
     }
+}
+
+
+pub fn get_save_gpr_iter(dom_boundary: bool) -> std::slice::Iter<'static, RegId> {
+    if dom_boundary {
+        DOM_SAVE_GPR_DOM_BOUNDARY
+    } else {
+        DOM_SAVE_GPR
+    }.iter()
 }
 
 #[repr(u64)]
