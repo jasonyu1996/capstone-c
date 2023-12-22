@@ -983,7 +983,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 match op_type {
                     IRDAGNodeIntUnOpType::Neg => code_printer.print_neg(rd, rs).unwrap(),
                     IRDAGNodeIntUnOpType::Not => code_printer.print_not(rd, rs).unwrap(),
-                    IRDAGNodeIntUnOpType::Negate => code_printer.print_lt(rd, GPR_IDX_X0, rs).unwrap()
+                    IRDAGNodeIntUnOpType::Negate => code_printer.print_eq(rd, GPR_IDX_X0, rs).unwrap()
                 }
             }
             IRDAGNodeCons::AddressOf(named_mem_loc) => {
