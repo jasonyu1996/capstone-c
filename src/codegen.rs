@@ -285,7 +285,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             }
             // the remaining is used as stack
             // place the cursor at the bottom of the stack (highest address)
-            code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_T1).unwrap();
+                        code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, GPR_IDX_T1).unwrap();
             code_printer.print_delin(GPR_IDX_SP).unwrap();
         }
 
@@ -765,11 +765,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             Self::store(tmp_reg, GPR_IDX_SP, -(neg_stack_offset as isize), 8, code_printer);
         }
 
-        // TODO: GP needs storing
-
         code_printer.print_li(tmp_reg, 0).unwrap();
         code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
-        code_printer.print_li(tmp_reg, 0).unwrap();
+        code_printer.print_li(GPR_IDX_SP, 0).unwrap();
     }
 
     fn synchronous_restore_context<T>(&mut self, args_count: usize, rd: &[RegId], rs: &[RegId],
