@@ -49,7 +49,8 @@ enum IRDAGFuncIdent {
 
 pub struct IRDAGBuilder<'ast> {
     dag: IRDAG,
-    locals: HashMap<String, CaplanType>, // TODO: brute-force implementation, no nested scope yet
+    local_idx: HashMap<String, usize>,
+    locals: Vec<(String, CaplanType)>,
     local_named_locs: HashMap<IRDAGNamedMemLoc, IRDAGNamedMemLocInfo>,
     last_temp_res: Option<IRDAGNodeTempResult>,
     decl_type: Option<CaplanType>,
@@ -68,7 +69,8 @@ impl<'ast> IRDAGBuilder<'ast> {
         let dag = IRDAG::new();
         let mut res = Self {
             dag: dag,
-            locals: HashMap::new(),
+            local_idx: HashMap::new(),
+            locals: Vec::new(),
             local_named_locs: HashMap::new(),
             last_temp_res: None,
             decl_type: None,
@@ -420,7 +422,8 @@ impl<'ast> IRDAGBuilder<'ast> {
     pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span, 
                 params: &[CaplanParam]) {
         for param in params.iter() {
-            self.locals.insert(param.name.clone(), param.ty.clone());
+            self.locals.push((param.name.clone(), param.ty.clone()));
+            self.local_idx.insert(param.name.clone(), self.locals.len() - 1);
             param.ty.visit_offset(&mut |offset, _| {
                 self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: param.name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());
             }, 0, &self.globals.target_conf);
@@ -463,17 +466,17 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     // consume the builder and get the dag
-    pub fn into_dag(self) -> (IRDAG, HashMap<String, CaplanType>) {
+    pub fn into_dag(self) -> (IRDAG, Vec<(String, CaplanType)>) {
         (self.dag, self.locals)
     }
 
     // look up local variable
     pub fn lookup_local<'a>(&'a mut self, v: &str) -> Option<&'a mut CaplanType> {
-        self.locals.get_mut(v)
+        self.local_idx.get(v).map(|idx| &mut self.locals[*idx].1)
     }
 
     pub fn lookup_local_imm<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
-        self.locals.get(v)
+        self.local_idx.get(v).map(|idx| &self.locals[*idx].1)
     }
 
     fn lookup_identifier_type<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
@@ -1307,7 +1310,8 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
             assert!(try_modify_type_with_attr(&mut ty, attr_name), "Failed to apply the type attribute {}", attr_name);
         }
         eprintln!("Declared new local variable {} with type {:?}", name, ty);
-        self.locals.insert(name.clone(),ty.clone());
+        self.locals.push((name.clone(), ty.clone()));
+        self.local_idx.insert(name.clone(), self.locals.len() - 1);
         let offset_collection = ty.collect_offsets(&self.globals.target_conf);
         for (offset, _) in offset_collection {
             self.local_named_locs.insert(IRDAGNamedMemLoc { var_name: name.clone(), offset: offset }, IRDAGNamedMemLocInfo::new());

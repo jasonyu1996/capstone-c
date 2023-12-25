@@ -82,7 +82,7 @@ pub struct CaplanFunction {
     pub is_naked: bool,
     pub ret_type: CaplanType,
     pub params: Vec<CaplanParam>,
-    pub locals: HashMap<String, CaplanType>,
+    pub locals: Vec<(String, CaplanType)>,
     pub dag: IRDAG
 }
 
@@ -124,7 +124,7 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
                 is_naked: false,
                 params: Vec::new(),
                 dag: IRDAG::new(),
-                locals: HashMap::new()
+                locals: Vec::new()
             },
             globals: globals,
             ret_type_attrs: Vec::new(),
