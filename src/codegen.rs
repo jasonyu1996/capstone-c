@@ -268,7 +268,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 code_printer.print_split(GPR_IDX_GP, GPR_IDX_SP, GPR_IDX_T1).unwrap();
                 // create capability for each global variable (TODO: we now
                 // assume no external global variable)
-                for (gvar_idx, gvar_type) in ctx.translation_unit.globals.global_vars.iter().enumerate() {
+                for (gvar_idx, (_, gvar_type)) in ctx.translation_unit.globals.global_vars.iter().enumerate() {
                     // size rounded up for alignment
                     let gvar_size = align_up_to(gvar_type.size(&self.globals.target_conf),
                         self.globals.target_conf.min_alignment_log);
@@ -1678,10 +1678,9 @@ impl<Out> CodeGen<Out> where Out: std::io::Write {
         match &self.ctx.translation_unit.globals.target_conf.abi {
             CaplanABI::RISCV64 => {
                 // bss declaration
-                for (var_name, &idx) in self.ctx.translation_unit.globals.global_vars_to_ids.iter() {
+                for (var_name, var_type) in self.ctx.translation_unit.globals.global_vars.iter() {
                     // TODO: throw the io error out
                     // writeln!(&mut self.code_printer.out, ".align {}", alignment_bits).unwrap();
-                    let var_type = &self.ctx.translation_unit.globals.global_vars[idx];
                     writeln!(&mut self.code_printer.out, ".comm {}, {}, {}",
                         var_name,
                         var_type.size(&self.ctx.translation_unit.globals.target_conf),
@@ -1692,7 +1691,7 @@ impl<Out> CodeGen<Out> where Out: std::io::Write {
                 // TODO: produce the caplocation table in a special table
                 self.code_printer.print_align(16).unwrap();
                 self.code_printer.print_section(".gct").unwrap();
-                for var_type in self.ctx.translation_unit.globals.global_vars.iter() {
+                for (_, var_type) in self.ctx.translation_unit.globals.global_vars.iter() {
                     self.code_printer.print_u64(var_type.size(&self.ctx.translation_unit.globals.target_conf) as u64).unwrap();
                     self.code_printer.print_u64(0x6).unwrap();
                 }

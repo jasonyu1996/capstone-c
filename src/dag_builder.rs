@@ -479,7 +479,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn lookup_identifier_type<'a>(&'a self, v: &str) -> Option<&'a CaplanType> {
         self.lookup_local_imm(v).or_else(
             || {
-                self.globals.global_vars_to_ids.get(v).map(|&idx| &self.globals.global_vars[idx])
+                self.globals.global_vars_to_ids.get(v).map(|&idx| &self.globals.global_vars[idx]).map(|x| &x.1)
             }
         )
     }
@@ -1137,7 +1137,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
     fn visit_identifier(&mut self, identifier: &'ast lang_c::ast::Identifier, span: &'ast Span) {
         // check whether this is a local, param, or global
         let loc_info = self.lookup_local_imm(&identifier.name).or_else(
-            || self.globals.global_vars_to_ids.get(&identifier.name).map(|&idx| &self.globals.global_vars[idx])
+            || self.globals.global_vars_to_ids.get(&identifier.name).map(|&idx| &self.globals.global_vars[idx].1)
         );
         // local or global variable
         if let Some(ty) = loc_info {

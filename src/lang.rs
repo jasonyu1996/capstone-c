@@ -90,7 +90,7 @@ pub struct CaplanGlobalContext {
     pub target_conf: CaplanTargetConf,
     pub func_decls: HashMap<String, CaplanType>,
     pub struct_defs: HashMap<String, GCed<CaplanStruct>>,
-    pub global_vars: Vec<CaplanType>,
+    pub global_vars: Vec<(String, CaplanType)>,
     pub global_vars_to_ids: HashMap<String, usize>
 }
 
@@ -354,7 +354,7 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
         for ident_name in ident_names {
             eprintln!("Global variable {} with type {:?}", ident_name, ty);
             let var_index = self.globals.global_vars.len();
-            self.globals.global_vars.push(ty.clone());
+            self.globals.global_vars.push((ident_name.clone(), ty.clone()));
             assert!(self.globals.global_vars_to_ids.insert(ident_name, var_index).is_none(), "Duplicate global variable declaration");
         }
     }
