@@ -460,7 +460,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 let temp_state = self.temps.get_mut(&node_id).unwrap();
                 if temp_state.rev_deps_to_eval == 0 {
                     temp_state.loc = TempLocation::Nowhere;
-                    self.writeback_if_dirty(reg_id, code_printer);
+                                        self.writeback_if_dirty(reg_id, code_printer);
                     self.gpr_states[reg_id] = GPRState::Free;
                 } else {
                     self.spill_reg(reg_id, node_id, code_printer);
@@ -1209,6 +1209,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         self.move_reg(GPR_IDX_A0, rs, code_printer);
                     }
                 }
+                self.gpr_cleanup(code_printer);
                 code_printer.print_jump_label(&self.gen_func_ret_label(func_name)).unwrap();
             }
             IRDAGNodeCons::InDomCall(callee, arguments) => {
@@ -1472,7 +1473,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
     // reset for starting labeled basic block
     fn codegen_block_labeled_reset<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
-        self.temps.clear();
+        // self.temps.clear();
         self.gpr_states.fill(GPRState::Free);
         // reserve some special registers
         for reserved_gpr in GPR_RESERVED_LIST {
@@ -1518,7 +1519,6 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
             }
         }
-
     }
 
     fn codegen_block_end_cleanup<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
