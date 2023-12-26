@@ -202,7 +202,8 @@ struct FunctionCodeGen<'ctx> {
     op_topo_stack: Vec<GCed<IRDAGNode>>,
     gpr_states: [GPRState; GPR_N],
     // if each GPR is used at all in the function
-    gpr_clobbered: [bool; GPR_N]
+    gpr_clobbered: [bool; GPR_N],
+    gpr_all_clobbered: bool // are all gprs clobbered?
 }
 
 impl<'ctx> FunctionCodeGen<'ctx> {
@@ -221,7 +222,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             ),
             op_topo_stack: Vec::new(),
             gpr_states: [GPRState::Free; GPR_N],
-            gpr_clobbered: [false; GPR_N]
+            gpr_clobbered: [false; GPR_N],
+            gpr_all_clobbered: false
         }
     }
 
@@ -298,11 +300,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         if cross_dom {
             self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -(stack_frame_size as isize), code_printer);
         } else {
-            let clobbered_callee_saved_n = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]).count();
-            self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_callee_saved_n) as isize), code_printer);
+            let clobbered_to_save : Vec<_> = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| (self.gpr_all_clobbered || self.gpr_clobbered[**idx])
+                && !matches!(self.gpr_states[**idx], GPRState::Reserved)).collect();
+            self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_to_save.len()) as isize), code_printer);
 
 
-            for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
+            for reg_id in clobbered_to_save.into_iter() {
                 // clobbered callee-saved registers need saving here
                 assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
                 Self::store(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
@@ -362,7 +365,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         } else {
             let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log);
 
-            for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| self.gpr_clobbered[**idx]) {
+            for reg_id in GPR_CALLEE_SAVED_LIST.iter().filter(|idx| (self.gpr_all_clobbered || self.gpr_clobbered[**idx]) &&
+                !matches!(self.gpr_states[**idx], GPRState::Reserved)) {
                 // clobbered callee-saved registers need restoring here
                 // TODO: 16 byte loading
                 Self::load(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
@@ -1310,6 +1314,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let reg_id = self.assign_reg_with_hint(node.id, res_size, r_dom, code_printer);
                         // to hold the renewed domain
 
+                        self.gpr_all_clobbered = true;
                         self.synchronous_save_context(args_count, &[reg_id], &[r_dom], 
                             matches!(intrinsic, IntrinsicFunction::DomCallSaveS), false, code_printer);
                         code_printer.print_domcall(reg_id, r_dom).unwrap();
