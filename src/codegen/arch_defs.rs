@@ -23,7 +23,7 @@ pub const GPR_PARAMS : [RegId; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
 pub const DOM_SAVE_GPR : &'static [RegId] = &[GPR_IDX_RA, GPR_IDX_GP];
 pub const DOM_SAVE_GPR_DOM_BOUNDARY : &'static [RegId] = &[GPR_IDX_GP];
 pub const DOM_SAVE_CCSR : &'static [&'static str] = &["cscratch"];
-pub const DOM_SAVE_CCSR_SMODE : &'static [&'static str] = &["cepc"]; // "cmmu"];
+pub const DOM_SAVE_CCSR_SMODE : &'static [&'static str] = &["cepc", "cmmu"];
 pub const DOM_SAVE_CSR : &'static [&'static str] = &["mcause", "mtval"]; // "mtinst"];
 pub const DOM_SAVE_CSR_SMODE : &'static [&'static str] = &["stvec", "scause", "stval",
     "sepc", "sscratch", "satp", "offsetmmu"];
