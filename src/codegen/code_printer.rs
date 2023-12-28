@@ -41,7 +41,8 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("cscratch", "0x004"),
     ("cis", "0x800"),
     ("cid", "0x801"),
-    ("offsetmmu", "0x802")
+    ("cic", "0x802"),
+    ("offsetmmu", "0x803")
 ];
 
 pub struct CodePrinter<T> where T: Write {
