@@ -241,8 +241,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             // generates a stub that sets up the stack for re-entry into a
             // domain
             code_printer.print_label(&format!("__{}_reentry", func.name)).unwrap();
-            self.synchronous_restore_context(0, &[], &[], 
-                matches!(func.reentry_type, CaplanReentryType::SMode), true, code_printer);
+            let save_s = matches!(func.reentry_type, CaplanReentryType::SMode);
+            self.synchronous_restore_context(0, &[], &[], if save_s { SMODE_CONTEXT_SIZE } else { 0 },
+                save_s, true, code_printer);
             if cross_dom {
                 code_printer.print_jump_label(&func_label).unwrap();
             }
@@ -726,12 +727,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     // returns the size of the saved context
     // rd: register for holding the new domain
     fn synchronous_save_context<T>(&mut self, args_count: usize, rd: &[RegId], rs: &[RegId],
-            save_s: bool, dom_boundary: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+            reserved_stack_space: usize, save_s: bool, dom_boundary: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // TODO: for now everything is done inline, but we might want to consider gathering all these in one place for smaller code size
         // TODO: more CSRs and CCSRs in the domain scope
         let arg_reg_lo = GPR_IDX_A0;
         let arg_reg_hi = GPR_IDX_A0 + args_count;
-        let mut neg_stack_offset = 0;
+        let mut neg_stack_offset = reserved_stack_space;
 
         let mut tmp_reg = GPR_IDX_T0;
         while rd.contains(&tmp_reg) || rs.contains(&tmp_reg) || tmp_reg == GPR_IDX_SP || matches!(self.gpr_states[tmp_reg], GPRState::Reserved) {
@@ -775,13 +776,16 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
     fn synchronous_restore_context<T>(&mut self, args_count: usize, rd: &[RegId], rs: &[RegId],
-            save_s: bool, dom_boundary: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+            reserved_stack_space: usize, save_s: bool, dom_boundary: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         let mut neg_stack_offset = 0;
 
         // load sp back
         code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
         // restore the original cscratch
 
+        if reserved_stack_space != 0 {
+            code_printer.print_incoffsetimm(GPR_IDX_SP, GPR_IDX_SP, -(reserved_stack_space as isize)).unwrap();
+        }
         let save_gpr_iter = get_save_gpr_iter(dom_boundary);
         for gpr in save_gpr_iter {
             assert!(!rd.contains(gpr) && !rs.contains(gpr));
@@ -810,7 +814,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
     // only for synchronous return
-    fn domreturn_save_context<T>(&mut self, rs1: RegId, rs2: RegId, save_s: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+    fn domreturn_save_context<T>(&mut self, rs1: RegId, rs2: RegId, reserved_stack_space: usize, save_s: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // TODO: support return value here
         // store stack pointer on cscratch
         let mut tmp_reg = 1;
@@ -823,7 +827,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         code_printer.print_lcc(tmp_reg, GPR_IDX_SP, LccField::End as u64).unwrap();
         code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, tmp_reg).unwrap();
 
-        self.synchronous_save_context(0, &[], &[rs1, rs2], save_s, true, code_printer);
+        self.synchronous_save_context(0, &[], &[rs1, rs2], reserved_stack_space, save_s, true, code_printer);
     }
 
     // write_through: write back directly to memory, ignoring the registers
@@ -1316,10 +1320,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         // to hold the renewed domain
 
                         self.gpr_all_clobbered = true;
-                        self.synchronous_save_context(args_count, &[reg_id], &[r_dom], 
+                        self.synchronous_save_context(args_count, &[reg_id], &[r_dom], 0,
                             matches!(intrinsic, IntrinsicFunction::DomCallSaveS), false, code_printer);
                         code_printer.print_domcall(reg_id, r_dom).unwrap();
-                        self.synchronous_restore_context(args_count, &[reg_id], &[r_dom],
+                        self.synchronous_restore_context(args_count, &[reg_id], &[r_dom], 0,
                         matches!(intrinsic, IntrinsicFunction::DomCallSaveS), false, code_printer);
                     }
                     IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
@@ -1338,10 +1342,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
                             code_printer.print_domreturn(r_ret_dom, rs2, rs3).unwrap();
                         } else {
+                            let smode_dom = matches!(intrinsic, IntrinsicFunction::DomReturnSaveS);
                             self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
                             drop(ret_dom_ref);
                             self.unpin_gpr(rs2);
-                            self.domreturn_save_context(r_ret_dom, rs2, matches!(intrinsic, IntrinsicFunction::DomReturnSaveS), code_printer);
+                            self.domreturn_save_context(r_ret_dom, rs2, if smode_dom { SMODE_CONTEXT_SIZE } else { 0 }, smode_dom, code_printer);
                             
                             code_printer.print_domreturn(r_ret_dom, rs2, GPR_IDX_X0).unwrap();
                         }

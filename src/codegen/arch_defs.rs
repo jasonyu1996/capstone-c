@@ -27,6 +27,7 @@ pub const DOM_SAVE_CCSR_SMODE : &'static [&'static str] = &["cepc", "cmmu"];
 pub const DOM_SAVE_CSR : &'static [&'static str] = &["mcause", "mtval"]; // "mtinst"];
 pub const DOM_SAVE_CSR_SMODE : &'static [&'static str] = &["stvec", "scause", "stval",
     "sepc", "sscratch", "satp", "offsetmmu"];
+pub const SMODE_CONTEXT_SIZE : usize = 8 * 32;
 
 pub fn get_dom_save_context(save_s: bool) -> (Box<dyn Iterator<Item=&'static &'static str>>, Box<dyn Iterator<Item=&'static &'static str>>) {
     if save_s {
