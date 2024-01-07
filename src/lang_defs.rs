@@ -395,7 +395,8 @@ impl IntrinsicFunction {
                     match (&arg_types[0], &arg_types[1], &arg_types[2]) {
                         // TODO: add dedicated type for sealed-return capability
                         (IRDAGNodeVType::DomRet, IRDAGNodeVType::Int, IRDAGNodeVType::Int) 
-                        | (IRDAGNodeVType::DomAsync, IRDAGNodeVType::Int, IRDAGNodeVType::Int) => Some(IRDAGNodeVType::Void),
+                        | (IRDAGNodeVType::DomAsync, IRDAGNodeVType::Int, IRDAGNodeVType::Int)
+                        | (IRDAGNodeVType::Dom, IRDAGNodeVType::Int, IRDAGNodeVType::Int) => Some(IRDAGNodeVType::Void),
                         _ => None
                     }
                 }

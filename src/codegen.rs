@@ -1345,18 +1345,27 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         matches!(intrinsic, IntrinsicFunction::IHDomCallSaveS), false, code_printer);
                     }
                     IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
-                        // TODO: add separate synchronous and asynchronous versions
                         let ret_dom_ref = arguments[0].to_word().unwrap().borrow();
                         let is_async = matches!(ret_dom_ref.vtype, IRDAGNodeVType::DomAsync);
                         let r_ret_dom = self.prepare_source_reg(&*ret_dom_ref, code_printer);
                         let rs2 = self.prepare_source_reg(&*arguments[1].to_word().unwrap().borrow(), code_printer);
 
+                        // FIXME: async return always needs to conform to the
+                        // ABI correctly
                         if is_async {
                             let rs3 = self.prepare_source_reg(&*arguments[2].to_word().unwrap().borrow(), code_printer);
+                            let rtmp = self.assign_reg(ANON_IRDAG_NODE_ID, self.globals.target_conf.register_width, code_printer);
+
                             self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
                             drop(ret_dom_ref);
                             self.unpin_gpr(rs2);
                             self.unpin_gpr(rs3);
+                            self.unpin_gpr(rtmp);
+
+                            code_printer.print_lcc(rtmp, GPR_IDX_SP, LccField::End as u64).unwrap();
+                            code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, rtmp).unwrap();
+                            Self::store(GPR_IDX_GP, GPR_IDX_SP, -16, self.globals.target_conf.register_width, code_printer);
+                            code_printer.print_ccsrrw(GPR_IDX_X0, GPR_IDX_SP, "cscratch").unwrap();
 
                             code_printer.print_domreturn(r_ret_dom, rs2, rs3).unwrap();
                         } else {
