@@ -320,6 +320,8 @@ pub enum IntrinsicFunction {
     Tighten,
     DomCall,
     DomCallSaveS,
+    IHDomCall,
+    IHDomCallSaveS,
     DomReturn,
     DomReturnSaveS,
     Capfield,
@@ -385,6 +387,7 @@ impl IntrinsicFunction {
                     None
                 }
             }
+            IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS => Some(IRDAGNodeVType::Void),
             IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
                 if arg_types.len() < 3 {
                     None
@@ -441,7 +444,8 @@ impl IntrinsicFunction {
                 } else {
                     vec![]
                 },
-            IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS =>
+            IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS
+            | IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS => 
                 arg_types.into_iter().enumerate().filter_map(|(idx, ty)| 
                 // if ty.is_linear() {
                     Some(idx)).collect(),
@@ -466,6 +470,7 @@ impl IntrinsicFunction {
             | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield 
             | IntrinsicFunction::Split => false,
             IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS
+            | IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS
             | IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => true
         }
     }
@@ -479,6 +484,8 @@ const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__tighten", IntrinsicFunction::Tighten),
     ("__domcall", IntrinsicFunction::DomCall),
     ("__domcallsaves", IntrinsicFunction::DomCallSaveS),
+    ("__ihdomcall", IntrinsicFunction::IHDomCall),
+    ("__ihdomcallsaves", IntrinsicFunction::IHDomCallSaveS),
     ("__domreturn", IntrinsicFunction::DomReturn),
     ("__domreturnsaves", IntrinsicFunction::DomReturnSaveS),
     ("__capfield", IntrinsicFunction::Capfield),

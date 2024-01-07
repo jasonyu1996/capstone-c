@@ -1326,6 +1326,24 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         self.synchronous_restore_context(args_count, &[reg_id], &[r_dom], 0,
                         matches!(intrinsic, IntrinsicFunction::DomCallSaveS), false, code_printer);
                     }
+                    IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS => {
+                        let args_count = arguments.len();
+                        for (arg_idx, arg) in arguments.iter().enumerate() {
+                            self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(), 
+                                GPR_PARAMS[arg_idx], code_printer);
+                        }
+
+                        for (arg_idx, arg) in arguments.iter().enumerate() {
+                            self.destruct_temp_value(GPR_PARAMS[arg_idx], &*arg.to_word().unwrap().borrow());
+                        }
+
+                        self.gpr_all_clobbered = true;
+                        self.synchronous_save_context(args_count, &[], &[], 0,
+                            matches!(intrinsic, IntrinsicFunction::IHDomCallSaveS), false, code_printer);
+                        code_printer.print_domcall(GPR_IDX_X0, GPR_IDX_X0).unwrap();
+                        self.synchronous_restore_context(args_count, &[], &[], 0,
+                        matches!(intrinsic, IntrinsicFunction::IHDomCallSaveS), false, code_printer);
+                    }
                     IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
                         // TODO: add separate synchronous and asynchronous versions
                         let ret_dom_ref = arguments[0].to_word().unwrap().borrow();
