@@ -382,12 +382,12 @@ impl IntrinsicFunction {
                 if arg_types.len() < 1 {
                     None
                 } else if matches!(arg_types[0], IRDAGNodeVType::Dom) {
-                    Some(IRDAGNodeVType::Dom)
+                    Some(IRDAGNodeVType::Dom) /* TODO: accommodate return value */
                 } else {
                     None
                 }
             }
-            IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS => Some(IRDAGNodeVType::Void),
+            IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS => Some(IRDAGNodeVType::LinPtr(CaplanType::Int)),
             IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
                 if arg_types.len() < 3 {
                     None

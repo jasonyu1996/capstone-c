@@ -814,7 +814,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     }
 
     // only for synchronous return
-    fn domreturn_save_context<T>(&mut self, rs1: RegId, rs2: RegId, reserved_stack_space: usize, save_s: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+    fn domreturn_save_context<T>(&mut self, rs1: RegId, rs2: RegId, reserved_stack_space: usize, save_s: bool, has_retval: bool, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // TODO: support return value here
         // store stack pointer on cscratch
         let mut tmp_reg = 1;
@@ -827,7 +827,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         code_printer.print_lcc(tmp_reg, GPR_IDX_SP, LccField::End as u64).unwrap();
         code_printer.print_scc(GPR_IDX_SP, GPR_IDX_SP, tmp_reg).unwrap();
 
-        self.synchronous_save_context(0, &[], &[rs1, rs2], reserved_stack_space, save_s, true, code_printer);
+        if has_retval {
+            self.synchronous_save_context(0, &[], &[rs1, rs2, GPR_IDX_A0], reserved_stack_space, save_s, true, code_printer);
+        } else {
+            self.synchronous_save_context(0, &[], &[rs1, rs2], reserved_stack_space, save_s, true, code_printer);
+        }
     }
 
     // write_through: write back directly to memory, ignoring the registers
@@ -1333,15 +1337,28 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 GPR_PARAMS[arg_idx], code_printer);
                         }
 
+                        if matches!(self.gpr_states[GPR_IDX_A0], GPRState::Free) {
+                            self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, node.vtype.size());
+                            self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
+                            self.pin_gpr(GPR_IDX_A0); // reserve the register for receiving the return value
+                        }
+
                         for (arg_idx, arg) in arguments.iter().enumerate() {
                             self.destruct_temp_value(GPR_PARAMS[arg_idx], &*arg.to_word().unwrap().borrow());
                         }
 
+                        if matches!(self.gpr_states[GPR_IDX_A0], GPRState::Free) {
+                            self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, node.vtype.size());
+                            self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
+                        }
+
+                        self.unpin_gpr(GPR_IDX_A0);
+
                         self.gpr_all_clobbered = true;
-                        self.synchronous_save_context(args_count, &[], &[], 0,
+                        self.synchronous_save_context(args_count, &[GPR_IDX_A0], &[], 0,
                             matches!(intrinsic, IntrinsicFunction::IHDomCallSaveS), false, code_printer);
                         code_printer.print_domcall(GPR_IDX_X0, GPR_IDX_X0).unwrap();
-                        self.synchronous_restore_context(args_count, &[], &[], 0,
+                        self.synchronous_restore_context(args_count, &[GPR_IDX_A0], &[], 0,
                         matches!(intrinsic, IntrinsicFunction::IHDomCallSaveS), false, code_printer);
                     }
                     IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => {
@@ -1349,6 +1366,17 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         let is_async = matches!(ret_dom_ref.vtype, IRDAGNodeVType::DomAsync);
                         let r_ret_dom = self.prepare_source_reg(&*ret_dom_ref, code_printer);
                         let rs2 = self.prepare_source_reg(&*arguments[1].to_word().unwrap().borrow(), code_printer);
+                        let has_retval = if arguments.len() >= 4 {
+                            let r = self.prepare_source_reg(&arguments[3].to_word().unwrap().borrow(), code_printer);
+                            if r != GPR_IDX_A0 {
+                                code_printer.print_movc(GPR_IDX_A0, r).unwrap();
+                                self.unpin_gpr(r);
+                                self.pin_gpr(GPR_IDX_A0);
+                            }
+                            true
+                        } else {
+                            false
+                        };
 
                         // FIXME: async return always needs to conform to the
                         // ABI correctly
@@ -1373,7 +1401,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
                             drop(ret_dom_ref);
                             self.unpin_gpr(rs2);
-                            self.domreturn_save_context(r_ret_dom, rs2, if smode_dom { SMODE_CONTEXT_SIZE } else { 0 }, smode_dom, code_printer);
+                            self.domreturn_save_context(r_ret_dom, rs2, 
+                                if smode_dom { SMODE_CONTEXT_SIZE } else { 0 }, smode_dom,
+                                has_retval, code_printer);
                             
                             code_printer.print_domreturn(r_ret_dom, rs2, GPR_IDX_X0).unwrap();
                         }
