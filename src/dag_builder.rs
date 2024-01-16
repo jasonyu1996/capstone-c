@@ -1237,6 +1237,11 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                     self.new_int_const(u64::from_str_radix(integer.number.as_ref(), radix).unwrap())
                 ));
             }
+            Constant::Character(char) => {
+                self.last_temp_res = Some(IRDAGNodeTempResult::Word(
+                    self.new_int_const(char.as_bytes()[0] as u64)
+                ));
+            }
             _ => {
                 panic!("Unsupported constant type {:?}", constant);
             }
