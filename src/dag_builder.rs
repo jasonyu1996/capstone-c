@@ -1238,8 +1238,10 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 ));
             }
             Constant::Character(char) => {
+                let chr = char.chars().nth(1).unwrap();
+                assert!(chr.is_ascii(), "Only ASCII characters are supported");
                 self.last_temp_res = Some(IRDAGNodeTempResult::Word(
-                    self.new_int_const(char.as_bytes()[0] as u64)
+                    self.new_int_const(chr as u64)
                 ));
             }
             _ => {
