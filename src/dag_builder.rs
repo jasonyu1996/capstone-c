@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::lang::{CaplanParam, CaplanGlobalContext};
 use crate::lang_defs::{CaplanType, try_modify_type_with_attr, lookup_intrinsic, IntrinsicFunction};
-use crate::utils::{GCed, new_gced};
+use crate::utils::{GCed, new_gced, char_literal_to_ascii};
 use crate::dag::{*, self};
 
 use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator, AsmStatement, IntegerBase, Attribute, Extension};
@@ -1238,8 +1238,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 ));
             }
             Constant::Character(char) => {
-                let chr = char.chars().nth(1).unwrap();
-                assert!(chr.is_ascii(), "Only ASCII characters are supported");
+                let chr = char_literal_to_ascii(&char[1..char.len() - 1]).expect("Invalid character literal");
                 self.last_temp_res = Some(IRDAGNodeTempResult::Word(
                     self.new_int_const(chr as u64)
                 ));
