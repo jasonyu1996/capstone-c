@@ -325,6 +325,7 @@ pub enum IntrinsicFunction {
     DomReturn,
     DomReturnSaveS,
     Capfield,
+    SetCursor,
     Split
 }
 
@@ -410,6 +411,15 @@ impl IntrinsicFunction {
                     None
                 }
             }
+            IntrinsicFunction::SetCursor => {
+                if arg_types.len() < 2 {
+                    None
+                } else if matches!(arg_types[1], IRDAGNodeVType::Int) && arg_types[0].is_capability() {
+                    Some(arg_types[0].clone())
+                } else {
+                    None
+                }
+            }
             IntrinsicFunction::Split => {
                 if arg_types.len() < 2 {
                     None
@@ -439,7 +449,7 @@ impl IntrinsicFunction {
             IntrinsicFunction::Revoke => vec![0],
             IntrinsicFunction::Seal => vec![0],
             IntrinsicFunction::Delin => vec![0],
-            IntrinsicFunction::Tighten =>
+            IntrinsicFunction::Tighten | IntrinsicFunction::SetCursor =>
                 if arg_types[0].is_linear() {
                     vec![0]
                 } else {
@@ -469,7 +479,7 @@ impl IntrinsicFunction {
             IntrinsicFunction::Mrev | IntrinsicFunction::Revoke
             | IntrinsicFunction::Seal | IntrinsicFunction::Delin 
             | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield 
-            | IntrinsicFunction::Split => false,
+            | IntrinsicFunction::Split | IntrinsicFunction::SetCursor => false,
             IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS
             | IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS
             | IntrinsicFunction::DomReturn | IntrinsicFunction::DomReturnSaveS => true
@@ -490,6 +500,7 @@ const INTRINSIC_FUNCS : &'static [(&'static str, IntrinsicFunction)] = &[
     ("__domreturn", IntrinsicFunction::DomReturn),
     ("__domreturnsaves", IntrinsicFunction::DomReturnSaveS),
     ("__capfield", IntrinsicFunction::Capfield),
+    ("__setcursor", IntrinsicFunction::SetCursor),
     ("__split", IntrinsicFunction::Split)
 ];
 
@@ -558,6 +569,12 @@ pub const FUNCTION_ATTRIBUTES : &'static [FunctionAttribute<'static>] = &[
         name: "domreentryrestores",
         apply: &|func| {
             func.reentry_type = CaplanReentryType::SMode;
+        }
+    },
+    FunctionAttribute {
+        name: "dominit",
+        apply: &|func| {
+            func.is_init = true;
         }
     },
     FunctionAttribute {

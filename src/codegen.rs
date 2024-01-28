@@ -231,31 +231,37 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         let cross_dom = matches!(func.entry_type, CaplanEntryType::CrossDom);
         let func_label = self.gen_func_label(&func.name);
 
-        if func.is_naked {
+        if func.is_init {
             code_printer.print_global_symb(&func_label).unwrap();
             code_printer.print_label(&func_label).unwrap();
-            return;
-        }
 
-        if func.reentry_type.needs_reentry() {
-            // generates a stub that sets up the stack for re-entry into a
-            // domain
-            code_printer.print_label(&format!("__{}_reentry", func.name)).unwrap();
-            let save_s = matches!(func.reentry_type, CaplanReentryType::SMode);
-            self.synchronous_restore_context(0, &[], &[], if save_s { SMODE_CONTEXT_SIZE } else { 0 },
-                save_s, true, code_printer);
+        } else {
+            if func.is_naked {
+                code_printer.print_global_symb(&func_label).unwrap();
+                code_printer.print_label(&func_label).unwrap();
+                return;
+            }
+
+            if func.reentry_type.needs_reentry() {
+                // generates a stub that sets up the stack for re-entry into a
+                // domain
+                code_printer.print_label(&format!("__{}_reentry", func.name)).unwrap();
+                let save_s = matches!(func.reentry_type, CaplanReentryType::SMode);
+                self.synchronous_restore_context(0, &[], &[], if save_s { SMODE_CONTEXT_SIZE } else { 0 },
+                    save_s, true, code_printer);
+                if cross_dom {
+                    code_printer.print_jump_label(&func_label).unwrap();
+                }
+            }
+
             if cross_dom {
-                code_printer.print_jump_label(&func_label).unwrap();
+                code_printer.print_global_symb("_start").unwrap();
+                code_printer.print_label("_start").unwrap();
+                code_printer.print_label(&format!("__{}_entry", func.name)).unwrap();
             }
         }
 
-        if cross_dom {
-            code_printer.print_global_symb("_start").unwrap();
-            code_printer.print_label("_start").unwrap();
-            code_printer.print_label(&format!("__{}_entry", func.name)).unwrap();
-        }
-
-        if cross_dom {
+        if cross_dom || func.is_init {
             // sp = chunk of initial mem to allocate from
             code_printer.print_ccsrrw(GPR_IDX_SP, GPR_IDX_X0, "cscratch").unwrap();
             // t0 = base, t1 = end
@@ -292,67 +298,74 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             code_printer.print_delin(GPR_IDX_SP).unwrap();
         }
 
-        code_printer.print_global_symb(&func_label).unwrap();
-        code_printer.print_label(&func_label).unwrap();
+        if !func.is_init {
+            code_printer.print_global_symb(&func_label).unwrap();
+            code_printer.print_label(&func_label).unwrap();
 
-        // now we know how much stack space is needed
-        let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log); // this makes sure that all stack frames are aligned
+            // now we know how much stack space is needed
+            let mut stack_frame_size = align_up_to(self.stack_frame.size(), self.globals.target_conf.min_alignment_log); // this makes sure that all stack frames are aligned
 
-        if cross_dom {
-            self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -(stack_frame_size as isize), code_printer);
-        } else {
-            let clobbered_to_save : Vec<_> = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| (self.gpr_all_clobbered || self.gpr_clobbered[**idx])
-                && !matches!(self.gpr_states[**idx], GPRState::Reserved)).collect();
-            self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_to_save.len()) as isize), code_printer);
+            if cross_dom {
+                self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -(stack_frame_size as isize), code_printer);
+            } else {
+                let clobbered_to_save : Vec<_> = GPR_CALLEE_SAVED_LIST.iter().filter(|idx| (self.gpr_all_clobbered || self.gpr_clobbered[**idx])
+                    && !matches!(self.gpr_states[**idx], GPRState::Reserved)).collect();
+                self.pointer_offset_imm(GPR_IDX_SP, GPR_IDX_SP, -((stack_frame_size + self.globals.target_conf.min_alignment * clobbered_to_save.len()) as isize), code_printer);
 
 
-            for reg_id in clobbered_to_save.into_iter() {
-                // clobbered callee-saved registers need saving here
-                assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
-                Self::store(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
-                stack_frame_size += self.globals.target_conf.min_alignment;
+                for reg_id in clobbered_to_save.into_iter() {
+                    // clobbered callee-saved registers need saving here
+                    assert!(!matches!(self.gpr_states[*reg_id], GPRState::Reserved), "Reserved GPR should not be considered as clobbered");
+                    Self::store(*reg_id, GPR_IDX_SP, stack_frame_size as isize, self.globals.target_conf.min_alignment, code_printer);
+                    stack_frame_size += self.globals.target_conf.min_alignment;
+                }
             }
-        }
 
-        assert!(!cross_dom || !func.params.is_empty(), "A domain entry function must have at least one argument");
+            assert!(!cross_dom || !func.params.is_empty(), "A domain entry function must have at least one argument");
 
-        // shift params to stack
-        for (param_idx, param) in func.params.iter().enumerate() {
-            let named_mem_loc = IRDAGNamedMemLoc {
-                var_name: param.name.clone(),
-                offset: 0
-            };
-            let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
-            if cross_dom || func.reentry_type.needs_reentry() {
-                if param_idx == 0 {
-                    // the first argument of a domain entry function holds the sealed-return cap
-                    assert!(param.ty.is_return_dom(), "Arg 0 of domain entry function must be of return domain type");
-                    Self::store(GPR_IDX_RA,
-                        GPR_IDX_SP,
-                        self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
-                        self.vars[var_id].ty.size(&self.globals.target_conf),
-                        code_printer
-                    );
+            // shift params to stack
+            for (param_idx, param) in func.params.iter().enumerate() {
+                let named_mem_loc = IRDAGNamedMemLoc {
+                    var_name: param.name.clone(),
+                    offset: 0
+                };
+                let var_id = *self.vars_to_ids.get(&named_mem_loc).unwrap();
+                if cross_dom || func.reentry_type.needs_reentry() {
+                    if param_idx == 0 {
+                        // the first argument of a domain entry function holds the sealed-return cap
+                        assert!(param.ty.is_return_dom(), "Arg 0 of domain entry function must be of return domain type");
+                        Self::store(GPR_IDX_RA,
+                            GPR_IDX_SP,
+                            self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                            self.vars[var_id].ty.size(&self.globals.target_conf),
+                            code_printer
+                        );
+                    } else {
+                        Self::store(GPR_PARAMS[param_idx - 1],
+                            GPR_IDX_SP,
+                            self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
+                            self.vars[var_id].ty.size(&self.globals.target_conf),
+                            code_printer
+                        );
+                    }
                 } else {
-                    Self::store(GPR_PARAMS[param_idx - 1],
+                    Self::store(GPR_PARAMS[param_idx],
                         GPR_IDX_SP,
                         self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
                         self.vars[var_id].ty.size(&self.globals.target_conf),
                         code_printer
                     );
                 }
-            } else {
-                Self::store(GPR_PARAMS[param_idx],
-                    GPR_IDX_SP,
-                    self.stack_frame.stack_slot_offset(self.vars[var_id].state.stack_slot) as isize,
-                    self.vars[var_id].ty.size(&self.globals.target_conf),
-                    code_printer
-                );
             }
         }
     }
 
     fn generate_epilogue<T>(&mut self, func: &CaplanFunction, _ctx: &GlobalCodeGenContext, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
+        if func.is_init {
+            code_printer.print_ret().unwrap();
+            return;
+        }
+
         if func.is_naked {
             return;
         }
@@ -1425,6 +1438,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             panic!("Capfield arg1 must be a const literal");
                         }
                     }
+                    IntrinsicFunction::SetCursor => {
+                        let rs1 = self.prepare_source_reg(&*arguments[0].to_word().unwrap().borrow(), code_printer);
+                        let rs2 = self.prepare_source_reg(&*arguments[1].to_word().unwrap().borrow(), code_printer);
+                        self.unpin_gpr(rs1);
+                        self.unpin_gpr(rs2);
+                        let rd = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
+                        code_printer.print_scc(rd, rs1, rs2).unwrap();
+                    }
                     IntrinsicFunction::Split => {
                         // let rs1_lval = self.argument
                         let a1_lval = arguments[0].to_lval().unwrap();
@@ -1620,94 +1641,97 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         let mut prologue_code_printer: CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new(), self.globals.target_conf.clone());
         let mut main_code_printer : CodePrinter<Vec<u8>> = CodePrinter::new(Vec::new(), self.globals.target_conf.clone());
 
-        // for all variables that ever appear, allocate one stack slot
-        // we handle parameters in the same way
-        for param in func.params.iter() {
-            let var_id = self.vars.len();
-            let mem_loc = IRDAGNamedMemLoc {
-                var_name: param.name.clone(),
-                offset: 0
-            }; // TODO: param's can only be 8 bytes
-            self.vars_to_ids.insert(mem_loc, var_id);
-            // TODO: passing params through stack is not supported
-            eprintln!("Allocated slot {} to param {}", self.stack_frame.stack_slots.len(), param.name);
-            let param_size = param.ty.size(&self.globals.target_conf);
-            assert!(param_size == 8 || param_size == 16, "Each parameter must fit in a register");
-            let stack_slot = self.stack_frame.allocate_stack_slot(param_size);
-            self.vars.push(VarInfo {
-                state: VarState {
-                    loc: VarLocation::StackSlot,
-                    stack_slot: stack_slot,
-                    dirty: false
-                },
-                ty: param.ty.clone()
-            });
-        }
-
-        for (local_name, local_type) in func.locals.iter() {
-            let align_log = if local_type.alignment(&self.globals.target_conf) == 8 { 3 } else { 4 };
-            let base_offset = align_up_to(self.stack_frame.tot_stack_slot_size, align_log);
-            local_type.visit_offset(&mut|offset, ty| {
-                let mem_loc = IRDAGNamedMemLoc {
-                    var_name: local_name.clone(),
-                    offset: offset
-                };
+        // ignore body of domain initialisation function
+        if !func.is_init {
+            // for all variables that ever appear, allocate one stack slot
+            // we handle parameters in the same way
+            for param in func.params.iter() {
                 let var_id = self.vars.len();
+                let mem_loc = IRDAGNamedMemLoc {
+                    var_name: param.name.clone(),
+                    offset: 0
+                }; // TODO: param's can only be 8 bytes
                 self.vars_to_ids.insert(mem_loc, var_id);
-                let stack_slot = self.stack_frame.allocate_stack_slot_specified_offset(offset + base_offset, ty.size(&self.globals.target_conf));
+                // TODO: passing params through stack is not supported
+                eprintln!("Allocated slot {} to param {}", self.stack_frame.stack_slots.len(), param.name);
+                let param_size = param.ty.size(&self.globals.target_conf);
+                assert!(param_size == 8 || param_size == 16, "Each parameter must fit in a register");
+                let stack_slot = self.stack_frame.allocate_stack_slot(param_size);
                 self.vars.push(VarInfo {
                     state: VarState {
                         loc: VarLocation::StackSlot,
                         stack_slot: stack_slot,
                         dirty: false
                     },
-                    ty: ty
+                    ty: param.ty.clone()
                 });
-               
-            }, 0, &self.globals.target_conf);
-        }
+            }
 
-        let mut stack_bottom : Vec<GCed<IRDAGNode>> = Vec::new();
-        // for each basic block, do a topo sort
-        for (blk_id, block) in func.dag.blocks.iter().enumerate() {
-            if block.is_empty() {
-                continue;
+            for (local_name, local_type) in func.locals.iter() {
+                let align_log = if local_type.alignment(&self.globals.target_conf) == 8 { 3 } else { 4 };
+                let base_offset = align_up_to(self.stack_frame.tot_stack_slot_size, align_log);
+                local_type.visit_offset(&mut|offset, ty| {
+                    let mem_loc = IRDAGNamedMemLoc {
+                        var_name: local_name.clone(),
+                        offset: offset
+                    };
+                    let var_id = self.vars.len();
+                    self.vars_to_ids.insert(mem_loc, var_id);
+                    let stack_slot = self.stack_frame.allocate_stack_slot_specified_offset(offset + base_offset, ty.size(&self.globals.target_conf));
+                    self.vars.push(VarInfo {
+                        state: VarState {
+                            loc: VarLocation::StackSlot,
+                            stack_slot: stack_slot,
+                            dirty: false
+                        },
+                        ty: ty
+                    });
+                
+                }, 0, &self.globals.target_conf);
             }
-            eprintln!("Codegen for basic block {}", blk_id);
-            self.codegen_block_reset(&func.name, block, &mut main_code_printer);
-            main_code_printer.print_label(&self.gen_func_block_label(&func.name, blk_id)).unwrap();
-            assert!(self.op_topo_stack.is_empty());
-            for node in block.dag.iter() {
-                let node_ref = node.borrow();
-                if node_ref.dep_count == 0 && !node_ref.cons.is_control_flow() {
-                    self.op_topo_stack.push(node.clone());
+
+            let mut stack_bottom : Vec<GCed<IRDAGNode>> = Vec::new();
+            // for each basic block, do a topo sort
+            for (blk_id, block) in func.dag.blocks.iter().enumerate() {
+                if block.is_empty() {
+                    continue;
                 }
-            }
-            while let Some(node) = self.op_topo_stack.pop() {
-                let mut node_ref = node.borrow_mut();
-                self.generate_node(&func.name, &*node_ref, &mut main_code_printer);
-                while let Some(rev_dep) = node_ref.rev_deps.pop() {
-                    let mut rev_dep_m = rev_dep.borrow_mut();
-                    rev_dep_m.dep_count -= 1;
-                    if rev_dep_m.dep_count == 0 && !rev_dep_m.cons.is_control_flow() {
-                        if rev_dep_m.destructs.is_empty() {
-                            self.op_topo_stack.push(rev_dep.clone());
-                        } else {
-                            stack_bottom.push(rev_dep.clone());
-                        }
+                eprintln!("Codegen for basic block {}", blk_id);
+                self.codegen_block_reset(&func.name, block, &mut main_code_printer);
+                main_code_printer.print_label(&self.gen_func_block_label(&func.name, blk_id)).unwrap();
+                assert!(self.op_topo_stack.is_empty());
+                for node in block.dag.iter() {
+                    let node_ref = node.borrow();
+                    if node_ref.dep_count == 0 && !node_ref.cons.is_control_flow() {
+                        self.op_topo_stack.push(node.clone());
                     }
                 }
-                if self.op_topo_stack.is_empty() {
-                    self.op_topo_stack.append(&mut stack_bottom);
+                while let Some(node) = self.op_topo_stack.pop() {
+                    let mut node_ref = node.borrow_mut();
+                    self.generate_node(&func.name, &*node_ref, &mut main_code_printer);
+                    while let Some(rev_dep) = node_ref.rev_deps.pop() {
+                        let mut rev_dep_m = rev_dep.borrow_mut();
+                        rev_dep_m.dep_count -= 1;
+                        if rev_dep_m.dep_count == 0 && !rev_dep_m.cons.is_control_flow() {
+                            if rev_dep_m.destructs.is_empty() {
+                                self.op_topo_stack.push(rev_dep.clone());
+                            } else {
+                                stack_bottom.push(rev_dep.clone());
+                            }
+                        }
+                    }
+                    if self.op_topo_stack.is_empty() {
+                        self.op_topo_stack.append(&mut stack_bottom);
+                    }
                 }
+                // check that all nodes have dep_count = 0
+                for node in block.dag.iter() {
+                    let node_ref = node.borrow();
+                    assert!(node_ref.dep_count == 0, "Node still not processed = {}{:?} (dep = {})",
+                        node_ref.id, node_ref.cons, node_ref.dep_count);
+                }
+                self.codegen_block_end_cleanup(&func.name, block, &mut main_code_printer);
             }
-            // check that all nodes have dep_count = 0
-            for node in block.dag.iter() {
-                let node_ref = node.borrow();
-                assert!(node_ref.dep_count == 0, "Node still not processed = {}{:?} (dep = {})",
-                    node_ref.id, node_ref.cons, node_ref.dep_count);
-            }
-            self.codegen_block_end_cleanup(&func.name, block, &mut main_code_printer);
         }
         
         self.generate_prologue(&func, ctx, &mut prologue_code_printer);

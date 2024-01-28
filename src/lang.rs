@@ -79,6 +79,7 @@ pub struct CaplanFunction {
     pub name: String,
     pub entry_type: CaplanEntryType,
     pub reentry_type: CaplanReentryType,
+    pub is_init: bool, /* is this function a domain initialisation function? */
     pub is_naked: bool,
     pub ret_type: CaplanType,
     pub params: Vec<CaplanParam>,
@@ -121,6 +122,7 @@ impl<'ctx> CaplanFunctionBuilder<'ctx> {
                 entry_type: CaplanEntryType::default(),
                 ret_type: CaplanType::Int, // default is int
                 reentry_type: CaplanReentryType::default(),
+                is_init: false,
                 is_naked: false,
                 params: Vec::new(),
                 dag: IRDAG::new(),

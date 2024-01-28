@@ -1151,7 +1151,6 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         } else if let Some(intrinsic) = lookup_intrinsic(&identifier.name) {
             self.last_func_ident = Some(IRDAGFuncIdent::Intrinsic(intrinsic));
         } else {
-            assert!(self.last_func_ident.is_none());
             self.last_func_ident = Some(IRDAGFuncIdent::Name(identifier.name.clone()));
             self.last_temp_res = Some(IRDAGNodeTempResult::Word(
                 self.new_local_symbol(identifier.name.clone())
