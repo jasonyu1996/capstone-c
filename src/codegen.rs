@@ -1167,7 +1167,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             Self::load(rd, rd, 
                                 (named_mem_loc.offset + self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot)) as isize, res_size, code_printer);
                         } else {
-                            let rd = self.assign_reg(node.id, res_size, code_printer);
+                            let rd = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
                             self.unpin_gpr(r_offset);
                             self.get_global_var_pointer(rd, &named_mem_loc.var_name, code_printer);
                             self.pointer_offset(rd, rd, r_offset, code_printer);
