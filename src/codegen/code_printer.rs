@@ -37,7 +37,7 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("ctvec", "0x000"),
     ("cih", "0x001"),
     ("cepc", "0x002"),
-    ("cmmu", "0x003"),
+    ("cpmp(ind)", "0x010 + ind"),
     ("cscratch", "0x004"),
     ("cis", "0x800"),
     ("cid", "0x801"),
