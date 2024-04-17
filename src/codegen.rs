@@ -443,6 +443,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     self.temps.get_mut(node_id).unwrap().loc = TempLocation::Nowhere;
                     self.vars[var_id].state.loc = VarLocation::StackSlot;
                     self.vars[var_id].state.dirty = false;
+
+                    assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
                     self.gpr_states[reg_id] = GPRState::Free;
                     true
                 } else {
@@ -463,6 +465,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             Self::store(reg_id, GPR_IDX_SP, self.stack_frame.spill_stack_slot_offset(spill_slot) as isize, size, code_printer);
             self.stack_frame.take_spill_slots(spill_slot, node_id, size);
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::SpilledStackSlot(spill_slot, size);
+            assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
             self.gpr_states[reg_id] = GPRState::Free;
         }
     }
@@ -471,10 +474,12 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         match self.gpr_states[reg_id] {
             GPRState::Free => (),
             GPRState::Taken(node_id, _) => {
+                assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
                 let temp_state = self.temps.get_mut(&node_id).unwrap();
                 if temp_state.rev_deps_to_eval == 0 {
                     temp_state.loc = TempLocation::Nowhere;
                                         self.writeback_if_dirty(reg_id, code_printer);
+                    assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
                     self.gpr_states[reg_id] = GPRState::Free;
                 } else {
                     self.spill_reg(reg_id, node_id, code_printer);
@@ -547,6 +552,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             reg_id
         } else {
             let reg_id = self.spill_any_reg(code_printer);
+            assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
             self.gpr_states[reg_id] = GPRState::Taken(node_id, size); // initially it is pinned to prevent immediate spilling
             self.gpr_clobbered[reg_id] = true;
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(reg_id);
@@ -557,6 +563,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     fn assign_reg_with_hint<T>(&mut self, node_id: IRDAGNodeId, size: usize, hint: RegId, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
         if self.reg_is_dead(&self.gpr_states[hint]) {
             self.spill_reg_if_taken(hint, code_printer);
+            assert!(!matches!(self.gpr_states[hint], GPRState::Reserved));
             self.gpr_states[hint] = GPRState::Taken(node_id, size); // initially it is pinned to prevent immediate spilling
             self.gpr_clobbered[hint] = true;
             self.temps.get_mut(&node_id).unwrap().loc = TempLocation::GPR(hint);
@@ -569,9 +576,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     fn pin_gpr(&mut self, reg_id: RegId) {
         match self.gpr_states[reg_id] {
             GPRState::Taken(node_id, size) => {
+                assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
                 self.gpr_states[reg_id] = GPRState::Pinned(node_id, size);
             }
-            GPRState::Pinned(_, _) => (),
+            GPRState::Pinned(_, _) | GPRState::Reserved => (),
             _ => {
                 panic!("Failed to pin GPR {} in state {:?}", reg_id, self.gpr_states[reg_id]);
             }
@@ -580,8 +588,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
     fn unpin_gpr(&mut self, reg_id: RegId) {
         match self.gpr_states[reg_id] {
-            GPRState::Taken(_, _) => (),
+            GPRState::Taken(_, _) | GPRState::Reserved => (),
             GPRState::Pinned(node_id, size) => {
+                assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
                 self.gpr_states[reg_id] = GPRState::Taken(node_id, size);
             }
             _ => {
@@ -659,6 +668,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         if let Some(var_id) = temp_state.var {
             self.vars[var_id].state.loc = VarLocation::GPR(target_reg_id);
         }
+        assert!(!matches!(self.gpr_states[target_reg_id], GPRState::Reserved));
         self.gpr_states[target_reg_id] = GPRState::Pinned(source_node_id, size);
     }
 
@@ -710,7 +720,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         let temp_state = self.temps.get_mut(&source_node_id).unwrap();
         temp_state.loc = TempLocation::GPR(reg_id);
         temp_state.rev_deps_to_eval -= 1;
-        self.gpr_states[reg_id] = GPRState::Pinned(source_node_id, size);
+        if !matches!(self.gpr_states[reg_id], GPRState::Reserved) {
+            self.gpr_states[reg_id] = GPRState::Pinned(source_node_id, size);
+        }
         reg_id
     }
 
@@ -734,6 +746,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             self.vars[*var_id].state.dirty = false;
             self.vars[*var_id].state.loc = VarLocation::StackSlot;
         }
+        assert!(!matches!(self.gpr_states[reg], GPRState::Reserved));
         self.gpr_states[reg] = GPRState::Free; 
     }
 
@@ -937,7 +950,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 if let Some((node_id, _)) = self.gpr_states[gpr].get_node() {
                     self.temps.get_mut(&node_id).unwrap().loc = TempLocation::Nowhere;
                 }
-                self.gpr_states[gpr] = GPRState::Free;
+                if !matches!(self.gpr_states[gpr], GPRState::Reserved) {
+                    self.gpr_states[gpr] = GPRState::Free;
+                }
             }
             VarLocation::StackSlot => ()
         }
@@ -965,6 +980,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
 
                 if s1.borrow().vtype.is_linear() {
                     // ok the original value is garbage now
+                    assert!(!matches!(self.gpr_states[rs1], GPRState::Reserved));
                     self.gpr_states[rs1] = GPRState::Free;
                     let temp_ref = self.temps.get_mut(&s1.borrow().id).unwrap();
                     temp_ref.loc = TempLocation::Nowhere;
@@ -1133,6 +1149,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                         self.temps.get_mut(&node_id).unwrap().var = None; // disassociate with old node
                                     }
                                     self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(reg_id);
+                                    assert!(!matches!(self.gpr_states[reg_id], GPRState::Reserved));
                                     self.gpr_states[reg_id] = GPRState::Taken(node.id, node.vtype.size());
                                 }
                                 VarLocation::StackSlot => {
@@ -1542,6 +1559,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     // reset for starting unlabeled basic block
     fn codegen_block_unlabeled_reset<T>(&mut self, func_name: &str, block: &IRDAGBlock, code_printer: &mut CodePrinter<T>) where T: std::io::Write {
         // unlabeled basic block can continue using the existing temporaries
+        assert!(matches!(self.gpr_states[GPR_IDX_X0], GPRState::Reserved));
         for node in block.dag.iter() {
             let node_ref = node.borrow();
             if !self.temps.contains_key(&node_ref.id) {
@@ -1595,7 +1613,9 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         self.temps.get_mut(&node_id).unwrap().loc = TempLocation::Nowhere;
                     }
                     var_info.state.loc = VarLocation::StackSlot;
-                    self.gpr_states[reg_id] = GPRState::Free;
+                    if !matches!(self.gpr_states[reg_id], GPRState::Reserved) {
+                        self.gpr_states[reg_id] = GPRState::Free;
+                    }
                 },
                 VarLocation::StackSlot => {
                     assert!(!var_info.state.dirty);
@@ -1693,11 +1713,11 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             let mut stack_bottom : Vec<GCed<IRDAGNode>> = Vec::new();
             // for each basic block, do a topo sort
             for (blk_id, block) in func.dag.blocks.iter().enumerate() {
+                eprintln!("Codegen for basic block {}", blk_id);
+                self.codegen_block_reset(&func.name, block, &mut main_code_printer);
                 if block.is_empty() {
                     continue;
                 }
-                eprintln!("Codegen for basic block {}", blk_id);
-                self.codegen_block_reset(&func.name, block, &mut main_code_printer);
                 main_code_printer.print_label(&self.gen_func_block_label(&func.name, blk_id)).unwrap();
                 assert!(self.op_topo_stack.is_empty());
                 for node in block.dag.iter() {
