@@ -1,16 +1,25 @@
-## Capstone C compiler
+## 🛡️ Capstone C compiler
 
 This is an experimental compiler that compiles a C subset (with Capstone-specific
 extensions) to Capstone-RISC-V.
 
 ### Setting up
 
-To get started, set up the Rust development toolchain as per
-the instructions here: https://rustup.rs/
+> To build the compiler on local machine use the build script:
 
-To build the project, run the following in the project folder:
+```bash
+    ./local_build.sh
+```
+> To build the docker container (Setup docker on your machine first):
 
-    cargo build
+```bash
+    docker build -t capstone-c
+```
+> To interact with the container
+
+```bash 
+    docker run -it capstone-c bash 
+```
 
 ### Usage
 
