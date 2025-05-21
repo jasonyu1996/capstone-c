@@ -37,12 +37,13 @@ const ASM_DEFS_CAPSTONE : &'static [(&'static str, &'static str)] = &[
     ("ctvec", "0x000"),
     ("cih", "0x001"),
     ("cepc", "0x002"),
-    ("cpmp(ind)", "0x010 + ind"),
     ("cscratch", "0x004"),
+    ("catp", "0x005"),
+    ("cdc", "0x006"),
     ("cis", "0x800"),
     ("cid", "0x801"),
     ("cic", "0x802"),
-    ("offsetmmu", "0x803")
+    ("cdcb", "0x803"),
 ];
 
 pub struct CodePrinter<T> where T: Write {
@@ -199,7 +200,7 @@ impl<T> CodePrinter<T> where T: Write {
         writeln!(&mut self.out, "{}bnez {}, {}", INST_INDENT, REG_NAMES[rs], name)?;
         Ok(())
     }
-    
+
     pub fn print_call(&mut self, name: &str) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}call {}", INST_INDENT, name)?;
         Ok(())
@@ -244,22 +245,22 @@ impl<T> CodePrinter<T> where T: Write {
         self.out
     }
 
-    pub fn print_sll(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> { 
+    pub fn print_sll(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}sll {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
         Ok(())
     }
 
-    pub fn print_srl(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> { 
+    pub fn print_srl(&mut self, rd: RegId, rs1: RegId, rs2: RegId) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}srl {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs1], REG_NAMES[rs2])?;
         Ok(())
     }
 
-    pub fn print_slli(&mut self, rd: RegId, rs: RegId, imm: usize) -> Result<(), std::io::Error> { 
+    pub fn print_slli(&mut self, rd: RegId, rs: RegId, imm: usize) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}slli {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], imm)?;
         Ok(())
     }
 
-    pub fn print_srli(&mut self, rd: RegId, rs: RegId, imm: usize) -> Result<(), std::io::Error> { 
+    pub fn print_srli(&mut self, rd: RegId, rs: RegId, imm: usize) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}srli {}, {}, {}", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], imm)?;
         Ok(())
     }
@@ -276,7 +277,7 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
-    pub fn print_stc(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> { 
+    pub fn print_stc(&mut self, rs1: RegId, rs2: RegId, offset: isize) -> Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}stc({}, {}, {})", INST_INDENT, REG_NAMES[rs1], REG_NAMES[rs2], offset)?;
         Ok(())
     }
@@ -291,7 +292,7 @@ impl<T> CodePrinter<T> where T: Write {
         Ok(())
     }
 
-    pub fn print_incoffsetimm(&mut self, rd: RegId, rs: RegId, offset: isize) ->Result<(), std::io::Error> { 
+    pub fn print_incoffsetimm(&mut self, rd: RegId, rs: RegId, offset: isize) ->Result<(), std::io::Error> {
         writeln!(&mut self.out, "{}cincoffsetimm({}, {}, {})", INST_INDENT, REG_NAMES[rd], REG_NAMES[rs], offset)?;
         Ok(())
     }
