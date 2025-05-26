@@ -41,7 +41,7 @@ impl std::fmt::Debug for CaplanType {
             CaplanType::DomRet => write!(f, "DomRet"),
             CaplanType::DomAsync => write!(f, "DomAsync"),
             CaplanType::Rev(inner_type) => f.debug_tuple("Rev").field(inner_type).finish(),
-            CaplanType::Array(inner_type, n) => 
+            CaplanType::Array(inner_type, n) =>
                 f.debug_tuple("Array").field(inner_type).field(n).finish(),
             CaplanType::LinPtr(inner_type) =>
                 f.debug_tuple("LinPtr").field(inner_type).finish(),
@@ -248,7 +248,7 @@ impl CaplanType {
 pub struct TypeAttribute<'h> {
     pub name: &'h str,
     // this is intended to be called after the other parts of the type specifier has been processed
-    pub type_modifier: &'h dyn Fn(&mut CaplanType) -> bool 
+    pub type_modifier: &'h dyn Fn(&mut CaplanType) -> bool
 }
 
 macro_rules! builtin_type_attr {
@@ -349,7 +349,7 @@ impl IntrinsicFunction {
                 } else {
                     None
                 }
-                
+
             }
             IntrinsicFunction::Seal => {
                 if arg_types.len() < 1 {
@@ -395,7 +395,7 @@ impl IntrinsicFunction {
                 } else {
                     match (&arg_types[0], &arg_types[1], &arg_types[2]) {
                         // TODO: add dedicated type for sealed-return capability
-                        (IRDAGNodeVType::DomRet, IRDAGNodeVType::Int, IRDAGNodeVType::Int) 
+                        (IRDAGNodeVType::DomRet, IRDAGNodeVType::Int, IRDAGNodeVType::Int)
                         | (IRDAGNodeVType::DomAsync, IRDAGNodeVType::Int, IRDAGNodeVType::Int)
                         | (IRDAGNodeVType::Dom, IRDAGNodeVType::Int, IRDAGNodeVType::Int) => Some(IRDAGNodeVType::Void),
                         _ => None
@@ -440,7 +440,7 @@ impl IntrinsicFunction {
         match self {
             IntrinsicFunction::Split => vec![0],
             _ => vec![]
-        } 
+        }
     }
 
     pub fn get_destructives(&self, arg_types: &[IRDAGNodeVType]) -> Vec<usize> {
@@ -456,8 +456,8 @@ impl IntrinsicFunction {
                     vec![]
                 },
             IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS
-            | IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS => 
-                arg_types.into_iter().enumerate().filter_map(|(idx, ty)| 
+            | IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS =>
+                arg_types.into_iter().enumerate().filter_map(|(idx, ty)|
                 // if ty.is_linear() {
                     Some(idx)).collect(),
                 // } else {
@@ -471,14 +471,14 @@ impl IntrinsicFunction {
                 // }
             IntrinsicFunction::Capfield => vec![],
             IntrinsicFunction::Split => vec![]
-        } 
+        }
     }
 
     pub fn is_control_flow(&self) -> bool {
         match self {
             IntrinsicFunction::Mrev | IntrinsicFunction::Revoke
-            | IntrinsicFunction::Seal | IntrinsicFunction::Delin 
-            | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield 
+            | IntrinsicFunction::Seal | IntrinsicFunction::Delin
+            | IntrinsicFunction::Tighten | IntrinsicFunction::Capfield
             | IntrinsicFunction::Split | IntrinsicFunction::SetCursor => false,
             IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS
             | IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS

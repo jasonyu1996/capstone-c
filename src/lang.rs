@@ -180,7 +180,9 @@ impl<'ast> ParserVisit<'ast> for CaplanFunctionBuilder<'ast> {
     }
 
     fn visit_type_specifier(&mut self, type_specifier: &'ast TypeSpecifier, span: &'ast Span) {
-        self.func.ret_type = CaplanType::from_ast_type(type_specifier, &self.globals).unwrap();
+        if self.in_declaration_specifier {
+            self.func.ret_type = CaplanType::from_ast_type(type_specifier, &self.globals).unwrap();
+        }
     }
 
     fn visit_function_definition(
@@ -190,8 +192,8 @@ impl<'ast> ParserVisit<'ast> for CaplanFunctionBuilder<'ast> {
         ) {
         self.in_declaration_specifier = true;
         function_definition.specifiers.iter().for_each(|specifier| self.visit_declaration_specifier(&specifier.node, &specifier.span));
-        self.in_declaration_specifier = false;
         self.visit_declarator(&function_definition.declarator.node, &function_definition.declarator.span);
+        self.in_declaration_specifier = false;
         function_definition.declarations.iter().for_each(|declaration| self.visit_declaration(&declaration.node, &declaration.span));
         self.visit_statement(&function_definition.statement.node, &function_definition.statement.span);
     }
@@ -210,7 +212,11 @@ impl<'ast> ParserVisit<'ast> for CaplanFunctionBuilder<'ast> {
         ) {
         match derived_declarator {
             DerivedDeclarator::Function(function_declarator) => self.visit_function_declarator(&function_declarator.node, &function_declarator.span),
-            _ => self.func.ret_type.decorate_from_ast(derived_declarator, &self.globals.target_conf)
+            _ => {
+                if self.in_declaration_specifier {
+                    self.func.ret_type.decorate_from_ast(derived_declarator, &self.globals.target_conf)
+                }
+            }
         }
     }
 
@@ -360,5 +366,5 @@ impl<'ast> ParserVisit<'ast> for CaplanTranslationUnit {
             assert!(self.globals.global_vars_to_ids.insert(ident_name, var_index).is_none(), "Duplicate global variable declaration");
         }
     }
-    
+
 }
