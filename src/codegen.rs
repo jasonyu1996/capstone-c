@@ -271,7 +271,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             // assuming that the region is 16-byte aligned
             let cap_table_len = ctx.translation_unit.globals.global_vars.len();
             if cap_table_len != 0 {
-                code_printer.print_addi(GPR_IDX_T1, GPR_IDX_T1, 
+                code_printer.print_addi(GPR_IDX_T1, GPR_IDX_T1,
                     -((cap_table_len * self.globals.target_conf.register_width) as isize)).unwrap();
                 // gp = cap table
                 code_printer.print_split(GPR_IDX_GP, GPR_IDX_SP, GPR_IDX_T1).unwrap();
@@ -490,7 +490,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             GPRState::Pinned(node_id, _) => panic!("Attempting to spill pinned reg for node {}", node_id)
         }
     }
-    
+
     fn reg_is_dead(&self, gpr_state: &GPRState) -> bool {
         match gpr_state {
             GPRState::Taken(node_id, _) => {
@@ -546,7 +546,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
     fn gen_func_ret_label(&self, func_name: &str) -> String {
         format!("_{}.ret", func_name)
     }
-    
+
     fn assign_reg<T>(&mut self, node_id: IRDAGNodeId, size: usize, code_printer: &mut CodePrinter<T>) -> RegId where T: std::io::Write {
         if let Some(reg_id) = self.try_assign_reg_no_spill(node_id, size) {
             reg_id
@@ -747,7 +747,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             self.vars[*var_id].state.loc = VarLocation::StackSlot;
         }
         assert!(!matches!(self.gpr_states[reg], GPRState::Reserved));
-        self.gpr_states[reg] = GPRState::Free; 
+        self.gpr_states[reg] = GPRState::Free;
     }
 
     // returns the size of the saved context
@@ -765,7 +765,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
             tmp_reg += 1;
         }
         // GPRs
-        
+
         let save_gpr_iter = get_save_gpr_iter(dom_boundary);
         for gpr in save_gpr_iter {
             assert!(!rd.contains(gpr) && !rs.contains(gpr));
@@ -1058,7 +1058,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                     self.temps.get_mut(&node_id).unwrap().var = None;
                                 }
                             }
-                            
+
                             var_info.state.loc = VarLocation::GPR(rd);
                             var_info.state.dirty = true;
                             self.temps.get_mut(&node.id).unwrap().var = Some(var_id);
@@ -1160,7 +1160,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                     // var_info_mut.state.dirty = node.vtype.is_linear(); // just loaded, not dirty, but writeback is necessary if the read value is linear
                                     // var_info_mut.state.loc = VarLocation::GPR(reg_id);
                                     // Self::load(reg_id, GPR_IDX_SP, self.stack_frame.stack_slot_offset(stack_slot) as isize, res_size, code_printer);
-                                    
+
                                     // only load lazily later
                                 }
                             };
@@ -1181,7 +1181,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.unpin_gpr(r_offset);
                             let rd = self.assign_reg_with_hint(node.id, res_size, r_offset, code_printer);
                             self.pointer_offset(rd, GPR_IDX_SP, r_offset, code_printer);
-                            Self::load(rd, rd, 
+                            Self::load(rd, rd,
                                 (named_mem_loc.offset + self.stack_frame.stack_slot_offset(self.vars.get(var_id).unwrap().state.stack_slot)) as isize, res_size, code_printer);
                         } else {
                             let rd = self.assign_reg(node.id, self.globals.target_conf.register_width, code_printer);
@@ -1200,9 +1200,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                                 let r_addr = self.assign_reg(node.id, addr.borrow().vtype.size(), code_printer);
                                 self.pin_gpr(r_addr);
                                 let reg_id = self.assign_reg(node.id, res_size, code_printer);
-                                self.pointer_offset(reg_id, rs, r_offset, code_printer);
+                                self.pointer_offset(r_addr, rs, r_offset, code_printer);
                                 // restore capability
                                 self.unpin_gpr(r_offset);
+                                Self::load(reg_id, r_addr, *static_offset as isize, res_size, code_printer);
                                 let r_neg_offset = self.assign_reg_with_hint(node.id, 8, r_offset, code_printer);
                                 code_printer.print_sub(r_neg_offset, GPR_IDX_X0, r_offset).unwrap();
                                 self.pointer_offset(rs, r_addr, r_neg_offset, code_printer);
@@ -1267,14 +1268,14 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         self.spill_reg_if_taken(*reg_id, code_printer);
                     }
                 }
-                
+
                 // save ra
                 let ra_spill_slot = self.stack_frame.find_free_spill_slot(8); // TODO: implement for capstone abi
                 code_printer.print_store_to_stack(GPR_IDX_RA, self.stack_frame.spill_stack_slot_offset(ra_spill_slot)).unwrap();
                 // no need to update spill slot state because we immediately load ra back
                 code_printer.print_call(callee).unwrap(); // this clobbers ra et al.
                 code_printer.print_load_from_stack(GPR_IDX_RA, self.stack_frame.spill_stack_slot_offset(ra_spill_slot)).unwrap();
-                
+
                 assert!(matches!(self.gpr_states[GPR_IDX_A0], GPRState::Free));
                 self.gpr_states[GPR_IDX_A0] = GPRState::Taken(node.id, ret_val_size);
                 self.temps.get_mut(&node.id).unwrap().loc = TempLocation::GPR(GPR_IDX_A0);
@@ -1337,7 +1338,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IntrinsicFunction::DomCall | IntrinsicFunction::DomCallSaveS => {
                         let args_count = arguments.len() - 1;
                         for (arg_idx, arg) in arguments[1..].iter().enumerate() {
-                            self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(), 
+                            self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(),
                                 GPR_PARAMS[arg_idx], code_printer);
                         }
 
@@ -1363,7 +1364,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                     IntrinsicFunction::IHDomCall | IntrinsicFunction::IHDomCallSaveS => {
                         let args_count = arguments.len();
                         for (arg_idx, arg) in arguments.iter().enumerate() {
-                            self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(), 
+                            self.prepare_source_reg_specified(&*arg.to_word().unwrap().borrow(),
                                 GPR_PARAMS[arg_idx], code_printer);
                         }
 
@@ -1431,10 +1432,10 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                             self.destruct_temp_value(r_ret_dom, &*ret_dom_ref);
                             drop(ret_dom_ref);
                             self.unpin_gpr(rs2);
-                            self.domreturn_save_context(r_ret_dom, rs2, 
+                            self.domreturn_save_context(r_ret_dom, rs2,
                                 if smode_dom { SMODE_CONTEXT_SIZE } else { 0 }, smode_dom,
                                 has_retval, code_printer);
-                            
+
                             code_printer.print_domreturn(r_ret_dom, rs2, GPR_IDX_X0).unwrap();
                         }
                     }
@@ -1479,8 +1480,8 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         // TODO: changing rs1 directly would be problematic if the original data is still needed
                         // assert_eq!(self.temps.get(&a1_word.borrow().id).unwrap().rev_deps_to_eval, 0);
                         code_printer.print_split(rd, rs1, rs2).unwrap();
-                    
-                        self.gen_writeback_to_loc(&a1_lval.loc, rs1, 
+
+                        self.gen_writeback_to_loc(&a1_lval.loc, rs1,
                             self.globals.target_conf.register_width, false, code_printer);
                     }
                 }
@@ -1512,7 +1513,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 }
                 // now simply do pattern replacement
                 let mut asm_res = asm.clone();
-                for (reg_idx, (symb_name_op, reg)) in 
+                for (reg_idx, (symb_name_op, reg)) in
                     outputs.iter().map(|out| &out.symb_name).chain(
                         inputs.iter().map(|inp| &inp.symb_name)
                     ).zip(output_regs.iter().chain(input_regs.iter())).enumerate() {
@@ -1580,7 +1581,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
         for reserved_gpr in GPR_RESERVED_LIST {
             self.gpr_states[reserved_gpr] = GPRState::Reserved;
         }
-        
+
         self.stack_frame.clear_spill_slots();
 
         self.codegen_block_unlabeled_reset(func_name, block, code_printer);
@@ -1706,7 +1707,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                         },
                         ty: ty
                     });
-                
+
                 }, 0, &self.globals.target_conf);
             }
 
@@ -1753,7 +1754,7 @@ impl<'ctx> FunctionCodeGen<'ctx> {
                 self.codegen_block_end_cleanup(&func.name, block, &mut main_code_printer);
             }
         }
-        
+
         self.generate_prologue(&func, ctx, &mut prologue_code_printer);
         self.generate_epilogue(&func, ctx, &mut main_code_printer);
 
