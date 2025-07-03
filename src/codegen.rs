@@ -1801,7 +1801,7 @@ impl<Out> CodeGen<Out> where Out: std::io::Write {
             }
             CaplanABI::CapstoneCGNLSD => {
                 // TODO: produce the caplocation table in a special table
-                self.code_printer.print_align(16).unwrap();
+                self.code_printer.print_align(4).unwrap();
                 self.code_printer.print_section(".gct").unwrap();
                 for (_, var_type) in self.ctx.translation_unit.globals.global_vars.iter() {
                     self.code_printer.print_u64(var_type.size(&self.ctx.translation_unit.globals.target_conf) as u64).unwrap();
