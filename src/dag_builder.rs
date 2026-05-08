@@ -7,8 +7,8 @@ use crate::dag::{*, self};
 
 use lang_c::ast::{UnaryOperator, UnaryOperatorExpression, ForInitializer, Label, MemberOperator, AsmStatement, IntegerBase, Attribute, Extension};
 use lang_c::{visit::Visit as ParserVisit,
-    ast::{FunctionDefinition, Expression, CallExpression, Statement, 
-        BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind, 
+    ast::{FunctionDefinition, Expression, CallExpression, Statement,
+        BinaryOperator, BinaryOperatorExpression, Constant, DeclaratorKind,
         DeclarationSpecifier, TypeSpecifier, Initializer}, span::Span};
 
 
@@ -114,7 +114,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     fn add_nonlabel_node(&mut self, node: &GCed<IRDAGNode>) {
         let last_block = self.dag.blocks.last_mut().unwrap();
         assert!(last_block.exit_node.is_none()); // we should not have seen an exit node yet
-        
+
 
         // FIXME: remove this after adding properly handling of load/store
         // forcing program order
@@ -143,7 +143,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     pub fn place_label_node(&mut self, label_node: &GCed<IRDAGNode>) {
-        let blk_id = 
+        let blk_id =
             if self.dag.blocks.last().unwrap().dag.is_empty() {
                 self.current_block_id()
             } else {
@@ -301,6 +301,7 @@ impl<'ast> IRDAGBuilder<'ast> {
     }
 
     pub fn new_indom_call(&mut self, callee: &str, args: Vec<GCed<IRDAGNode>>) -> GCed<IRDAGNode> {
+        eprintln!("New indom call to {}", callee);
         let ret_type = self.globals.func_decls.get(callee).and_then(|cty| IRDAGNodeVType::from_caplan_type(cty)).unwrap();
         let res = new_gced(IRDAGNode::new(
             self.id_counter,
@@ -419,7 +420,7 @@ impl<'ast> IRDAGBuilder<'ast> {
 
     /* high-level build operations */
 
-    pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span, 
+    pub fn build(&mut self, ast: &'ast FunctionDefinition, span: &'ast Span,
                 params: &[CaplanParam]) {
         for param in params.iter() {
             self.locals.push((param.name.clone(), param.ty.clone()));
@@ -595,7 +596,7 @@ impl<'ast> IRDAGBuilder<'ast> {
             }
         }
     }
-    
+
     fn result_to_word(&mut self, res: &IRDAGNodeTempResult, to_be_transferred: bool) -> Option<GCed<IRDAGNode>> {
         match res {
             IRDAGNodeTempResult::Word(word) => Some(word.clone()),
@@ -667,7 +668,7 @@ impl<'ast> IRDAGBuilder<'ast> {
         let r = self.last_temp_res_to_word(false).unwrap();
         let l_ref = l.borrow();
         let r_ref = r.borrow();
-        let res_word = 
+        let res_word =
             if let (IRDAGNodeCons::IntConst(l_const), IRDAGNodeCons::IntConst(r_const)) = (&l_ref.cons, &r_ref.cons) {
                 let l_const = *l_const;
                 let r_const = *r_const;
@@ -687,12 +688,12 @@ impl<'ast> IRDAGBuilder<'ast> {
         let lhs = self.last_temp_res.take().unwrap();
         self.visit_expression(&expr.rhs.node, &expr.rhs.span);
         let rhs = self.last_temp_res.take().unwrap();
-        
+
         let l_word = self.result_to_word(&lhs, false).unwrap();
         let r_word = self.result_to_word(&rhs, false).unwrap();
         let l_ref = l_word.borrow();
         let r_ref = r_word.borrow();
-        let res_word = 
+        let res_word =
             if let (IRDAGNodeCons::IntConst(l_const), IRDAGNodeCons::IntConst(r_const)) = (&l_ref.cons, &r_ref.cons) {
                 self.new_int_const(dag::static_bin_op(op_type, *l_const, *r_const))
             } else {
@@ -858,7 +859,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         }
         self.new_jump(&label_start);
         self.place_label_node(&label_end);
-        
+
         self.pop_loop_info();
     }
 
@@ -910,7 +911,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         for (expr, expr_span, target) in switch_targets.targets.iter() {
             self.visit_expression(expr, expr_span);
             let b_res = self.last_temp_res_to_word(false).unwrap();
-            let cmp_res = self.new_int_binop(IRDAGNodeIntBinOpType::Eq, 
+            let cmp_res = self.new_int_binop(IRDAGNodeIntBinOpType::Eq,
                 &val, &b_res);
             self.new_branch(target, &cmp_res);
         }
@@ -1070,7 +1071,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
                 self.visit_expression(&binary_operator_expression.lhs.node,
                     &binary_operator_expression.lhs.span);
                 let lhs = self.last_temp_res.take().unwrap();
-                self.visit_expression(&binary_operator_expression.rhs.node, 
+                self.visit_expression(&binary_operator_expression.rhs.node,
                     &binary_operator_expression.rhs.span);
                 let rhs = self.last_temp_res.take().unwrap();
                 self.gen_assign(lhs, rhs);
@@ -1310,7 +1311,7 @@ impl<'ast> ParserVisit<'ast> for IRDAGBuilder<'ast> {
         // add this to local
         let name = self.decl_id_name.take().unwrap();
         let mut ty = self.decl_type.as_ref().unwrap().clone();
-        // call the type modifiers defined by the type attributes        
+        // call the type modifiers defined by the type attributes
         for attr_name in self.type_attr_names.iter() {
             assert!(try_modify_type_with_attr(&mut ty, attr_name), "Failed to apply the type attribute {}", attr_name);
         }
